@@ -1,0 +1,47 @@
+{
+  "name": "syncorsink_core",
+  "cases": [
+    {
+      "name": "planning_hard",
+      "spec": {
+        "scenario": "pipeline_assembly",
+        "mode": "marl",
+        "policy": "scripted",
+        "track": "ctde",
+        "split": "test",
+        "episodes": 3,
+        "map_size": 16,
+        "fov_preset": "hard",
+        "comm_mode": "tokens"
+      }
+    },
+    {
+      "name": "resource_medium",
+      "spec": {
+        "scenario": "energy_grid",
+        "mode": "marl",
+        "policy": "scripted",
+        "track": "ctde",
+        "split": "test",
+        "episodes": 3,
+        "map_size": 16,
+        "fov_preset": "medium",
+        "comm_mode": "tokens"
+      }
+    },
+    {
+      "name": "search_easy_llm",
+      "spec": {
+        "scenario": "signal_hunt",
+        "mode": "llm",
+        "policy": "dummy",
+        "track": "dtde",
+        "split": "test",
+        "episodes": 3,
+        "map_size": 16,
+        "fov_preset": "easy",
+        "comm_mode": "text"
+      }
+    }
+  ]
+}

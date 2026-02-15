@@ -1,0 +1,58 @@
+{
+  "name": "pipeline-presets",
+  "cases": [
+    {
+      "name": "pipeline_easy_expert_comm",
+      "spec": {
+        "scenario": "pipeline_assembly",
+        "mode": "marl",
+        "episodes": 5,
+        "map_size": 16,
+        "fov_preset": "medium",
+        "comm_mode": "tokens",
+        "track": "ctde",
+        "policy": "pipeline_planner_comm"
+      }
+    },
+    {
+      "name": "pipeline_hard_coord",
+      "spec": {
+        "scenario": "pipeline_assembly",
+        "mode": "marl",
+        "episodes": 5,
+        "map_size": 16,
+        "fov_preset": "medium",
+        "comm_mode": "tokens",
+        "track": "dtde",
+        "policy": "pipeline_planner_comm_followers_regions"
+      }
+    },
+    {
+      "name": "energy_easy_expert_comm",
+      "spec": {
+        "scenario": "energy_grid",
+        "mode": "marl",
+        "episodes": 5,
+        "map_size": 16,
+        "fov_preset": "medium",
+        "comm_mode": "tokens",
+        "track": "ctde",
+        "policy": "energy_planner_comm",
+        "energy_preset": "easy"
+      }
+    },
+    {
+      "name": "signal_hunt_expert_comm",
+      "spec": {
+        "scenario": "signal_hunt",
+        "mode": "marl",
+        "episodes": 5,
+        "map_size": 16,
+        "fov_preset": "medium",
+        "comm_mode": "tokens",
+        "track": "ctde",
+        "policy": "signal_hunt_planner_comm"
+      }
+    }
+  ]
+}

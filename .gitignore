@@ -1,0 +1,30 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+
+# Project runtime artifacts
+checkpoints/
+wandb/
+
+# Local env files
+.env
+.env.*
