@@ -1,4 +1,4 @@
-from syncorsink.llm.policy import LLMPolicy, grid_to_ascii, default_prompt
+from syncorsink.llm.policy import LLMPolicy, LLMExecutorPolicy, grid_to_ascii, default_prompt
 from syncorsink.llm.tool_policy import ToolCallingPolicy
 from syncorsink.llm.openai_client import OpenAIToolCaller
 from syncorsink.llm.responses_client import OpenAIResponsesCaller
@@ -7,6 +7,7 @@ from syncorsink.llm.responses_adapter import parse_responses_tool_calls, respons
 
 __all__ = [
     "LLMPolicy",
+    "LLMExecutorPolicy",
     "grid_to_ascii",
     "default_prompt",
     "ToolCallingPolicy",

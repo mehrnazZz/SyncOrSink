@@ -5,6 +5,7 @@ from syncorsink.policies.il_policy import ILPolicy
 from syncorsink.policies.vlm_policy import VLMPolicy
 from syncorsink.policies.llm_policy import LLMPolicyAdapter
 from syncorsink.policies.mappo_policy import MAPPOPolicy
+from syncorsink.policies.comm_mat_policy import CommMATPolicy, CommMATPolicyConfig
 
 __all__ = [
     "BasePolicy",
@@ -16,4 +17,6 @@ __all__ = [
     "VLMPolicy",
     "LLMPolicyAdapter",
     "MAPPOPolicy",
+    "CommMATPolicy",
+    "CommMATPolicyConfig",
 ]

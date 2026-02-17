@@ -13,7 +13,9 @@ def parse_responses_tool_calls(response: Dict[str, Any]) -> List[ToolCall]:
       {"output": [{"type": "tool_call", "name": "move", "arguments": "{...}"}, ...]}
     """
     calls: List[ToolCall] = []
-    for item in response.get("output", []):
+    if not isinstance(response, dict):
+        return calls
+    for item in response.get("output") or []:
         if item.get("type") != "tool_call":
             continue
         name = item.get("name")

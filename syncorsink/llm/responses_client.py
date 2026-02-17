@@ -23,7 +23,11 @@ class OpenAIResponsesCaller:
             input=prompt,
             tools=self.tools,
         )
-        return resp
+        if hasattr(resp, "model_dump"):
+            return resp.model_dump()
+        if isinstance(resp, dict):
+            return resp
+        return {}
 
     def batch(self, prompts: List[str], max_workers: int = 8) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = [None for _ in prompts]  # type: ignore[list-item]

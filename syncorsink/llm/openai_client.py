@@ -25,7 +25,11 @@ class OpenAIToolCaller:
             tool_choice="auto",
         )
         message = resp.choices[0].message
-        return message
+        if hasattr(message, "model_dump"):
+            return message.model_dump()
+        if isinstance(message, dict):
+            return message
+        return {}
 
     def batch(self, prompts: List[str], max_workers: int = 8) -> List[Dict[str, Any]]:
         # Parallel batching using threads to overlap network calls.

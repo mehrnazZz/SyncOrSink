@@ -68,6 +68,7 @@ def flatten_obs(obs_agent):
         _flatten_array(obs_agent.get("messages_tokens", np.zeros((1, 1), dtype=np.float32))),
         _flatten_array(obs_agent.get("message_from", np.zeros((1,), dtype=np.float32))),
         _flatten_array(obs_agent.get("goal_hint", np.zeros((1,), dtype=np.float32))),
+        _flatten_array(obs_agent.get("action_mask", np.ones((8,), dtype=np.float32))),
     ]
     return np.concatenate(parts, axis=0)
 

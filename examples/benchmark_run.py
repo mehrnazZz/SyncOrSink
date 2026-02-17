@@ -13,6 +13,7 @@ from syncorsink.eval.runner import run_episodes
 from syncorsink.eval.llm_runner import run_llm_episodes
 from syncorsink.policies.random_policy import random_policy
 from syncorsink.policies.scripted import pipeline_planner, energy_planner, signal_hunt_planner
+from syncorsink.policies.comm_mat_policy import CommMATPolicy, CommMATPolicyConfig
 from syncorsink.llm.policy import LLMPolicy
 
 
@@ -33,6 +34,14 @@ def build_policy(spec, env):
         if env.config.scenario == "energy_grid":
             return energy_planner(env)
         return signal_hunt_planner(env)
+    if policy == "comm_mat":
+        return CommMATPolicy(
+            config=CommMATPolicyConfig(
+                deterministic=bool(spec.get("comm_mat_deterministic", True)),
+                send_threshold=float(spec.get("comm_mat_send_threshold", 0.5)),
+            ),
+            checkpoint=spec.get("policy_checkpoint"),
+        )
     return random_policy(env.action_space, env.num_agents)
 
 

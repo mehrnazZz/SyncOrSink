@@ -72,6 +72,11 @@ class SyncOrSinkConfig:
     render_split_view: bool = False
     render_style: str = "arcade_flat"  # "arcade_flat" or "sprite"
     obs_onehot: bool = False
+    # optional per-agent exploration memory in observations
+    obs_exploration_memory: bool = True
+    obs_exploration_age: bool = False
+    # include valid-action mask per agent in observations
+    obs_action_mask: bool = True
 
 
 class SyncOrSinkEnv(gym.Env):
@@ -106,6 +111,9 @@ class SyncOrSinkEnv(gym.Env):
         self.max_steps = self.config.max_steps
         self.comm_radius = self.config.comm_radius
         self.obs_onehot = self.config.obs_onehot
+        self.obs_exploration_memory = self.config.obs_exploration_memory
+        self.obs_exploration_age = self.config.obs_exploration_age
+        self.obs_action_mask = self.config.obs_action_mask
 
         self.scenario = SCENARIOS[self.config.scenario]
         self.rng = get_rng(None)
@@ -125,6 +133,8 @@ class SyncOrSinkEnv(gym.Env):
         self.inventories: list[int] = []
         self.scenario_state = None
         self.inboxes: list[list[Message]] = []
+        self.agent_explored: list[np.ndarray] = []
+        self.agent_last_seen_step: list[np.ndarray] = []
 
         self.action_space = spaces.Dict({
             "action": spaces.Discrete(8),
@@ -180,6 +190,27 @@ class SyncOrSinkEnv(gym.Env):
             "message_from": spaces.Box(low=-1, high=self.num_agents - 1, shape=(self.max_messages,), dtype=np.int16),
             "goal_hint": spaces.Box(low=-1, high=1024, shape=(16,), dtype=np.int16),
         })
+        if self.obs_action_mask:
+            self.observation_space.spaces["action_mask"] = spaces.Box(
+                low=0,
+                high=1,
+                shape=(8,),
+                dtype=np.int8,
+            )
+        if self.obs_exploration_memory:
+            self.observation_space.spaces["explored_mask"] = spaces.Box(
+                low=0,
+                high=1,
+                shape=(self.map_size, self.map_size),
+                dtype=np.int8,
+            )
+            if self.obs_exploration_age:
+                self.observation_space.spaces["explored_age"] = spaces.Box(
+                    low=-1,
+                    high=max(1024, self.max_steps),
+                    shape=(self.map_size, self.map_size),
+                    dtype=np.int16,
+                )
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         self.rng = get_rng(seed)
@@ -195,15 +226,38 @@ class SyncOrSinkEnv(gym.Env):
         self.grid, self.meta = self.scenario.build_map(self.map_size, map_rng, self.config)
         starts = self.meta.get("agent_starts", [])
         if len(starts) < self.num_agents:
-            # fallback: random empty cells
-            starts = starts + [
-                (int(self.rng.integers(0, self.map_size)), int(self.rng.integers(0, self.map_size)))
-                for _ in range(self.num_agents - len(starts))
-            ]
+            # fallback: sample additional valid empty cells (never walls/doors/objects).
+            used = set(starts)
+            empties = []
+            for y in range(self.map_size):
+                for x in range(self.map_size):
+                    if self.grid[y, x] == TILE_EMPTY and (x, y) not in used:
+                        empties.append((x, y))
+            self.rng.shuffle(empties)
+            need = self.num_agents - len(starts)
+            starts = starts + empties[:need]
+            # Last resort if map is pathological: reuse existing empty cells.
+            if len(starts) < self.num_agents:
+                fallback_pool = empties if empties else list(used)
+                while len(starts) < self.num_agents and fallback_pool:
+                    starts.append(fallback_pool[int(self.rng.integers(0, len(fallback_pool)))])
+            if len(starts) < self.num_agents:
+                # Absolute safety: fill from any non-wall/non-door cell to keep reset robust.
+                walkable = []
+                for y in range(self.map_size):
+                    for x in range(self.map_size):
+                        if int(self.grid[y, x]) not in (1, TILE_DOOR):
+                            walkable.append((x, y))
+                if not walkable:
+                    walkable = [(0, 0)]
+                while len(starts) < self.num_agents:
+                    starts.append(walkable[int(self.rng.integers(0, len(walkable)))])
         self.agent_positions = starts[: self.num_agents]
         self.inventories = [0 for _ in range(self.num_agents)]
         self.inboxes = [[] for _ in range(self.num_agents)]
         self.scenario_state = self.scenario.reset(self)
+        self._init_exploration_memory()
+        self._update_exploration_memory()
 
         obs = self._build_observations()
         info = self._build_info()
@@ -302,6 +356,7 @@ class SyncOrSinkEnv(gym.Env):
 
         # scenario-specific step
         rewards, done, scenario_info = self.scenario.step(self, parsed_actions)
+        self._update_exploration_memory()
 
         # communication penalty
         for agent_id, count in comm_tokens.items():
@@ -479,7 +534,77 @@ class SyncOrSinkEnv(gym.Env):
                 "message_from": message_from,
                 "goal_hint": hint_tokens,
             }
+            if self.obs_action_mask:
+                obs[agent_id]["action_mask"] = self._valid_action_mask(agent_id)
+            if self.obs_exploration_memory:
+                obs[agent_id]["explored_mask"] = self.agent_explored[agent_id].astype(np.int8, copy=True)
+                if self.obs_exploration_age:
+                    last_seen = self.agent_last_seen_step[agent_id]
+                    age = np.where(last_seen >= 0, self.steps - last_seen, -1).astype(np.int16)
+                    obs[agent_id]["explored_age"] = age
         return obs
+
+    def _valid_action_mask(self, agent_id: int) -> np.ndarray:
+        mask = np.zeros((8,), dtype=np.int8)
+        x, y = self.agent_positions[agent_id]
+        inv = self.inventories[agent_id]
+
+        # stay is always valid
+        mask[self.ACTION_STAY] = 1
+
+        # movement validity (bounds + static blockers + occupancy unless multi-occupancy tile)
+        occupied = {pos: idx for idx, pos in enumerate(self.agent_positions)}
+        allow_multi = {TILE_STATION, TILE_NODE, TILE_TARGET}
+        move_deltas = {
+            self.ACTION_UP: (0, -1),
+            self.ACTION_DOWN: (0, 1),
+            self.ACTION_LEFT: (-1, 0),
+            self.ACTION_RIGHT: (1, 0),
+        }
+        for act, (dx, dy) in move_deltas.items():
+            nx, ny = x + dx, y + dy
+            if not (0 <= nx < self.map_size and 0 <= ny < self.map_size):
+                continue
+            tile = int(self.grid[ny, nx])
+            if tile in (1, TILE_DOOR):
+                continue
+            if (nx, ny) in occupied and occupied[(nx, ny)] != agent_id and tile not in allow_multi:
+                continue
+            mask[act] = 1
+
+        pos = (x, y)
+        center_tile = int(self.grid[y, x])
+
+        # interact validity: useful interaction tile or adjacent door (if enabled)
+        can_interact = center_tile in {TILE_STATION, TILE_NODE, TILE_CLUE, TILE_TARGET}
+        if self.config.use_doors and not can_interact:
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < self.map_size and 0 <= ny < self.map_size and int(self.grid[ny, nx]) == TILE_DOOR:
+                    can_interact = True
+                    break
+        if can_interact:
+            mask[self.ACTION_INTERACT] = 1
+
+        # pickup/drop validity
+        if inv == 0 and pos in self._resource_positions():
+            mask[self.ACTION_PICKUP] = 1
+        if inv != 0 and center_tile == TILE_EMPTY:
+            mask[self.ACTION_DROP] = 1
+
+        return mask
+
+    def _init_exploration_memory(self):
+        self.agent_explored = [np.zeros((self.map_size, self.map_size), dtype=bool) for _ in range(self.num_agents)]
+        self.agent_last_seen_step = [np.full((self.map_size, self.map_size), -1, dtype=np.int16) for _ in range(self.num_agents)]
+
+    def _update_exploration_memory(self):
+        if not self.obs_exploration_memory:
+            return
+        for aid, pos in enumerate(self.agent_positions):
+            mask = visible_mask(self.grid, [pos], self.fov_radius)
+            self.agent_explored[aid] |= mask
+            self.agent_last_seen_step[aid][mask] = int(self.steps)
 
     def _onehot(self, local: np.ndarray) -> np.ndarray:
         # One-hot encode tiles 0..max into shape (C, H, W)
@@ -524,9 +649,20 @@ class SyncOrSinkEnv(gym.Env):
         return np.array(padded, dtype=np.int16)
 
     def _build_info(self) -> dict:
-        info = {"messages_text": {}, "goal_hint_texts": {}}
+        info = {
+            "messages_text": {},
+            "messages_with_sender": {},
+            "goal_hint_texts": {},
+            "scenario": self.config.scenario,
+        }
         for agent_id in range(self.num_agents):
-            info["messages_text"][agent_id] = [m.text for m in self.inboxes[agent_id] if m.text]
+            txt = [m.text for m in self.inboxes[agent_id] if m.text]
+            info["messages_text"][agent_id] = txt
+            info["messages_with_sender"][agent_id] = [
+                {"from": int(m.sender), "text": m.text}
+                for m in self.inboxes[agent_id]
+                if m.text
+            ]
         if self.config.scenario == "signal_hunt":
             for agent_id in range(self.num_agents):
                 info["goal_hint_texts"][agent_id] = self.scenario_state.data.get("agent_hints", {}).get(agent_id)

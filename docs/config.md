@@ -28,3 +28,5 @@ All configuration options are defined in `syncorsink/envs/base.py` under `SyncOr
 | `render_split_view` | bool | `False` | Render agent view + god view side‑by‑side. |
 | `render_style` | str | `"arcade_flat"` | Render style: `arcade_flat` or `sprite`. |
 | `obs_onehot` | bool | `False` | If true, `local_grid` becomes one‑hot channels `(C,H,W)` instead of integer ids. |
+| `obs_exploration_memory` | bool | `True` | If true, include per-agent `explored_mask` memory in observations. |
+| `obs_exploration_age` | bool | `False` | If true (and memory enabled), include per-agent `explored_age` (steps since last seen). |

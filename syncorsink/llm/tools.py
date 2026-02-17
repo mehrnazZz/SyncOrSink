@@ -32,7 +32,9 @@ def parse_openai_tool_calls(message: Dict[str, Any]) -> List[ToolCall]:
     Expects message like: {"tool_calls": [{"type":"function","function":{"name":"move","arguments":"{...}"}}]}
     """
     calls: List[ToolCall] = []
-    tool_calls = message.get("tool_calls", [])
+    if not isinstance(message, dict):
+        return calls
+    tool_calls = message.get("tool_calls") or []
     for call in tool_calls:
         if call.get("type") != "function":
             continue

@@ -256,26 +256,47 @@ class EnergyGrid(ScenarioBase):
     name = "energy_grid"
 
     def build_map(self, size: int, rng: np.random.Generator, config) -> tuple[np.ndarray, dict]:
+        node_count = max(3, min(5, size // 6))
+        resource_count = max(node_count * 2, node_count + 1)
+        min_starts = max(6, int(getattr(config, "num_agents", 3)))
+        min_component = max(node_count + resource_count + min_starts + 4, int(size * size * 0.30))
+
+        # Retry map generation until we avoid cramped/isolated pockets.
+        for _ in range(20):
+            if config.use_rooms:
+                grid, rooms = generate_room_map(MapSpec(size=size), rng)
+                if not config.use_doors:
+                    grid[grid == 9] = 0
+            else:
+                grid = generate_base_map(MapSpec(size=size), rng)
+
+            component = largest_component_positions(grid)
+            if not component:
+                component = [(x, y) for y in range(size) for x in range(size) if grid[y, x] == 0]
+            if len(component) < min_component:
+                continue
+
+            nodes = place_tiles_in_positions(grid, rng, TILE_NODE, count=node_count, positions=component)
+            resources = place_tiles_in_positions(grid, rng, TILE_RESOURCE, count=resource_count, positions=component)
+            agent_starts = place_tiles_in_positions(grid, rng, TILE_EMPTY, count=min_starts, positions=component)
+            if len(nodes) < node_count or len(resources) < resource_count or len(agent_starts) < min_starts:
+                continue
+            return grid, {"nodes": nodes, "resources": resources, "agent_starts": agent_starts}
+
+        # Fallback: keep previous behavior if retries fail.
         if config.use_rooms:
             grid, rooms = generate_room_map(MapSpec(size=size), rng)
             if not config.use_doors:
                 grid[grid == 9] = 0
         else:
             grid = generate_base_map(MapSpec(size=size), rng)
-        node_count = max(3, min(5, size // 6))
-        resource_count = max(node_count * 2, node_count + 1)
         component = largest_component_positions(grid)
         if not component:
             component = [(x, y) for y in range(size) for x in range(size) if grid[y, x] == 0]
         nodes = place_tiles_in_positions(grid, rng, TILE_NODE, count=node_count, positions=component)
         resources = place_tiles_in_positions(grid, rng, TILE_RESOURCE, count=resource_count, positions=component)
-        agent_starts = place_tiles_in_positions(grid, rng, TILE_EMPTY, count=6, positions=component)
-        meta = {
-            "nodes": nodes,
-            "resources": resources,
-            "agent_starts": agent_starts,
-        }
-        return grid, meta
+        agent_starts = place_tiles_in_positions(grid, rng, TILE_EMPTY, count=min_starts, positions=component)
+        return grid, {"nodes": nodes, "resources": resources, "agent_starts": agent_starts}
 
     def reset(self, env) -> ScenarioState:
         rng = env.rng

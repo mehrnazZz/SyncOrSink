@@ -13,6 +13,7 @@ from syncorsink.eval.runner import run_episodes
 from syncorsink.eval.llm_runner import run_llm_episodes
 from syncorsink.policies.random_policy import random_policy
 from syncorsink.policies.scripted import pipeline_planner, energy_planner, signal_hunt_planner
+from syncorsink.policies.comm_mat_policy import CommMATPolicy, CommMATPolicyConfig
 from syncorsink.llm.policy import LLMPolicy
 
 
@@ -48,6 +49,14 @@ def main():
                 policy = energy_planner(env)
             else:
                 policy = signal_hunt_planner(env)
+        elif spec.policy == "comm_mat":
+            policy = CommMATPolicy(
+                config=CommMATPolicyConfig(
+                    deterministic=bool(getattr(spec, "comm_mat_deterministic", True)),
+                    send_threshold=float(getattr(spec, "comm_mat_send_threshold", 0.5)),
+                ),
+                checkpoint=getattr(spec, "policy_checkpoint", None),
+            )
         else:
             policy = random_policy(env.action_space, env.num_agents)
         summary, _ = run_episodes(env, policy, episodes=spec.episodes, seed=0)

@@ -15,7 +15,14 @@ class LLMRunConfig:
     cache: bool = True
 
 
-def run_llm_episodes(env, policy, episodes: int = 10, seed: int | None = None, per_episode_cb=None):
+def run_llm_episodes(
+    env,
+    policy,
+    episodes: int = 10,
+    seed: int | None = None,
+    per_episode_cb=None,
+    per_step_cb=None,
+):
     results: List[EpisodeStats] = []
     base_seed = seed
     for ep in range(episodes):
@@ -24,13 +31,18 @@ def run_llm_episodes(env, policy, episodes: int = 10, seed: int | None = None, p
         done = False
         truncated = False
         steps = 0
+        policy_state = {"episode": ep, "step": 0}
         total_reward = 0.0
         comm_tokens = 0
         per_agent_reward = {i: 0.0 for i in range(env.num_agents)}
         per_agent_comm = {i: 0 for i in range(env.num_agents)}
 
         while not (done or truncated):
-            actions = policy(obs, info, {"step": steps})
+            policy_state["step"] = steps
+            policy_state["llm_calls"] = []
+            prev_obs = obs
+            prev_info = info
+            actions = policy(obs, info, policy_state)
             obs, rewards, done, truncated, info = env.step(actions)
             steps += 1
             total_reward += sum(rewards.values())
@@ -40,11 +52,14 @@ def run_llm_episodes(env, policy, episodes: int = 10, seed: int | None = None, p
                 comm_tokens += sum(info["comm_tokens"].values())
                 for aid, c in info["comm_tokens"].items():
                     per_agent_comm[aid] += c
+            if per_step_cb is not None:
+                per_step_cb(ep, steps - 1, prev_obs, prev_info, actions, rewards, done, truncated, info, policy_state)
 
+        success_flag = bool(info.get("success", done))
         ep_stats = EpisodeStats(
             total_reward=total_reward,
             steps=steps,
-            success=done,
+            success=success_flag,
             comm_tokens=comm_tokens,
             per_agent_reward=per_agent_reward,
             per_agent_comm=per_agent_comm,

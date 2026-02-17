@@ -15,6 +15,7 @@ def run_episodes(
     episodes: int = 10,
     seed: int | None = None,
     per_episode_cb: callable | None = None,
+    per_step_cb: callable | None = None,
     render: bool = False,
     render_fps: float = 10.0,
 ):
@@ -32,6 +33,8 @@ def run_episodes(
         per_agent_comm = {i: 0 for i in range(env.num_agents)}
         last_info: dict[str, Any] = {}
         while not (done or truncated):
+            prev_obs = obs
+            prev_info = info
             actions = policy(obs, info, {"step": steps})
             obs, rewards, done, truncated, info = env.step(actions)
             last_info = info or {}
@@ -43,6 +46,8 @@ def run_episodes(
                 comm_tokens += sum(info["comm_tokens"].values())
                 for aid, c in info["comm_tokens"].items():
                     per_agent_comm[aid] += c
+            if per_step_cb is not None:
+                per_step_cb(ep, steps - 1, prev_obs, prev_info, actions, rewards, done, truncated, info)
             if render:
                 env.render()
                 if render_fps > 0:

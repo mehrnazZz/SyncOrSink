@@ -1,0 +1,53 @@
+{
+  "name": "transformer-presets",
+  "cases": [
+    {
+      "name": "pipeline_comm_mat_easy",
+      "spec": {
+        "scenario": "pipeline_assembly",
+        "mode": "marl",
+        "episodes": 5,
+        "map_size": 8,
+        "fov_preset": "easy",
+        "comm_mode": "tokens",
+        "track": "dtde",
+        "policy": "comm_mat",
+        "policy_checkpoint": "checkpoints/comm_mat_pipeline.pt",
+        "comm_mat_deterministic": true,
+        "comm_mat_send_threshold": 0.5
+      }
+    },
+    {
+      "name": "energy_comm_mat_easy",
+      "spec": {
+        "scenario": "energy_grid",
+        "mode": "marl",
+        "episodes": 5,
+        "map_size": 8,
+        "fov_preset": "easy",
+        "comm_mode": "tokens",
+        "track": "dtde",
+        "policy": "comm_mat",
+        "policy_checkpoint": "checkpoints/comm_mat_energy.pt",
+        "comm_mat_deterministic": true,
+        "comm_mat_send_threshold": 0.5
+      }
+    },
+    {
+      "name": "signal_comm_mat_easy",
+      "spec": {
+        "scenario": "signal_hunt",
+        "mode": "marl",
+        "episodes": 5,
+        "map_size": 8,
+        "fov_preset": "easy",
+        "comm_mode": "tokens",
+        "track": "dtde",
+        "policy": "comm_mat",
+        "policy_checkpoint": "checkpoints/comm_mat_signal.pt",
+        "comm_mat_deterministic": true,
+        "comm_mat_send_threshold": 0.5
+      }
+    }
+  ]
+}

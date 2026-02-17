@@ -76,12 +76,20 @@ Model library + MAPPO training loop:
 ```bash
 pip install -e ".[train]"
 python examples/mappo_train.py
+python examples/comm_mat_train.py
 ```
+
+Baseline docs:
+
+- RL baselines (MAPPO + comm heads): `docs/baselines_rl.md`
+- Transformer baselines (Comm-MAT): `docs/baselines_transformer.md`
+- Evaluation/logging config (eval flags, traces, video, W&B): `docs/eval_and_logging.md`
 
 Evaluation harness:
 
 ```bash
 python examples/eval_run.py --scenario signal_hunt --episodes 10 --policy heuristic
+python examples/eval_run.py --scenario pipeline_assembly --episodes 5 --policy comm_mat --comm-mat-ckpt checkpoints/comm_mat_pipeline.pt
 ```
 
 Oracle baselines (full‑state planners):
@@ -112,23 +120,37 @@ Split evaluation (mean/std across seeds):
 python examples/eval_split.py --scenario signal_hunt --split test --episodes-per-seed 3 --wandb --wandb-project syncorsink
 ```
 
-LLM tool-calling stub:
+LLM evaluation (dummy provider, tool mode):
 
 ```bash
-python examples/llm_tool_stub.py
+python examples/eval_llm.py --scenario signal_hunt --episodes 5 --provider dummy --mode tools
 ```
 
-LLM evaluation:
+LLM evaluation (OpenAI tool-calling):
 
 ```bash
-python examples/eval_llm.py --scenario signal_hunt --episodes 5 --wandb --wandb-project syncorsink
+export OPENAI_API_KEY=...
+python examples/eval_llm.py --scenario signal_hunt --episodes 5 --provider openai-chat --mode tools --model gpt-4o-mini
 ```
 
-LLM prompt cache:
+LLM evaluation (OpenAI text mode with prompt cache):
 
 ```bash
-python examples/eval_llm.py --scenario signal_hunt --episodes 5 --cache /tmp/syncorsink_cache.json
+export OPENAI_API_KEY=...
+python examples/eval_llm.py --scenario signal_hunt --episodes 5 --provider openai-responses --mode text --model gpt-4o-mini --cache /tmp/syncorsink_cache.json
 ```
+
+LLM evaluation (executor planner, recommended for long-horizon coordination):
+
+```bash
+export OPENAI_API_KEY=...
+python examples/eval_llm.py --scenario signal_hunt --episodes 5 --provider openai-chat --mode text --planner executor --model gpt-4o-mini
+python examples/eval_llm.py --scenario pipeline_assembly --episodes 5 --provider openai-chat --mode text --planner executor --model gpt-4o-mini
+```
+
+Notes:
+- Keep `--planner action` as baseline for comparability.
+- Use `--planner executor` as an additional variant (`signal_hunt_executor`, `pipeline_executor`) for A/B evaluation.
 
 Unified eval spec:
 
@@ -149,6 +171,10 @@ Benchmark presets:
   - `pipeline_hard_coord`: region-only comm baseline (intentionally hard)
   - `energy_easy_expert_comm`: centralized energy planner with comm (easy preset)
   - `signal_hunt_expert_comm`: centralized signal hunt planner with comm
+- `benchmarks/transformer_presets.json`
+  - `pipeline_comm_mat_easy`: DTDE Comm-MAT baseline on Pipeline Assembly
+  - `energy_comm_mat_easy`: DTDE Comm-MAT baseline on Energy Grid
+  - `signal_comm_mat_easy`: DTDE Comm-MAT baseline on Signal Hunt
 
 Expert planners:
 
@@ -243,11 +269,17 @@ obs, rewards, done, truncated, info = env.step(actions)
 Observations are dicts per agent with:
 - `local_grid`: local tile view
 - `inventory`: resource id held
+- `self_pos`: absolute `(x,y)` position
+- `local_resource_types`: local resource type ids
+- `local_node_types`: local node type ids
+- `local_node_energy`: local node energy values
 - `messages_tokens`: tokenized message inbox (padded)
 - `message_from`: sender ids
 - `goal_hint`: integer hint tokens (scenario-dependent)
+- `explored_mask`: per-agent explored map memory (`map_size x map_size`, if enabled)
+- `explored_age`: per-agent recency map (`map_size x map_size`, if enabled)
 
-For free-text communication, the text payload is passed through `action["message_text"]` and echoed in `info["messages_text"]`.
+For free-text communication, the text payload is passed through `action["message_text"]` and echoed in `info["messages_text"]` and `info["messages_with_sender"]`.
 
 ## Action Space
 
@@ -272,9 +304,15 @@ actions = {0: {"action": 5, "message_tokens": []}, 1: {"action": 4}}
 Each agent observation includes:
 - `local_grid`: `(2*radius+1, 2*radius+1)` grid of tile ids
 - `inventory`: `(1,)` integer item id
+- `self_pos`: `(2,)` absolute position
+- `local_resource_types`: `(2*radius+1, 2*radius+1)` resource type grid
+- `local_node_types`: `(2*radius+1, 2*radius+1)` node type grid
+- `local_node_energy`: `(2*radius+1, 2*radius+1)` node energy grid
 - `messages_tokens`: `(max_messages, comm_token_limit)` padded tokens
 - `message_from`: `(max_messages,)` sender ids
 - `goal_hint`: `(16,)` integer hint tokens
+- `explored_mask`: `(map_size, map_size)` explored memory (if enabled)
+- `explored_age`: `(map_size, map_size)` last-seen recency (if enabled)
 
 See `docs/design.md` for more detail.
 
@@ -287,6 +325,7 @@ For `fov_preset="medium"` (radius=3), `comm_token_limit=24`, `max_messages=8`:
 
 `messages_tokens` stores **received** messages; `message_from` aligns with it to identify the sender.
 If `obs_onehot=True`, `local_grid` becomes one‑hot channels `(C,H,W)` instead of integer ids.
+Exploration memory can be configured with `obs_exploration_memory` and `obs_exploration_age`.
 
 ## Metrics
 
@@ -318,19 +357,27 @@ Checkpointing:
 
 ### LLM / Tool‑Calling Policies
 
-LLM evaluation runner (stub):
+LLM evaluation runner:
 
 ```bash
-python examples/eval_llm.py --scenario signal_hunt --episodes 5 --wandb --wandb-project syncorsink
+python examples/eval_llm.py --scenario signal_hunt --episodes 5 --provider dummy --mode tools
 ```
 
-Tool‑calling stub:
+OpenAI tool-calling:
 
 ```bash
-python examples/llm_tool_stub.py
+export OPENAI_API_KEY=...
+python examples/eval_llm.py --scenario signal_hunt --episodes 5 --provider openai-chat --mode tools --model gpt-4o-mini
 ```
 
-For OpenAI tool calling schemas, see `syncorsink/llm/tools.py`.
+OpenAI text mode:
+
+```bash
+export OPENAI_API_KEY=...
+python examples/eval_llm.py --scenario signal_hunt --episodes 5 --provider openai-responses --mode text --model gpt-4o-mini
+```
+
+For tool schema details, see `syncorsink/llm/tools.py`.
 
 ### Policy Architecture Selection
 
