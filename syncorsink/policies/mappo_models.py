@@ -7,6 +7,14 @@ from syncorsink.models import MLPEncoder, TransformerEncoder, PolicyHead, ValueH
 
 
 class MAPPOActor(nn.Module):
+    """Actor network for MAPPO with optional communication heads.
+
+    Outputs action logits and, when comm is enabled, three additional heads:
+      - send gate (Bernoulli): whether to send a message
+      - token logits (Categorical per position): content of each token slot
+      - length logits (Categorical): how many tokens to actually send
+    """
+
     def __init__(
         self,
         obs_dim: int,
@@ -32,23 +40,37 @@ class MAPPOActor(nn.Module):
             self.comm_tokens = nn.Linear(hidden_dim, comm_token_limit * comm_vocab_size)
             self.comm_len = nn.Linear(hidden_dim, comm_token_limit + 1)
 
-    def forward(self, obs):
+    def forward(self, obs: torch.Tensor):
         h = self.encoder(obs)
         logits = self.policy(h)
         if not self.comm_enabled:
             return logits
         send_logits = self.comm_send(h)
-        token_logits = self.comm_tokens(h).view(-1, self.comm_token_limit, self.comm_vocab_size)
+        token_logits = self.comm_tokens(h).view(
+            h.shape[0], self.comm_token_limit, self.comm_vocab_size
+        )
         len_logits = self.comm_len(h)
         return logits, send_logits, token_logits, len_logits
 
 
-class MAPPOCentralValue(nn.Module):
-    def __init__(self, joint_obs_dim: int, hidden_dim: int = 128):
+class MAPPOCritic(nn.Module):
+    """Value network for MAPPO supporting both DTDE and CTDE modes.
+
+    - critic_mode="local": input is a single agent's observation (DTDE).
+    - critic_mode="central": input is concatenated observations of all agents (CTDE).
+
+    The caller is responsible for passing the right input dimension and tensors.
+    """
+
+    def __init__(self, input_dim: int, hidden_dim: int = 128):
         super().__init__()
-        self.encoder = MLPEncoder(joint_obs_dim, hidden_dim=hidden_dim, depth=2)
+        self.encoder = MLPEncoder(input_dim, hidden_dim=hidden_dim, depth=2)
         self.value = ValueHead(hidden_dim)
 
-    def forward(self, obs):
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
         h = self.encoder(obs)
         return self.value(h)
+
+
+# Keep the old name as an alias for backward compatibility with checkpoints
+MAPPOCentralValue = MAPPOCritic
