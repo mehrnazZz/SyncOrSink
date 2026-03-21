@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-cd /workspace/SyncOrSink
+cd "$(dirname "$0")/.."
 mkdir -p checkpoints
 
 echo "=== Launching MAPPO training runs in tmux ==="
