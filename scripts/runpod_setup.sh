@@ -3,12 +3,7 @@ set -e
 
 echo "=== SyncOrSink RunPod Setup ==="
 
-# Clone repo
-cd /workspace
-if [ ! -d "SyncOrSink" ]; then
-    git clone https://github.com/mehrnazZz/SyncOrSink.git
-fi
-cd SyncOrSink
+cd "$(dirname "$0")/.."
 
 # Install
 pip install -e ".[train]" 2>&1 | tail -3
