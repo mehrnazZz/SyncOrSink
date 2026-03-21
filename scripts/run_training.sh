@@ -36,13 +36,30 @@ nohup python examples/mappo_train.py \
   > logs/ctde.log 2>&1 &
 CTDE_PID=$!
 
+# Session 3: Comm-MAT transformer baseline
+echo "Starting Comm-MAT run (background)..."
+nohup python examples/comm_mat_train.py \
+  --scenario signal_hunt --map-size 8 --agents 2 --fov-preset easy \
+  --comm-token-limit 8 --comm-vocab-size 32 \
+  --signal-shaping --signal-shaping-scale 0.01 \
+  --updates 300 --rollout-steps 512 --epochs 4 --minibatch 256 \
+  --anneal-lr --lr 3e-4 \
+  --hidden-dim 128 --n-heads 4 --n-layers 2 \
+  --eval-every 10 --eval-episodes 5 \
+  --save checkpoints/comm_mat_signal_easy.pt --save-every 50 \
+  --wandb --wandb-project syncorsink --wandb-run comm-mat-signal-easy \
+  > logs/comm_mat.log 2>&1 &
+COMM_MAT_PID=$!
+
 echo ""
-echo "Both runs launched!"
-echo "  DTDE PID: $DTDE_PID"
-echo "  CTDE PID: $CTDE_PID"
+echo "All runs launched!"
+echo "  MAPPO DTDE PID:  $DTDE_PID"
+echo "  MAPPO CTDE PID:  $CTDE_PID"
+echo "  Comm-MAT PID:    $COMM_MAT_PID"
 echo ""
 echo "Monitor:"
-echo "  tail -f logs/dtde.log  # follow DTDE logs"
-echo "  tail -f logs/ctde.log  # follow CTDE logs"
+echo "  tail -f logs/dtde.log      # MAPPO DTDE"
+echo "  tail -f logs/ctde.log      # MAPPO CTDE"
+echo "  tail -f logs/comm_mat.log  # Comm-MAT"
 echo ""
 echo "Or check wandb dashboard at https://wandb.ai"
