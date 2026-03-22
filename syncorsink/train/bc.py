@@ -86,6 +86,8 @@ def collect_demos(cfg: BCConfig):
         fov_preset=cfg.fov_preset,
         max_steps=cfg.max_steps,
         energy_preset=cfg.energy_preset,
+        comm_token_limit=cfg.comm_token_limit,
+        token_vocab_size=cfg.comm_vocab_size,
     )
     env = SyncOrSinkEnv(env_cfg)
 
@@ -527,6 +529,8 @@ def train_bc_dagger(cfg: BCConfig):
         fov_preset=cfg.fov_preset,
         max_steps=cfg.max_steps,
         energy_preset=cfg.energy_preset,
+        comm_token_limit=cfg.comm_token_limit,
+        token_vocab_size=cfg.comm_vocab_size,
     )
     env = SyncOrSinkEnv(env_cfg)
 
@@ -778,6 +782,8 @@ def main():
     collect_p.add_argument("--episodes", type=int, default=100)
     collect_p.add_argument("--oracle", default="oracle_strong",
                            choices=["oracle", "oracle_strong", "oracle_comm", "oracle_strong_comm"])
+    collect_p.add_argument("--comm-token-limit", type=int, default=8)
+    collect_p.add_argument("--comm-vocab-size", type=int, default=32)
     collect_p.add_argument("--output", default="demos/signal_hunt_oracle.npz")
 
     # --- collect-llm ---
@@ -869,6 +875,8 @@ def main():
             energy_preset=args.energy_preset,
             demo_episodes=args.episodes,
             oracle_type=args.oracle,
+            comm_token_limit=args.comm_token_limit,
+            comm_vocab_size=args.comm_vocab_size,
             demo_path=args.output,
         )
         collect_demos(cfg)

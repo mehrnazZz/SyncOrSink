@@ -18,16 +18,19 @@ echo "=== Collecting oracle+comm demos ==="
 python examples/bc_train.py collect \
   --scenario signal_hunt --map-size 8 --agents 2 --fov-preset easy \
   --episodes 100 --oracle oracle_strong_comm \
+  --comm-token-limit 8 --comm-vocab-size 32 \
   --output demos/signal_hunt_oracle_comm_v2.npz
 
 python examples/bc_train.py collect \
   --scenario energy_grid --map-size 8 --agents 3 --fov-preset easy \
   --energy-preset easy --episodes 100 --oracle oracle_strong_comm \
+  --comm-token-limit 8 --comm-vocab-size 32 \
   --output demos/energy_grid_oracle_comm_v2.npz
 
 python examples/bc_train.py collect \
   --scenario pipeline_assembly --map-size 8 --agents 3 --fov-preset easy \
   --episodes 200 --oracle oracle_strong_comm \
+  --comm-token-limit 8 --comm-vocab-size 32 \
   --output demos/pipeline_assembly_oracle_comm_v2.npz
 
 # -----------------------------------------------------------------------
