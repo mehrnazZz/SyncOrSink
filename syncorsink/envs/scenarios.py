@@ -626,18 +626,38 @@ class SignalHunt(ScenarioBase):
                 rewards[agent_id] += (last_dist - dist) * env.config.signal_shaping_scale
                 shaping["last_dist"][agent_id] = dist
 
-            # --- Part 1a: Partial scan bonus ---
-            # Reward an agent for interacting on the true target, even if no partner has scanned yet.
-            # This teaches "go to target AND interact" rather than just hovering nearby.
-            if env.config.signal_scan_bonus > 0:
-                for agent_id, action in actions.items():
-                    if action.get("action") == env.ACTION_INTERACT and env.agent_positions[agent_id] == target:
-                        rewards[agent_id] += env.config.signal_scan_bonus
+            # --- Part 1a: Scan bonuses (solo + joint near-miss) ---
+            # Solo scan: small bonus for interacting on target (teaches "go + interact").
+            # Joint scan: large bonus when a partner ALSO scanned within the window.
+            # The joint bonus is the key gradient toward synchronized behavior.
+            scan_log = env.scenario_state.data["scan_log"]
+            window = env.scenario_state.data["scan_window"]
+            scanners_this_step = set()
+            for agent_id, action in actions.items():
+                if action.get("action") == env.ACTION_INTERACT and env.agent_positions[agent_id] == target:
+                    scanners_this_step.add(agent_id)
+
+            if scanners_this_step:
+                # Check how many agents have scanned recently (including this step)
+                recent_scanners = {a for a, t in scan_log.items() if env.steps - t <= window}
+                recent_scanners |= scanners_this_step
+
+                if len(recent_scanners) >= 2 and env.config.signal_joint_scan_bonus > 0:
+                    # Near-miss: 2+ agents scanned within the window but didn't
+                    # get the full success (which would have returned above).
+                    # This is the critical gradient toward synchronized scanning.
+                    for aid in recent_scanners:
+                        rewards[aid] += env.config.signal_joint_scan_bonus
+                elif env.config.signal_scan_bonus > 0:
+                    # Solo scan: only give the small bonus if no joint bonus was triggered.
+                    # This prevents farming the solo bonus when joint is available.
+                    for aid in scanners_this_step:
+                        rewards[aid] += env.config.signal_scan_bonus
 
             # --- Part 1b: Co-location bonus ---
-            # Reward all agents when 2+ agents are within colocation_radius of the target simultaneously.
-            # This shapes toward the joint state needed for the synchronized scan.
-            if env.config.signal_colocation_bonus > 0:
+            # Only fires when 2+ agents are near the target AND at least one interacted.
+            # Pure proximity without action is not rewarded (prevents hovering).
+            if env.config.signal_colocation_bonus > 0 and scanners_this_step:
                 radius = env.config.signal_colocation_radius
                 near_target = [
                     aid for aid in range(env.num_agents)

@@ -38,6 +38,7 @@ class CommMATTrainConfig:
     signal_shaping: bool = False
     signal_shaping_scale: float = 0.01
     signal_scan_bonus: float = 0.0
+    signal_joint_scan_bonus: float = 0.0
     signal_colocation_bonus: float = 0.0
     signal_colocation_radius: int = 2
     signal_comm_utility: float = 0.0
@@ -228,6 +229,7 @@ def train_comm_mat(cfg: CommMATTrainConfig):
         signal_shaping=cfg.signal_shaping,
         signal_shaping_scale=cfg.signal_shaping_scale,
         signal_scan_bonus=cfg.signal_scan_bonus,
+        signal_joint_scan_bonus=cfg.signal_joint_scan_bonus,
         signal_colocation_bonus=cfg.signal_colocation_bonus,
         signal_colocation_radius=cfg.signal_colocation_radius,
         signal_comm_utility=cfg.signal_comm_utility,
@@ -575,6 +577,7 @@ def main():
     p.add_argument("--signal-shaping", action="store_true")
     p.add_argument("--signal-shaping-scale", type=float, default=0.01)
     p.add_argument("--signal-scan-bonus", type=float, default=0.0)
+    p.add_argument("--signal-joint-scan-bonus", type=float, default=0.0)
     p.add_argument("--signal-colocation-bonus", type=float, default=0.0)
     p.add_argument("--signal-colocation-radius", type=int, default=2)
     p.add_argument("--signal-comm-utility", type=float, default=0.0)
@@ -629,6 +632,7 @@ def main():
         signal_shaping=args.signal_shaping,
         signal_shaping_scale=args.signal_shaping_scale,
         signal_scan_bonus=args.signal_scan_bonus,
+        signal_joint_scan_bonus=args.signal_joint_scan_bonus,
         signal_colocation_bonus=args.signal_colocation_bonus,
         signal_colocation_radius=args.signal_colocation_radius,
         signal_comm_utility=args.signal_comm_utility,

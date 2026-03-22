@@ -39,6 +39,7 @@ class MAPPOConfig:
     signal_shaping: bool = False
     signal_shaping_scale: float = 0.01
     signal_scan_bonus: float = 0.0
+    signal_joint_scan_bonus: float = 0.0
     signal_colocation_bonus: float = 0.0
     signal_colocation_radius: int = 2
     signal_comm_utility: float = 0.0
@@ -244,6 +245,7 @@ def train_mappo(cfg: MAPPOConfig):
         signal_shaping=cfg.signal_shaping,
         signal_shaping_scale=cfg.signal_shaping_scale,
         signal_scan_bonus=cfg.signal_scan_bonus,
+        signal_joint_scan_bonus=cfg.signal_joint_scan_bonus,
         signal_colocation_bonus=cfg.signal_colocation_bonus,
         signal_colocation_radius=cfg.signal_colocation_radius,
         signal_comm_utility=cfg.signal_comm_utility,
@@ -708,9 +710,11 @@ def main():
     parser.add_argument("--signal-shaping", action="store_true")
     parser.add_argument("--signal-shaping-scale", type=float, default=0.01)
     parser.add_argument("--signal-scan-bonus", type=float, default=0.0,
-                        help="Bonus for interacting on true target (even without partner)")
+                        help="Small bonus for solo scan on target")
+    parser.add_argument("--signal-joint-scan-bonus", type=float, default=0.0,
+                        help="Large bonus when partner also scanned within window (near-miss)")
     parser.add_argument("--signal-colocation-bonus", type=float, default=0.0,
-                        help="Bonus when 2+ agents near target simultaneously")
+                        help="Bonus when 2+ agents near target and at least one interacts")
     parser.add_argument("--signal-colocation-radius", type=int, default=2)
     parser.add_argument("--signal-comm-utility", type=float, default=0.0,
                         help="Bonus for sending message that precedes teammate's useful action")
@@ -765,6 +769,7 @@ def main():
         signal_shaping=args.signal_shaping,
         signal_shaping_scale=args.signal_shaping_scale,
         signal_scan_bonus=args.signal_scan_bonus,
+        signal_joint_scan_bonus=args.signal_joint_scan_bonus,
         signal_colocation_bonus=args.signal_colocation_bonus,
         signal_colocation_radius=args.signal_colocation_radius,
         signal_comm_utility=args.signal_comm_utility,
