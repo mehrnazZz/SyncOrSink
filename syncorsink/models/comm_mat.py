@@ -19,6 +19,7 @@ class CommMATConfig:
     n_heads: int = 4
     n_layers: int = 2
     dropout: float = 0.1
+    comm_disabled: bool = False  # ablation: zero out message inputs, disable comm heads
 
 
 class CommMATModel(nn.Module):
@@ -89,11 +90,15 @@ class CommMATModel(nn.Module):
         obs_tok = self.tile_embed(safe_grid.view(b, -1))  # (B, H*W, D)
 
         # Per-message token: average embedded message tokens + sender embedding.
-        safe_recv = recv_tokens.long().clamp(min=0, max=self.cfg.comm_vocab_size - 1)
-        msg_emb = self.comm_token_embed(safe_recv)  # (B, M, L, D)
-        msg_tok = msg_emb.mean(dim=2)  # (B, M, D)
-        sender_ids = recv_from.long().clamp(min=-1, max=self.cfg.max_agents) + 1
-        msg_tok = msg_tok + self.sender_embed(sender_ids)
+        if self.cfg.comm_disabled:
+            # Ablation: zero out message tokens so transformer sees no comm input
+            msg_tok = torch.zeros(b, self.cfg.max_messages, h, device=grid_ids.device)
+        else:
+            safe_recv = recv_tokens.long().clamp(min=0, max=self.cfg.comm_vocab_size - 1)
+            msg_emb = self.comm_token_embed(safe_recv)  # (B, M, L, D)
+            msg_tok = msg_emb.mean(dim=2)  # (B, M, D)
+            sender_ids = recv_from.long().clamp(min=-1, max=self.cfg.max_agents) + 1
+            msg_tok = msg_tok + self.sender_embed(sender_ids)
 
         self_vec = torch.cat([inventory.float(), self_pos.float()], dim=-1)  # (B,3)
         self_tok = self.self_proj(self_vec).unsqueeze(1)  # (B,1,D)

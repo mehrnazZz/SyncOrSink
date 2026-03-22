@@ -60,6 +60,7 @@ class CommMATTrainConfig:
     n_heads: int = 4
     n_layers: int = 2
     goal_hint_dim: int = 32
+    comm_disabled: bool = False  # ablation: transformer backbone without communication
     # eval
     send_threshold: float = 0.5
     deterministic_eval: bool = True
@@ -187,6 +188,7 @@ def _build_model(env: SyncOrSinkEnv, cfg: CommMATTrainConfig) -> CommMATModel:
         hidden_dim=cfg.hidden_dim,
         n_heads=cfg.n_heads,
         n_layers=cfg.n_layers,
+        comm_disabled=cfg.comm_disabled,
     )
     return CommMATModel(model_cfg)
 
@@ -308,19 +310,24 @@ def train_comm_mat(cfg: CommMATTrainConfig):
             toks = tok_dist.sample()
 
             logp_action = action_dist.log_prob(acts)
-            logp_send = send_dist.log_prob(send)
-            token_mask = (
-                torch.arange(cfg.comm_token_limit, device=device)[None, :] < lens[:, None]
-            ).float()
-            logp_tokens = (tok_dist.log_prob(toks) * token_mask).sum(dim=-1)
-            logp_len = len_dist.log_prob(lens)
-            logp = logp_action + logp_send + (logp_len + logp_tokens) * send
+            if cfg.comm_disabled:
+                logp = logp_action
+            else:
+                logp_send = send_dist.log_prob(send)
+                token_mask = (
+                    torch.arange(cfg.comm_token_limit, device=device)[None, :] < lens[:, None]
+                ).float()
+                logp_tokens = (tok_dist.log_prob(toks) * token_mask).sum(dim=-1)
+                logp_len = len_dist.log_prob(lens)
+                logp = logp_action + logp_send + (logp_len + logp_tokens) * send
 
             # Build env actions
             actions = {}
             for i, aid in enumerate(sorted(obs.keys())):
                 action_hist[int(acts[i].item())] += 1
-                if int(send[i].item()) == 1 and int(lens[i].item()) > 0:
+                if cfg.comm_disabled:
+                    msg_tokens = []
+                elif int(send[i].item()) == 1 and int(lens[i].item()) > 0:
                     L = min(int(lens[i].item()), cfg.comm_token_limit)
                     msg_tokens = toks[i, :L].detach().cpu().tolist()
                 else:
@@ -425,13 +432,16 @@ def train_comm_mat(cfg: CommMATTrainConfig):
                 tok_dist = torch.distributions.Categorical(logits=out["msg_token_logits"])
 
                 new_logp_action = action_dist.log_prob(act_b[mb])
-                new_logp_send = send_dist.log_prob(send_b[mb])
-                t_mask = (
-                    torch.arange(cfg.comm_token_limit, device=device)[None, :] < len_b[mb][:, None]
-                ).float()
-                new_logp_tokens = (tok_dist.log_prob(tok_b[mb]) * t_mask).sum(dim=-1)
-                new_logp_len = len_dist.log_prob(len_b[mb])
-                new_logp = new_logp_action + new_logp_send + (new_logp_len + new_logp_tokens) * send_b[mb]
+                if cfg.comm_disabled:
+                    new_logp = new_logp_action
+                else:
+                    new_logp_send = send_dist.log_prob(send_b[mb])
+                    t_mask = (
+                        torch.arange(cfg.comm_token_limit, device=device)[None, :] < len_b[mb][:, None]
+                    ).float()
+                    new_logp_tokens = (tok_dist.log_prob(tok_b[mb]) * t_mask).sum(dim=-1)
+                    new_logp_len = len_dist.log_prob(len_b[mb])
+                    new_logp = new_logp_action + new_logp_send + (new_logp_len + new_logp_tokens) * send_b[mb]
 
                 entropy = (
                     action_dist.entropy().mean()
@@ -600,6 +610,8 @@ def main():
     p.add_argument("--n-layers", type=int, default=2)
     p.add_argument("--goal-hint-dim", type=int, default=32)
     p.add_argument("--send-threshold", type=float, default=0.5)
+    p.add_argument("--comm-disabled", action="store_true",
+                    help="Ablation: disable communication (transformer backbone only)")
     # device
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     # logging
@@ -653,6 +665,7 @@ def main():
         n_layers=args.n_layers,
         goal_hint_dim=args.goal_hint_dim,
         send_threshold=args.send_threshold,
+        comm_disabled=args.comm_disabled,
         device=args.device,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
