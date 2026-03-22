@@ -860,6 +860,9 @@ def main():
     reward_p.add_argument("--batch-size", type=int, default=256)
     reward_p.add_argument("--lr", type=float, default=1e-3)
     reward_p.add_argument("--hidden-dim", type=int, default=128)
+    reward_p.add_argument("--comm", action="store_true")
+    reward_p.add_argument("--comm-token-limit", type=int, default=8)
+    reward_p.add_argument("--comm-vocab-size", type=int, default=32)
     reward_p.add_argument("--device", default="auto")
     reward_p.add_argument("--save", default=None)
 
@@ -959,6 +962,9 @@ def main():
             batch_size=args.batch_size,
             lr=args.lr,
             hidden_dim=args.hidden_dim,
+            comm=args.comm,
+            comm_token_limit=args.comm_token_limit,
+            comm_vocab_size=args.comm_vocab_size,
             device=args.device,
             save=args.save,
         )
