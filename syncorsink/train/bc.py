@@ -677,7 +677,7 @@ def train_reward_model(cfg: BCConfig):
     device = resolve_device(cfg.device)
     print(f"Using device: {device}")
 
-    env_cfg = SyncOrSinkConfig(
+    env_kwargs = dict(
         scenario=cfg.scenario,
         map_size=cfg.map_size,
         num_agents=cfg.agents,
@@ -685,6 +685,11 @@ def train_reward_model(cfg: BCConfig):
         max_steps=cfg.max_steps,
         energy_preset=cfg.energy_preset,
     )
+    if cfg.comm:
+        env_kwargs["comm_token_limit"] = cfg.comm_token_limit
+        env_kwargs["token_vocab_size"] = cfg.comm_vocab_size
+        env_kwargs["max_messages"] = 8
+    env_cfg = SyncOrSinkConfig(**env_kwargs)
     env = SyncOrSinkEnv(env_cfg)
 
     oracle_map = {

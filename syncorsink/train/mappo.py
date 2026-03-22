@@ -61,6 +61,8 @@ class MAPPOConfig:
     backbone: str = "mlp"
     hidden_dim: int = 128
     critic_mode: str = "local"  # "local" (DTDE) or "central" (CTDE)
+    learned_reward: Optional[str] = None  # path to reward model checkpoint (replaces shaping)
+    learned_reward_weight: float = 1.0    # blend weight for learned reward
     device: str = "auto"  # "auto", "cpu", "cuda", "mps"
     # logging
     wandb: bool = False
@@ -263,6 +265,16 @@ def train_mappo(cfg: MAPPOConfig):
     obs_dim = flatten_obs(sample_obs[0]).shape[0]
     action_dim = 8
 
+    # --- Learned reward model (optional, replaces/augments hand-crafted shaping) ---
+    reward_model = None
+    if cfg.learned_reward:
+        from syncorsink.train.bc import RewardNet
+        ckpt = torch.load(cfg.learned_reward, map_location="cpu")
+        reward_model = RewardNet(ckpt["obs_dim"], hidden_dim=ckpt["hidden_dim"]).to(device)
+        reward_model.load_state_dict(ckpt["model"])
+        reward_model.eval()
+        print(f"Loaded learned reward model from {cfg.learned_reward}")
+
     # --- Build actors ---
     actor_kwargs = dict(
         obs_dim=obs_dim,
@@ -426,6 +438,27 @@ def train_mappo(cfg: MAPPOConfig):
                 action_hist[a] += 1
             if "comm_tokens" in info:
                 ep_comm_tokens += sum(info["comm_tokens"].values())
+
+            # Augment rewards with learned reward model if available
+            if reward_model is not None:
+                with torch.no_grad():
+                    # Rebuild obs without comm-dependent fields to match reward model's obs_dim
+                    reward_obs = torch.tensor(
+                        build_batch_obs(obs, N), dtype=torch.float32, device=device
+                    )
+                    # Truncate or pad to match reward model's expected input dim
+                    rm_dim = reward_model.net[0].in_features - 16  # subtract action embed dim
+                    if reward_obs.shape[1] > rm_dim:
+                        reward_obs = reward_obs[:, :rm_dim]
+                    elif reward_obs.shape[1] < rm_dim:
+                        pad = torch.zeros(N, rm_dim - reward_obs.shape[1], device=device)
+                        reward_obs = torch.cat([reward_obs, pad], dim=1)
+                    learned_r = reward_model(
+                        reward_obs,
+                        acts.to(device) if acts.device != device else acts,
+                    ).cpu()
+                for i in range(N):
+                    rewards[i] += cfg.learned_reward_weight * learned_r[i].item()
 
             # Store to buffers (keep on CPU to avoid GPU memory pressure during rollout)
             obs_buf.append(obs_tensor.cpu())
@@ -739,6 +772,10 @@ def main():
                         help="local=DTDE (default), central=CTDE")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"],
                         help="Device for training (default: auto-detect)")
+    parser.add_argument("--learned-reward", default=None,
+                        help="Path to learned reward model checkpoint (replaces/augments shaping)")
+    parser.add_argument("--learned-reward-weight", type=float, default=1.0,
+                        help="Weight for learned reward signal")
     # logging
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", default="syncorsink")
@@ -790,6 +827,8 @@ def main():
         backbone=args.backbone,
         hidden_dim=args.hidden_dim,
         critic_mode=args.critic_mode,
+        learned_reward=args.learned_reward,
+        learned_reward_weight=args.learned_reward_weight,
         device=args.device,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
