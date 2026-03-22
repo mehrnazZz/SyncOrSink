@@ -924,17 +924,54 @@ def default_prompt(obs: dict, info: dict, agent_id: int, state: dict | None = No
     scenario = info.get("scenario", "unknown")
     prompt = _common_prompt_header(agent_obs, info, agent_id, state)
 
-    if "goal_hint" in agent_obs:
-        hint_tokens = [int(v) for v in agent_obs["goal_hint"].tolist() if int(v) >= 0]
-        if hint_tokens:
-            prompt.append("Structured goal hint tokens: " + " ".join(str(v) for v in hint_tokens))
-
     if scenario == "pipeline_assembly":
         prompt.append("Scenario: pipeline_assembly. Tiles: .=empty #=wall R=resource S=station D=door ?=unknown.")
-        prompt.append("Goal: complete all pipeline stages — pickup required resources, deliver to stations (in dependency order), coordinate sync interactions.")
+        prompt.append("Goal: complete ALL pipeline stages. Each stage needs specific resource types delivered to its station.")
+
+        # Decode goal hint tokens into readable stage descriptions
+        if "goal_hint" in agent_obs:
+            hint_tokens = [int(v) for v in agent_obs["goal_hint"].tolist()]
+            # Format: [stage, station_x, station_y, num_req, req1, req2, num_deps, dep1, sync]
+            i = 0
+            stages_known = []
+            while i + 6 <= len(hint_tokens):
+                stage_id = hint_tokens[i]
+                if stage_id < 0:
+                    break  # padding reached
+                sx, sy = hint_tokens[i + 1], hint_tokens[i + 2]
+                num_req = hint_tokens[i + 3]
+                req1 = hint_tokens[i + 4] if hint_tokens[i + 4] >= 0 else None
+                req2 = hint_tokens[i + 5] if i + 5 < len(hint_tokens) and hint_tokens[i + 5] >= 0 else None
+                num_deps = hint_tokens[i + 6] if i + 6 < len(hint_tokens) else 0
+                dep1 = hint_tokens[i + 7] if i + 7 < len(hint_tokens) and hint_tokens[i + 7] >= 0 else None
+                sync = hint_tokens[i + 8] if i + 8 < len(hint_tokens) else 0
+                reqs = [r for r in [req1, req2] if r is not None][:num_req]
+                deps = [dep1] if dep1 is not None and num_deps > 0 else []
+                desc = f"Stage {stage_id}: station@({sx},{sy}), needs resource type(s) {reqs}"
+                if deps:
+                    desc += f", depends on stage {deps}"
+                if sync:
+                    desc += ", REQUIRES 2-agent sync interact"
+                stages_known.append(desc)
+                i += 9
+            if stages_known:
+                prompt.append("YOUR KNOWN STAGES (partial blueprint — teammates know other stages):")
+                for s in stages_known:
+                    prompt.append(f"  {s}")
+                prompt.append("IMPORTANT: You only see SOME stages. Teammates see others. Share your stage info via messages!")
+
+        prompt.append("Action policy:")
+        prompt.append("1) If carrying a needed resource type AND on the correct station → interact to deliver")
+        prompt.append("2) If carrying a resource → move to the station that needs it")
+        prompt.append("3) If not carrying AND on a needed resource → pickup")
+        prompt.append("4) If not carrying → move to a resource whose type matches a pending stage requirement")
+        prompt.append("5) If all your known stages are done → ask teammates what they need via message")
+        prompt.append("CRITICAL: interact at a station ONLY delivers if you carry the RIGHT resource type. Don't spam interact without the right resource!")
+        prompt.append("Communication: share your stage info (station location + required types) with teammates early.")
         if "local_resource_types" in agent_obs:
-            prompt.append("Resource types nearby (0=none):")
+            prompt.append("Resource types nearby (0=none, 10=wall/boundary):")
             prompt.append(int_grid_to_ascii(agent_obs["local_resource_types"]))
+        prompt.extend(semantic_prompt_lines(agent_id, state, "pipeline_assembly"))
     elif scenario == "energy_grid":
         prompt.append("Tiles: .=empty #=wall R=resource N=node D=door ?=unknown. Grid is local FOV, you're at center.")
         recharge_count = info.get("recharge_count")
