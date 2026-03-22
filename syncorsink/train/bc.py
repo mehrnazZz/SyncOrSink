@@ -68,6 +68,7 @@ def collect_demos(cfg: BCConfig):
         energy_oracle, energy_oracle_strong,
         signal_hunt_oracle, signal_hunt_oracle_strong,
     )
+    from syncorsink.policies.comm_wrapper import wrap_oracle_with_comm
 
     env_cfg = SyncOrSinkConfig(
         scenario=cfg.scenario,
@@ -84,7 +85,10 @@ def collect_demos(cfg: BCConfig):
         "energy_grid": {"oracle": energy_oracle, "oracle_strong": energy_oracle_strong},
         "pipeline_assembly": {"oracle": pipeline_oracle, "oracle_strong": pipeline_oracle_strong},
     }
-    oracle_fn = oracle_map[cfg.scenario][cfg.oracle_type](env)
+    base_type = cfg.oracle_type.replace("_comm", "")
+    oracle_fn = oracle_map[cfg.scenario][base_type](env)
+    if cfg.oracle_type.endswith("_comm"):
+        oracle_fn = wrap_oracle_with_comm(oracle_fn, env)
 
     all_obs = []
     all_actions = []
@@ -158,6 +162,138 @@ def collect_demos(cfg: BCConfig):
     print(f"Saved {total_transitions} transitions from {success_count}/{cfg.demo_episodes} "
           f"successful episodes to {cfg.demo_path}")
     print(f"  obs shape: {obs_arr.shape}, action distribution: {np.bincount(act_arr, minlength=8)}")
+
+
+def collect_llm_demos(cfg: BCConfig, trace_path: str):
+    """Extract (obs, action, comm) demonstrations from LLM trace JSONL files.
+
+    Only keeps transitions from successful episodes. Replays the environment
+    to get matching observations since traces don't store raw obs arrays.
+    """
+    import json
+
+    env_cfg = SyncOrSinkConfig(
+        scenario=cfg.scenario,
+        map_size=cfg.map_size,
+        num_agents=cfg.agents,
+        fov_preset=cfg.fov_preset,
+        max_steps=cfg.max_steps,
+        energy_preset=cfg.energy_preset,
+        comm_mode="text",
+    )
+    env = SyncOrSinkEnv(env_cfg)
+
+    ACTION_MAP = {
+        "up": 0, "down": 1, "left": 2, "right": 3,
+        "stay": 4, "interact": 5, "pickup": 6, "drop": 7,
+    }
+
+    # Parse trace file — group by episode
+    episodes = {}
+    with open(trace_path, "r") as f:
+        for line in f:
+            row = json.loads(line)
+            ep = row["episode"]
+            episodes.setdefault(ep, []).append(row)
+
+    all_obs, all_actions, all_msgs = [], [], []
+    success_count = 0
+    total_transitions = 0
+
+    for ep_idx in sorted(episodes.keys()):
+        steps = episodes[ep_idx]
+        # Check if episode was successful
+        last_step = steps[-1]
+        if not last_step.get("done", False):
+            continue
+
+        # Replay environment to get observations
+        obs, info = env.reset(seed=ep_idx)
+        ep_obs, ep_actions, ep_msgs = [], [], []
+
+        for step_data in steps:
+            actions_raw = step_data.get("actions", {})
+
+            for aid in range(env.num_agents):
+                aid_str = str(aid)
+                if aid_str not in actions_raw:
+                    continue
+                agent_action = actions_raw[aid_str]
+
+                # Parse action
+                act = agent_action.get("action", 4)
+                if isinstance(act, str):
+                    act = ACTION_MAP.get(act.lower(), 4)
+                act = int(act)
+
+                # Parse message tokens from text
+                msg_text = agent_action.get("message_text", "")
+                # For LLM demos, we store the text as token IDs (simple hash)
+                msg_tokens = []
+                if msg_text and isinstance(msg_text, str) and msg_text.strip():
+                    words = msg_text.strip().split()[:cfg.comm_token_limit]
+                    msg_tokens = [hash(w) % cfg.comm_vocab_size for w in words]
+
+                flat = flatten_obs(obs[aid])
+                ep_obs.append(flat)
+                ep_actions.append(act)
+                ep_msgs.append(msg_tokens)
+
+            # Step environment with parsed actions
+            env_actions = {}
+            for aid in range(env.num_agents):
+                aid_str = str(aid)
+                if aid_str in actions_raw:
+                    agent_action = actions_raw[aid_str]
+                    act = agent_action.get("action", 4)
+                    if isinstance(act, str):
+                        act = ACTION_MAP.get(act.lower(), 4)
+                    msg_text = agent_action.get("message_text", "")
+                    env_actions[aid] = {
+                        "action": int(act),
+                        "message_text": msg_text if msg_text else None,
+                    }
+                else:
+                    env_actions[aid] = {"action": 4}
+
+            obs, rewards, done, truncated, info = env.step(env_actions)
+            if done or truncated:
+                break
+
+        all_obs.extend(ep_obs)
+        all_actions.extend(ep_actions)
+        all_msgs.extend(ep_msgs)
+        success_count += 1
+        total_transitions += len(ep_obs)
+
+    if success_count == 0:
+        print("WARNING: no successful episodes found in trace!")
+        return
+
+    obs_arr = np.stack(all_obs)
+    act_arr = np.array(all_actions, dtype=np.int64)
+
+    padded_msgs = np.zeros((len(all_msgs), cfg.comm_token_limit), dtype=np.int64)
+    msg_lens = np.zeros(len(all_msgs), dtype=np.int64)
+    for i, tokens in enumerate(all_msgs):
+        L = min(len(tokens), cfg.comm_token_limit)
+        if L > 0:
+            padded_msgs[i, :L] = tokens[:L]
+        msg_lens[i] = L
+
+    os.makedirs(os.path.dirname(cfg.demo_path) or ".", exist_ok=True)
+    np.savez_compressed(
+        cfg.demo_path,
+        obs=obs_arr,
+        actions=act_arr,
+        msg_tokens=padded_msgs,
+        msg_lens=msg_lens,
+    )
+    print(f"Saved {total_transitions} transitions from {success_count} successful "
+          f"LLM episodes to {cfg.demo_path}")
+    print(f"  obs shape: {obs_arr.shape}, action distribution: {np.bincount(act_arr, minlength=8)}")
+    msg_rate = (msg_lens > 0).sum() / len(msg_lens) if len(msg_lens) > 0 else 0
+    print(f"  comm rate: {msg_rate:.2%} of transitions have messages")
 
 
 # ---------------------------------------------------------------------------
@@ -316,8 +452,22 @@ def main():
     collect_p.add_argument("--max-steps", type=int, default=300)
     collect_p.add_argument("--energy-preset", default="easy")
     collect_p.add_argument("--episodes", type=int, default=100)
-    collect_p.add_argument("--oracle", default="oracle_strong", choices=["oracle", "oracle_strong"])
+    collect_p.add_argument("--oracle", default="oracle_strong",
+                           choices=["oracle", "oracle_strong", "oracle_comm", "oracle_strong_comm"])
     collect_p.add_argument("--output", default="demos/signal_hunt_oracle.npz")
+
+    # --- collect-llm ---
+    collect_llm_p = sub.add_parser("collect-llm", help="Extract demonstrations from LLM trace JSONL")
+    collect_llm_p.add_argument("--trace", required=True, help="Path to trace JSONL file")
+    collect_llm_p.add_argument("--scenario", default="signal_hunt")
+    collect_llm_p.add_argument("--map-size", type=int, default=8)
+    collect_llm_p.add_argument("--agents", type=int, default=2)
+    collect_llm_p.add_argument("--fov-preset", default="easy")
+    collect_llm_p.add_argument("--max-steps", type=int, default=300)
+    collect_llm_p.add_argument("--energy-preset", default="easy")
+    collect_llm_p.add_argument("--comm-token-limit", type=int, default=8)
+    collect_llm_p.add_argument("--comm-vocab-size", type=int, default=32)
+    collect_llm_p.add_argument("--output", default="demos/signal_hunt_llm.npz")
 
     # --- train ---
     train_p = sub.add_parser("train", help="Train BC policy on demonstrations")
@@ -350,6 +500,20 @@ def main():
             demo_path=args.output,
         )
         collect_demos(cfg)
+
+    elif args.command == "collect-llm":
+        cfg = BCConfig(
+            scenario=args.scenario,
+            map_size=args.map_size,
+            agents=args.agents,
+            fov_preset=args.fov_preset,
+            max_steps=args.max_steps,
+            energy_preset=args.energy_preset,
+            comm_token_limit=args.comm_token_limit,
+            comm_vocab_size=args.comm_vocab_size,
+            demo_path=args.output,
+        )
+        collect_llm_demos(cfg, args.trace)
 
     elif args.command == "train":
         cfg = BCConfig(
