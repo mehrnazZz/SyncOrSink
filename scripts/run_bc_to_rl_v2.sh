@@ -64,6 +64,22 @@ nohup python examples/mappo_train.py \
   > logs/bc_rl_v2_signal.log 2>&1 &
 echo "  Signal PID: $!"
 
+# Energy grid: BC→RL v2 (KL + frozen encoder)
+nohup python examples/mappo_train.py \
+  --scenario energy_grid --map-size 8 --agents 3 --fov-preset easy \
+  --energy-shaping --energy-shaping-scale 0.1 \
+  --updates 3000 --rollout-steps 512 --epochs 2 --minibatch 256 \
+  --anneal-lr --lr 3e-5 \
+  --critic-mode local \
+  --bc-init checkpoints/bc_dagger_energy_grid.pt \
+  --bc-kl-coeff 0.5 \
+  --bc-freeze-encoder \
+  --eval-every 50 --eval-episodes 10 \
+  --save checkpoints/mappo_bc_rl_v2_energy.pt --save-every 200 \
+  --wandb --wandb-project syncorsink --wandb-run mappo-bc-rl-v2-energy \
+  > logs/bc_rl_v2_energy.log 2>&1 &
+echo "  Energy PID: $!"
+
 echo ""
 echo "v2 fixes from v1:"
 echo "  - LR: 1e-4 → 3e-5 (10x lower, gentler fine-tuning)"
@@ -75,3 +91,4 @@ echo ""
 echo "Monitor:"
 echo "  tail -f logs/bc_rl_v2_pipeline.log"
 echo "  tail -f logs/bc_rl_v2_signal.log"
+echo "  tail -f logs/bc_rl_v2_energy.log"
