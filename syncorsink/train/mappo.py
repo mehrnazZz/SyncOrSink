@@ -64,6 +64,8 @@ class MAPPOConfig:
     learned_reward: Optional[str] = None  # path to reward model checkpoint (replaces shaping)
     learned_reward_weight: float = 1.0    # blend weight for learned reward
     bc_init: Optional[str] = None         # path to BC checkpoint to initialize actor weights
+    bc_kl_coeff: float = 0.0              # KL penalty toward frozen BC policy (0 = disabled)
+    bc_freeze_encoder: bool = False       # freeze encoder layers, only fine-tune heads
     device: str = "auto"  # "auto", "cpu", "cuda", "mps"
     # logging
     wandb: bool = False
@@ -292,11 +294,11 @@ def train_mappo(cfg: MAPPOConfig):
         actors = [MAPPOActor(**actor_kwargs).to(device) for _ in range(N)]
 
     # --- BC warmstart: initialize actor weights from BC checkpoint ---
+    bc_ref_actors = None  # frozen BC policy for KL regularization
     if cfg.bc_init:
         bc_ckpt = torch.load(cfg.bc_init, map_location="cpu")
         bc_state = bc_ckpt["model"]
         for actor in actors:
-            # Load matching keys, skip mismatched ones
             actor_state = actor.state_dict()
             loaded = 0
             for key in bc_state:
@@ -305,6 +307,26 @@ def train_mappo(cfg: MAPPOConfig):
                     loaded += 1
             actor.load_state_dict(actor_state)
         print(f"BC warmstart: loaded {loaded}/{len(bc_state)} params from {cfg.bc_init}")
+
+        # Freeze encoder if requested (only fine-tune policy/comm heads)
+        if cfg.bc_freeze_encoder:
+            for actor in actors:
+                for name, param in actor.named_parameters():
+                    if "encoder" in name:
+                        param.requires_grad = False
+            print("BC warmstart: encoder layers frozen")
+
+        # Create frozen BC reference for KL penalty
+        if cfg.bc_kl_coeff > 0:
+            import copy
+            bc_ref_actors = []
+            for actor in actors:
+                ref = copy.deepcopy(actor)
+                ref.eval()
+                for p in ref.parameters():
+                    p.requires_grad = False
+                bc_ref_actors.append(ref)
+            print(f"BC warmstart: KL penalty enabled (coeff={cfg.bc_kl_coeff})")
 
     # --- Build critic ---
     if cfg.critic_mode == "central":
@@ -616,8 +638,24 @@ def train_mappo(cfg: MAPPOConfig):
                     (ret_b[mb] - v_clipped).pow(2),
                 ).mean()
 
+                # --- KL penalty toward frozen BC policy ---
+                kl_loss = torch.tensor(0.0, device=device)
+                if bc_ref_actors is not None and cfg.bc_kl_coeff > 0:
+                    with torch.no_grad():
+                        bc_out = _actor_forward_minibatch(
+                            bc_ref_actors, obs_b[mb], agent_ids[mb],
+                            cfg.shared_actor, cfg.comm,
+                        )
+                    if cfg.comm:
+                        bc_logits = bc_out[0]
+                    else:
+                        bc_logits = bc_out
+                    bc_probs = torch.softmax(bc_logits, dim=-1)
+                    current_logprobs = torch.log_softmax(logits, dim=-1)
+                    kl_loss = (bc_probs * (bc_probs.log() - current_logprobs)).sum(dim=-1).mean()
+
                 # --- Total loss ---
-                loss = policy_loss + value_loss - cfg.entropy * entropy
+                loss = policy_loss + value_loss - cfg.entropy * entropy + cfg.bc_kl_coeff * kl_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -794,6 +832,10 @@ def main():
                         help="Weight for learned reward signal")
     parser.add_argument("--bc-init", default=None,
                         help="Path to BC checkpoint to initialize actor weights (IL→RL warmstart)")
+    parser.add_argument("--bc-kl-coeff", type=float, default=0.0,
+                        help="KL penalty toward frozen BC policy (prevents RL from destroying BC init)")
+    parser.add_argument("--bc-freeze-encoder", action="store_true",
+                        help="Freeze encoder layers, only fine-tune heads")
     # logging
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", default="syncorsink")
@@ -848,6 +890,8 @@ def main():
         learned_reward=args.learned_reward,
         learned_reward_weight=args.learned_reward_weight,
         bc_init=args.bc_init,
+        bc_kl_coeff=args.bc_kl_coeff,
+        bc_freeze_encoder=args.bc_freeze_encoder,
         device=args.device,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
