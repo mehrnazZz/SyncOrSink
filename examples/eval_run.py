@@ -67,6 +67,10 @@ def _to_jsonable(value):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", default="signal_hunt")
+    parser.add_argument("--map-size", type=int, default=None)
+    parser.add_argument("--agents", type=int, default=None)
+    parser.add_argument("--fov-preset", default=None, choices=["easy", "medium", "hard"])
+    parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--split", default=None)
     parser.add_argument("--variant", type=int, default=0)
@@ -100,8 +104,10 @@ def main():
             "energy_planner_comm",
             "signal_hunt_planner_comm",
             "comm_mat",
+            "bc",
         ],
     )
+    parser.add_argument("--bc-ckpt", default=None, help="Path to BC model checkpoint")
     parser.add_argument("--energy-preset", default="hard", choices=["easy", "hard"])
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", default="syncorsink")
@@ -126,7 +132,7 @@ def main():
     parser.add_argument("--comm-mat-send-threshold", type=float, default=0.5)
     args = parser.parse_args()
 
-    config = SyncOrSinkConfig(
+    config_kwargs = dict(
         scenario=args.scenario,
         split=args.split,
         map_variant=args.variant,
@@ -136,6 +142,15 @@ def main():
         render_god_view=args.render_god_view,
         render_style=args.render_style,
     )
+    if args.map_size is not None:
+        config_kwargs["map_size"] = args.map_size
+    if args.agents is not None:
+        config_kwargs["num_agents"] = args.agents
+    if args.fov_preset is not None:
+        config_kwargs["fov_preset"] = args.fov_preset
+    if args.max_steps is not None:
+        config_kwargs["max_steps"] = args.max_steps
+    config = SyncOrSinkConfig(**config_kwargs)
     env = SyncOrSinkEnv(config, render_mode="rgb_array" if args.record_video else ("human" if args.render else None))
     trace_fh = open(args.trace_jsonl, "w", encoding="utf-8") if args.trace_jsonl else None
     trace_rows = []
@@ -214,6 +229,46 @@ def main():
             ),
             checkpoint=args.comm_mat_ckpt,
         )
+    elif args.policy == "bc":
+        import torch
+        from syncorsink.policies.mappo_models import MAPPOActor
+        from syncorsink.train.mappo import flatten_obs
+        if not args.bc_ckpt:
+            raise RuntimeError("--bc-ckpt required for bc policy")
+        ckpt = torch.load(args.bc_ckpt, map_location="cpu")
+        bc_model = MAPPOActor(
+            obs_dim=ckpt["obs_dim"],
+            action_dim=8,
+            hidden_dim=ckpt["hidden_dim"],
+            backbone="mlp",
+            comm_enabled=ckpt.get("comm", False),
+            comm_token_limit=ckpt.get("comm_token_limit", 0),
+            comm_vocab_size=ckpt.get("comm_vocab_size", 0),
+        )
+        bc_model.load_state_dict(ckpt["model"])
+        bc_model.eval()
+        def _bc_policy(obs, info, state):
+            import numpy as np
+            actions = {}
+            for aid in sorted(obs.keys()):
+                flat = torch.tensor(flatten_obs(obs[aid]), dtype=torch.float32).unsqueeze(0)
+                with torch.no_grad():
+                    out = bc_model(flat)
+                if ckpt.get("comm", False):
+                    logits, send_logits, token_logits, len_logits = out
+                    act = int(torch.argmax(logits, dim=-1).item())
+                    send = int(torch.sigmoid(send_logits.squeeze(-1)).item() > 0.5)
+                    if send:
+                        msg_len = int(torch.argmax(len_logits, dim=-1).item())
+                        msg_tokens = torch.argmax(token_logits, dim=-1)[0, :msg_len].tolist()
+                    else:
+                        msg_tokens = []
+                    actions[aid] = {"action": act, "message_tokens": msg_tokens}
+                else:
+                    act = int(torch.argmax(out, dim=-1).item())
+                    actions[aid] = {"action": act, "message_tokens": []}
+            return actions
+        policy = _bc_policy
     else:
         if args.scenario == "pipeline_assembly":
             policy = pipeline_oracle(env)
