@@ -59,6 +59,10 @@ class SyncOrSinkConfig:
     # signal hunt shaping
     signal_shaping: bool = False
     signal_shaping_scale: float = 0.01
+    signal_scan_bonus: float = 0.0       # Part 1: reward for interacting on true target (even without partner)
+    signal_colocation_bonus: float = 0.0  # Part 1: reward when 2+ agents within colocation_radius of target
+    signal_colocation_radius: int = 2     # manhattan distance threshold for co-location
+    signal_comm_utility: float = 0.0      # Part 2: reward for sending a message that precedes teammate's useful action
     # energy grid difficulty presets
     energy_preset: str = "hard"  # "easy" or "hard"
     # deterministic map control

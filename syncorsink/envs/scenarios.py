@@ -581,8 +581,12 @@ class SignalHunt(ScenarioBase):
             return rewards, True, {"events": events, "agent_clues": env.scenario_state.data["agent_clues"]}
 
         if env.config.signal_shaping:
-            shaping = env.scenario_state.data.setdefault("shaping", {"last_target": {}, "last_dist": {}})
+            shaping = env.scenario_state.data.setdefault("shaping", {
+                "last_target": {}, "last_dist": {},
+                "last_msgs": {},  # track last message step per agent for comm utility
+            })
 
+            # --- Proximity shaping (existing): guide agents toward clues then target ---
             def pick_target(agent_id: int):
                 has_clue = len(env.scenario_state.data.get("agent_clues", {}).get(agent_id, [])) > 0
                 if not has_clue:
@@ -610,6 +614,62 @@ class SignalHunt(ScenarioBase):
                 last_dist = shaping["last_dist"].get(agent_id, dist)
                 rewards[agent_id] += (last_dist - dist) * env.config.signal_shaping_scale
                 shaping["last_dist"][agent_id] = dist
+
+            # --- Part 1a: Partial scan bonus ---
+            # Reward an agent for interacting on the true target, even if no partner has scanned yet.
+            # This teaches "go to target AND interact" rather than just hovering nearby.
+            if env.config.signal_scan_bonus > 0:
+                for agent_id, action in actions.items():
+                    if action.get("action") == env.ACTION_INTERACT and env.agent_positions[agent_id] == target:
+                        rewards[agent_id] += env.config.signal_scan_bonus
+
+            # --- Part 1b: Co-location bonus ---
+            # Reward all agents when 2+ agents are within colocation_radius of the target simultaneously.
+            # This shapes toward the joint state needed for the synchronized scan.
+            if env.config.signal_colocation_bonus > 0:
+                radius = env.config.signal_colocation_radius
+                near_target = [
+                    aid for aid in range(env.num_agents)
+                    if manhattan(env.agent_positions[aid], target) <= radius
+                ]
+                if len(near_target) >= 2:
+                    for aid in near_target:
+                        rewards[aid] += env.config.signal_colocation_bonus
+
+            # --- Part 2: Communication utility bonus ---
+            # Reward agent A if: A sent a message in the last few steps, and a teammate
+            # subsequently moved closer to the target or interacted on it.
+            # This gives gradient signal to the comm channel by connecting messages to outcomes.
+            if env.config.signal_comm_utility > 0:
+                utility_window = 3  # how many steps back to credit a message
+                # Track who sent messages this step
+                for agent_id, action in actions.items():
+                    msg = action.get("message_tokens") or []
+                    if len(msg) > 0:
+                        shaping["last_msgs"][agent_id] = env.steps
+
+                # Check if any agent took a "useful" action (moved closer to target or interacted on it)
+                for agent_id in range(env.num_agents):
+                    pos = env.agent_positions[agent_id]
+                    did_useful = False
+                    # Useful: interacted on target
+                    if actions.get(agent_id, {}).get("action") == env.ACTION_INTERACT and pos == target:
+                        did_useful = True
+                    # Useful: moved closer to target than last step
+                    elif agent_id in shaping.get("last_dist", {}):
+                        curr_dist = manhattan(pos, target)
+                        prev_dist = shaping["last_dist"].get(agent_id, curr_dist)
+                        if curr_dist < prev_dist:
+                            did_useful = True
+
+                    if did_useful:
+                        # Credit teammates who sent messages recently
+                        for sender_id in range(env.num_agents):
+                            if sender_id == agent_id:
+                                continue
+                            last_msg_step = shaping["last_msgs"].get(sender_id, -999)
+                            if env.steps - last_msg_step <= utility_window:
+                                rewards[sender_id] += env.config.signal_comm_utility
 
         return rewards, False, {"events": events, "agent_clues": env.scenario_state.data["agent_clues"], "constraints": env.scenario_state.data["constraints"]}
 
