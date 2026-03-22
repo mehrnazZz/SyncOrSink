@@ -347,6 +347,17 @@ class EnergyGrid(ScenarioBase):
             for pos in env.scenario_state.data["node_energy"]:
                 env.scenario_state.data["node_energy"][pos] -= 1
 
+        # emit node_critical events when energy drops below sync threshold
+        sync_thresh = env.scenario_state.data.get("sync_threshold", 3)
+        for pos, energy in env.scenario_state.data["node_energy"].items():
+            if energy == sync_thresh or energy == sync_thresh // 2:
+                for agent_id in range(env.num_agents):
+                    events[agent_id].append({
+                        "event": "node_critical",
+                        "node": pos,
+                        "energy": energy,
+                    })
+
         # collect interactors per node
         node_interactors = {}
         for agent_id, action in actions.items():

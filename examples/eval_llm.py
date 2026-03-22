@@ -30,6 +30,23 @@ def dummy_tool_llm(prompt: str):
     ]
 
 
+_MAX_PROMPT_CHARS = 100_000
+
+
+def _sanitize_prompt(prompt: str) -> str:
+    """Remove control characters that break JSON serialization and cap length."""
+    # Strip characters outside printable ASCII + common whitespace that can
+    # cause ``json.dumps`` (and therefore the OpenAI HTTP body) to produce
+    # invalid JSON.  Keep newlines and tabs but remove NUL, BEL, etc.
+    cleaned = "".join(
+        ch for ch in prompt
+        if ch in ("\n", "\r", "\t") or (ord(ch) >= 0x20 and ord(ch) != 0x7F)
+    )
+    if len(cleaned) > _MAX_PROMPT_CHARS:
+        cleaned = cleaned[:_MAX_PROMPT_CHARS] + "\n[prompt truncated]"
+    return cleaned
+
+
 def build_text_llm_call(provider: str, client, model: str, planner_style: str = "action"):
     if provider == "openai-chat":
         system_text = (
@@ -42,17 +59,22 @@ def build_text_llm_call(provider: str, client, model: str, planner_style: str = 
                 "task should be one of pickup_visible_resource/deliver_to_matching_node/sync_interact/explore_sector/hold_position/respond_to_teammate."
             )
         def _call(prompt: str):
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": system_text,
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.0,
-            )
+            prompt = _sanitize_prompt(prompt)
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": system_text,
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.0,
+                )
+            except Exception as exc:
+                print(f"[eval_llm] OpenAI API error (len={len(prompt)}): {exc}")
+                return '{"action": "stay", "message_text": ""}'
             content = resp.choices[0].message.content
             if isinstance(content, str):
                 return content
@@ -66,7 +88,12 @@ def build_text_llm_call(provider: str, client, model: str, planner_style: str = 
         return _call
 
     def _call(prompt: str):
-        resp = client.responses.create(model=model, input=prompt)
+        prompt = _sanitize_prompt(prompt)
+        try:
+            resp = client.responses.create(model=model, input=prompt)
+        except Exception as exc:
+            print(f"[eval_llm] OpenAI API error (len={len(prompt)}): {exc}")
+            return '{"action": "stay", "message_text": ""}'
         if hasattr(resp, "output_text"):
             return str(resp.output_text)
         if hasattr(resp, "model_dump"):
@@ -92,7 +119,11 @@ def parallel_batch(prompts, llm_call, max_workers: int = 8):
         futures = {ex.submit(llm_call, p): i for i, p in enumerate(prompts)}
         for fut in as_completed(futures):
             idx = futures[fut]
-            results[idx] = fut.result()
+            try:
+                results[idx] = fut.result()
+            except Exception as exc:
+                print(f"[eval_llm] batch call {idx} failed: {exc}")
+                results[idx] = '{"action": "stay", "message_text": ""}'
     return results
 
 
@@ -122,6 +153,7 @@ def main():
     parser.add_argument("--comm-len-cost", type=float, default=None)
     parser.add_argument("--split", default=None)
     parser.add_argument("--variant", type=int, default=0)
+    parser.add_argument("--energy-preset", choices=["easy", "hard"], default="hard")
     parser.add_argument("--provider", choices=["dummy", "openai-chat", "openai-responses"], default="dummy")
     parser.add_argument("--mode", choices=["text", "tools"], default="tools")
     parser.add_argument("--planner", choices=["action", "executor"], default="action")
@@ -156,6 +188,7 @@ def main():
         map_variant=args.variant,
         comm_mode="text",
         track="dtde",
+        energy_preset=args.energy_preset,
         render_split_view=args.render_split_view,
         render_god_view=args.render_god_view,
         render_style=args.render_style,

@@ -725,6 +725,12 @@ def remember_sent_message(state: dict | None, agent_id: int, message_text: str |
     hist = runtime.setdefault(int(agent_id), {})
     sent = hist.setdefault("sent_events", {})
     sent[key] = int(state.get("step", 0))
+    # Prune stale entries to prevent unbounded growth.
+    if len(sent) > 50:
+        now = int(state.get("step", 0))
+        stale = [k for k, s in sent.items() if now - int(s) > 30]
+        for k in stale:
+            del sent[k]
 
 
 def _recently_sent_same_event(state: dict | None, agent_id: int, message_text: str | None, ttl: int = 6) -> bool:
@@ -878,29 +884,14 @@ def _common_prompt_header(agent_obs: dict, info: dict, agent_id: int, state: dic
 
     lead_line = "You are one agent in a cooperative multi-agent POMDP."
     if scenario == "energy_grid":
-        lead_line = (
-            "You are the planner for an agent in a cooperative multi-agent POMDP energy grid game. "
-            "The goal of the game is to find low-energy nodes and coordinate typed resource deliveries needed to recharge them before they run out."
-        )
+        lead_line = "You are an agent in a cooperative energy grid game. Find low-energy nodes and deliver typed resources to recharge them before they deplete."
 
     prompt = [
         lead_line,
-        "Return only JSON with keys: action, message_text, plan_actions.",
-        "JSON schema: {\"action\": int|name, \"message_text\": string, \"plan_actions\": [up to 5]}.",
-        "message_text is your decision variable for whether this agent should send a message to other agents this step.",
-        "Valid actions: up, down, left, right, stay, interact, pickup, drop.",
-        "You are the local planner for this agent. Decide from local observation, semantic memory, recent events, and teammate messages.",
-        "Keep communication concise and task-relevant.",
-        "Do not repeat the same message unless there is new information.",
-        "If the same movement fails repeatedly, pick a different direction.",
-        "Plan cooperatively: explore systematically, share important discoveries, and avoid duplicate work.",
-        "Use compact event messages: status=...|intent=...|target=...|why=... .",
-        f"Inventory: {inventory}",
-        f"Default assigned sector: {sector}",
-        f"Center tile: {center_tile_name} ({center_tile})",
-        "Allowed actions now: " + ", ".join(allowed_actions(agent_obs)),
-        f"Exploration coverage: {explore_ratio:.2f}",
-        f"Suggested unexplored direction: {frontier_dir}",
+        'Reply JSON: {"action": ACTION, "message_text": MSG, "plan_actions": [up to 5]}.',
+        "Actions: up/down/left/right/stay/interact/pickup/drop. Message only on new info. Compact format: status=...|intent=...|target=...|why=...",
+        f"Inv:{inventory} Sector:{sector} Center:{center_tile_name}({center_tile}) Explored:{explore_ratio:.0%} Frontier:{frontier_dir}",
+        "Allowed: " + ", ".join(allowed_actions(agent_obs)),
     ]
     if pos is not None:
         prompt.append(f"Self position (local map coords): ({int(pos[0])},{int(pos[1])})")
@@ -939,55 +930,20 @@ def default_prompt(obs: dict, info: dict, agent_id: int, state: dict | None = No
             prompt.append("Structured goal hint tokens: " + " ".join(str(v) for v in hint_tokens))
 
     if scenario == "pipeline_assembly":
-        prompt.append("You are the planner for one agent in Pipeline Assembly.")
-        prompt.append("Goal: finish all pipeline stages by collecting required resources and completing station interactions with dependencies.")
-        prompt.append("Map interpretation for this scenario:")
-        prompt.append("- local_grid is your local FOV window, agent at center.")
-        prompt.append("- '?' means currently unknown/not visible due to line-of-sight occlusion or bounds.")
-        prompt.append("- Tile legend used here: .=empty, #=wall, R=resource, S=station, D=door, ?=unknown.")
-        prompt.append("Scenario: pipeline_assembly (task planning with stage dependencies).")
+        prompt.append("Scenario: pipeline_assembly. Tiles: .=empty #=wall R=resource S=station D=door ?=unknown.")
+        prompt.append("Goal: complete all pipeline stages — pickup required resources, deliver to stations (in dependency order), coordinate sync interactions.")
         if "local_resource_types" in agent_obs:
-            prompt.append("Local resource types grid (0 means none):")
+            prompt.append("Resource types nearby (0=none):")
             prompt.append(int_grid_to_ascii(agent_obs["local_resource_types"]))
-        prompt.append("Plan: gather required resources, deliver at stations, coordinate sync interactions.")
-        prompt.append("Checklist: pickup required resources, move to station, interact at station, report stage progress once.")
     elif scenario == "energy_grid":
-        prompt.append("Map interpretation for this scenario:")
-        prompt.append("- local_grid is your local FOV window, agent at center.")
-        prompt.append("- '?' means currently unknown/not visible due to line-of-sight occlusion or bounds.")
-        prompt.append("- Tile legend used here: .=empty, #=wall, R=resource, N=node, D=door, ?=unknown.")
-        prompt.append("Scenario: energy_grid.")
+        prompt.append("Tiles: .=empty #=wall R=resource N=node D=door ?=unknown. Grid is local FOV, you're at center.")
         recharge_count = info.get("recharge_count")
         success_recharges = info.get("success_recharges")
-        depleted = info.get("depleted")
         if recharge_count is not None and success_recharges is not None:
-            prompt.append(f"Mission progress: recharges={int(recharge_count)}/{int(success_recharges)}")
-        if depleted is not None:
-            prompt.append(f"Depleted flag: {bool(depleted)}")
-        prompt.append("Action policy (apply in order):")
-        prompt.append("1) If carrying type t and on node type t -> interact now.")
-        prompt.append("2) If carrying type t and a CRITICAL/LOW node type t is known -> move to it.")
-        prompt.append("3) If carrying type t and no urgent node visible -> move to nearest known matching node.")
-        prompt.append("4) If not carrying and on resource -> pickup now.")
-        prompt.append("5) If not carrying -> move to nearest known useful resource (prefer type needed by low-energy nodes).")
-        prompt.append("6) If no useful target known -> explore sector systematically until you discover nodes/resources.")
-        prompt.append("If no valid target is known (visible or in semantic memory), explore your sector systematically until you discover nodes/resources.")
-        prompt.append("Exploration policy: sweep in one direction for multiple steps before turning; announce only new useful discoveries.")
-        prompt.append("Environment dynamics:")
-        prompt.append("- Nodes lose energy over time (periodic drain).")
-        prompt.append("- A valid typed delivery recharges the node immediately on that step.")
-        prompt.append("- When a node is low energy, recharge may require synchronized interact by 2 agents.")
-        prompt.append("- Episode fails if any node depletes before success.")
-        prompt.append("- Episode succeeds when required recharge count is reached.")
-        prompt.append("Emergency policy: CRITICAL node energy <=2, LOW <=5. Critical nodes take priority over exploration.")
-        prompt.append("Stability policy: keep current commitment for multiple steps; switch only if blocked repeatedly or a new CRITICAL node appears.")
-        prompt.append("Communication policy (message only on important change/event):")
-        prompt.append("- New node discovered: status=node|target=node:t@x,y|why=found")
-        prompt.append("- New resource discovered: status=resource|target=type:t@x,y|why=found")
-        prompt.append("- Starting new task: status=start|intent=...|target=...|why=assignment")
-        prompt.append("- Completion/update: status=done|target=...|why=recharged")
-        prompt.append("- Do not rebroadcast same status+target unless changed or stale by age.")
-        prompt.append("Deduplicate with teammate plans: if a teammate already started a target, pick another high-value target.")
+            prompt.append(f"Progress: {int(recharge_count)}/{int(success_recharges)} recharges")
+        prompt.append("Priority: 1)On matching node→interact 2)Carrying→go to matching node(CRITICAL first) 3)On resource→pickup 4)Go to useful resource 5)Explore")
+        prompt.append("Dynamics: nodes drain each step. Low-energy nodes need 2-agent sync interact. Any node→0 = fail. CRITICAL≤2, LOW≤5.")
+        prompt.append("Msg only on: new node/resource found, task start/done, CRITICAL alert.")
         prompt.extend(energy_local_summary(agent_obs))
         prompt.extend(semantic_prompt_lines(agent_id, state, "energy_grid"))
     elif scenario == "signal_hunt":
@@ -2109,10 +2065,10 @@ class LLMExecutorPolicy(LLMPolicy):
                     if ev_name not in {"delivered", "sync_complete"}:
                         continue
                 elif scenario == "energy_grid":
-                    if ev_name not in {"recharged"}:
+                    if ev_name not in {"recharged", "node_depleted", "node_critical"}:
                         continue
-                # Keep signal-hunt event replanning responsive; others stay conservative.
-                eff_cooldown = 1 if scenario == "signal_hunt" else cooldown
+                # Keep signal-hunt and energy-grid event replanning responsive.
+                eff_cooldown = 1 if scenario in {"signal_hunt", "energy_grid"} else cooldown
                 if (now - last_ev_step) < eff_cooldown:
                     continue
                 hist["last_event_replan_step"] = now
@@ -2193,6 +2149,8 @@ class LLMExecutorPolicy(LLMPolicy):
             timeout_limit = 8
             if scenario == "pipeline_assembly" and current_task in {"deliver_to_matching_node", "sync_interact"}:
                 timeout_limit = 14
+            elif scenario == "energy_grid":
+                timeout_limit = 5  # Energy drains every step; replan faster
             if int(state.get("step", 0)) - int(ctx.get("step", 0)) >= timeout_limit:
                 return True, "task_timeout"
             for token in sig:
