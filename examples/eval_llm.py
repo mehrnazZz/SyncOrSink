@@ -113,6 +113,51 @@ def build_text_llm_call(provider: str, client, model: str, planner_style: str = 
     return _call
 
 
+def build_litellm_call(model: str, planner_style: str = "action", num_retries: int = 2):
+    """Build an LLM call function using litellm.
+
+    litellm supports many backends via model prefixes:
+      - "gpt-4o"               → OpenAI (needs OPENAI_API_KEY)
+      - "claude-sonnet-4-20250514"  → Anthropic (needs ANTHROPIC_API_KEY)
+      - "ollama/llama3"        → local ollama
+      - "ollama_chat/llama3"   → local ollama (chat format)
+      - "together_ai/..."      → Together AI
+      - etc.  See: https://docs.litellm.ai/docs/providers
+    """
+    try:
+        import litellm
+        litellm.num_retries = num_retries
+    except ImportError as exc:
+        raise RuntimeError("litellm package required. Install with: pip install litellm") from exc
+
+    system_text = (
+        "Return only compact JSON with keys: action and message_text. "
+        "action can be int or one of up/down/left/right/stay/interact/pickup/drop."
+    )
+    if planner_style == "executor":
+        system_text = (
+            "Return only compact JSON with keys: task, task_plan, message_text. "
+            "task should be one of pickup_visible_resource/deliver_to_matching_node/sync_interact/explore_sector/hold_position/respond_to_teammate."
+        )
+
+    def _call(prompt: str):
+        prompt = _sanitize_prompt(prompt)
+        try:
+            resp = litellm.completion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_text},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+            )
+            return resp.choices[0].message.content or ""
+        except Exception as exc:
+            print(f"[eval_llm] litellm error ({model}, len={len(prompt)}): {exc}")
+            return '{"action": "stay", "message_text": ""}'
+    return _call
+
+
 def parallel_batch(prompts, llm_call, max_workers: int = 8):
     results = [None for _ in prompts]
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -154,7 +199,7 @@ def main():
     parser.add_argument("--split", default=None)
     parser.add_argument("--variant", type=int, default=0)
     parser.add_argument("--energy-preset", choices=["easy", "hard"], default="hard")
-    parser.add_argument("--provider", choices=["dummy", "openai-chat", "openai-responses"], default="dummy")
+    parser.add_argument("--provider", choices=["dummy", "openai-chat", "openai-responses", "litellm"], default="dummy")
     parser.add_argument("--mode", choices=["text", "tools"], default="tools")
     parser.add_argument("--planner", choices=["action", "executor"], default="action")
     parser.add_argument("--model", default="gpt-4o-mini")
@@ -214,6 +259,12 @@ def main():
                 policy = LLMExecutorPolicy(dummy_llm, cache=cache, batch_fn=parallel_batch)
             else:
                 policy = LLMPolicy(dummy_llm, cache=cache, batch_fn=parallel_batch)
+    elif args.provider == "litellm":
+        llm_call = build_litellm_call(args.model, planner_style=args.planner)
+        if args.planner == "executor":
+            policy = LLMExecutorPolicy(llm_call, cache=cache, batch_fn=parallel_batch)
+        else:
+            policy = LLMPolicy(llm_call, cache=cache, batch_fn=parallel_batch)
     else:
         try:
             from openai import OpenAI
