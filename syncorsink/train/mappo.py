@@ -63,6 +63,7 @@ class MAPPOConfig:
     critic_mode: str = "local"  # "local" (DTDE) or "central" (CTDE)
     learned_reward: Optional[str] = None  # path to reward model checkpoint (replaces shaping)
     learned_reward_weight: float = 1.0    # blend weight for learned reward
+    bc_init: Optional[str] = None         # path to BC checkpoint to initialize actor weights
     device: str = "auto"  # "auto", "cpu", "cuda", "mps"
     # logging
     wandb: bool = False
@@ -289,6 +290,21 @@ def train_mappo(cfg: MAPPOConfig):
         actors = [MAPPOActor(**actor_kwargs).to(device)]
     else:
         actors = [MAPPOActor(**actor_kwargs).to(device) for _ in range(N)]
+
+    # --- BC warmstart: initialize actor weights from BC checkpoint ---
+    if cfg.bc_init:
+        bc_ckpt = torch.load(cfg.bc_init, map_location="cpu")
+        bc_state = bc_ckpt["model"]
+        for actor in actors:
+            # Load matching keys, skip mismatched ones
+            actor_state = actor.state_dict()
+            loaded = 0
+            for key in bc_state:
+                if key in actor_state and bc_state[key].shape == actor_state[key].shape:
+                    actor_state[key] = bc_state[key]
+                    loaded += 1
+            actor.load_state_dict(actor_state)
+        print(f"BC warmstart: loaded {loaded}/{len(bc_state)} params from {cfg.bc_init}")
 
     # --- Build critic ---
     if cfg.critic_mode == "central":
@@ -776,6 +792,8 @@ def main():
                         help="Path to learned reward model checkpoint (replaces/augments shaping)")
     parser.add_argument("--learned-reward-weight", type=float, default=1.0,
                         help="Weight for learned reward signal")
+    parser.add_argument("--bc-init", default=None,
+                        help="Path to BC checkpoint to initialize actor weights (IL→RL warmstart)")
     # logging
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", default="syncorsink")
@@ -829,6 +847,7 @@ def main():
         critic_mode=args.critic_mode,
         learned_reward=args.learned_reward,
         learned_reward_weight=args.learned_reward_weight,
+        bc_init=args.bc_init,
         device=args.device,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
