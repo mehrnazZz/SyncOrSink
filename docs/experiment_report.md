@@ -101,7 +101,14 @@
 - Fundamental issue: PPO with 1.5M env steps can't discover rare joint-scan events from scratch
 - BC→RL warmstart solves what pure RL cannot — pre-trained navigation + RL timing coordination
 
-### 3.5 Reward shaping is a double-edged sword
+### 3.5 IRL works for simple coordination but suffers reward hacking on complex tasks
+- **Energy grid: 100% success** with learned reward — IRL replaces hand-crafted shaping entirely
+- **Signal hunt: 0% success, return 4136** — reward model exploited. MAPPO found out-of-distribution states that the reward model incorrectly scores highly. Only 688 training transitions → poor generalization.
+- **Pipeline assembly: 0% success, return 531** — same reward hacking, policy collapsed into deterministic loop
+- **Lesson:** simple reward regression works when the reward landscape is simple (energy_grid) but needs more sophisticated approaches (more data, adversarial training, or MA-AIRL) for complex coordination tasks
+- The reward model has gaps in coverage because oracle demos only visit a narrow slice of the state space; MAPPO finds and exploits these gaps
+
+### 3.6 Hand-crafted reward shaping is a double-edged sword
 - v1: shaping too weak relative to comm cost (0.01 vs 12.0 penalty) → agents learn to not move
 - v2: 10x stronger shaping + lower comm cost → comm collapsed anyway
 - v3: scan + co-location bonus → farming local optimum (+314 return, 0% success)
@@ -148,6 +155,7 @@
 | **LLM** (best per scenario) | 67% | **100%** | **20%** |
 | **IL** (DAgger BC) | 55% | 35% | 0% |
 | **Transformer RL** (Comm-MAT) | 30% | **100%** | 0% |
+| **IRL MAPPO** (learned reward) | 0% | **100%** | 0% |
 | **PPO RL** (MAPPO v4) | 0% | — | — |
 | **Random** | 0% | 0% | 0% |
 
@@ -238,12 +246,27 @@
 
 ---
 
-## 11. Running Experiments
+## 11. IRL (Learned Reward) Results
+
+| Scenario | Success | Final Return | Entropy | Comm Rate | Diagnosis |
+|---|---|---|---|---|---|
+| **energy_grid** | **100%** | 29.5 | 0.06 | 0% | Learned reward works — replaces hand-crafted shaping |
+| **signal_hunt** | 0% | 4136.9 | 6.5 | 68% | Reward hacking — exploits gaps in reward model |
+| **pipeline_assembly** | 0% | 531.3 | 0.5 | 0% | Reward hacking — collapsed deterministic loop |
+
+- Reward models trained on oracle (obs, action) → reward tuples via supervised regression
+- Energy grid: 688 tuples sufficient because reward landscape is simple (deliver matching resource → positive reward)
+- Signal hunt / pipeline: reward model has poor out-of-distribution generalization; MAPPO exploits states the oracle never visited
+- Future work: adversarial IRL (MA-AIRL) or reward model ensembles to prevent exploitation
+
+---
+
+## 12. Running/Pending Experiments
 
 | Experiment | Status | Platform |
 |---|---|---|
-| IRL MAPPO (all 3 scenarios) | Running | RunPod |
 | gpt-oss:20b pipeline_assembly (improved prompt) | Running | Local |
+| IRL MAPPO (all 3 scenarios) | **Done** | RunPod |
 | Comm-MAT no-comm ablation (energy + signal) | **Done** | RunPod |
 | BC→RL v2 (all 3 scenarios) | **Done** | RunPod |
 | Comm-MAT (all 3 scenarios) | **Done** | RunPod |
@@ -274,10 +297,9 @@
 
 ## 13. Next Steps
 
-1. **Check Comm-MAT no-comm ablation** — proves whether communication or backbone drives performance
-2. **Check IRL MAPPO results** — can learned reward replace hand-crafted shaping?
-3. **Check gpt-oss:20b on pipeline_assembly** — improved prompt eval
-4. **Extend Comm-MAT on signal_hunt** — 30% and improving, more updates likely helps
-5. **TarMAC baseline** — classic emergent communication method (reviewer expectation)
-6. **Larger-scale experiments** — 16x16 maps, more agents, harder FOV presets
-7. **Paper writing** — results tables, analysis figures, discussion of findings
+1. **Check gpt-oss:20b on pipeline_assembly** — improved prompt eval (running locally)
+2. **Extend Comm-MAT on signal_hunt** — 30% and improving, more updates likely pushes higher
+3. **Improve IRL for signal_hunt** — more oracle demos, reward model ensembles, or adversarial training to prevent exploitation
+4. **TarMAC baseline** — classic emergent communication method (reviewer expectation)
+5. **Larger-scale experiments** — 16x16 maps, more agents, harder FOV presets
+6. **Paper writing** — results tables, analysis figures, discussion of findings
