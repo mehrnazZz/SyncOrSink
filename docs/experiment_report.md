@@ -155,6 +155,7 @@
 | **LLM** (best per scenario) | 67% | **100%** | **20%** |
 | **IL** (DAgger BC) | 55% | 35% | 0% |
 | **Transformer RL** (Comm-MAT) | 30% | **100%** | 0% |
+| **TarMAC** (attention comm) | 0% | **100%** | — |
 | **IRL MAPPO** (learned reward) | 0% | **100%** | 0% |
 | **PPO RL** (MAPPO v4) | 0% | — | — |
 | **Random** | 0% | 0% | 0% |
@@ -354,14 +355,23 @@ Pipeline assembly remains **0% for all trained methods** across every approach t
 
 ---
 
-## 15. TarMAC Baseline
+## 15. TarMAC Results
 
-TarMAC (Targeted Multi-Agent Communication) implemented and ready for training:
-- Learns WHO to communicate with via attention-weighted message passing
-- Continuous message vectors (vs discrete tokens in Comm-MAT/MAPPO)
-- Self-attention masked — agents attend to others, not themselves
-- Attention entropy bonus encourages diverse communication patterns
-- Running on RunPod for signal_hunt and energy_grid
+| Scenario | Success | Avg Steps | Attn Entropy | Notes |
+|---|---|---|---|---|
+| **energy_grid** | **100%** | **16.7** (best RL) | 0.611 | Fastest solve — steps improved 40→16.7 during training |
+| **signal_hunt** | 0% | 300 | 0.000 (collapsed) | 2 agents = no routing choice → attention degenerates |
+
+### RL Communication Methods Comparison (8x8)
+
+| Method | Comm Type | signal_hunt | energy_grid | energy steps |
+|---|---|---|---|---|
+| **TarMAC** | Continuous + attention | 0% | **100%** | **16.7** (fastest) |
+| **Comm-MAT** | Discrete tokens + transformer | **30%** | **100%** | 17-20 |
+| **Comm-MAT no-comm** | None (transformer backbone) | ~0% | **100%** | 15-20 |
+| **MAPPO v4** | Discrete tokens + MLP | 0% | — | — |
+
+### Architecture comparison:
 
 | Property | MAPPO | Comm-MAT | TarMAC |
 |---|---|---|---|
@@ -370,14 +380,19 @@ TarMAC (Targeted Multi-Agent Communication) implemented and ready for training:
 | Routing | Broadcast to all | Broadcast to all | Learned attention weights |
 | Comm learning | Send gate + token head | Send gate + token head | End-to-end through attention |
 
+### TarMAC findings:
+- **Energy grid:** TarMAC achieves the fastest solve time of any RL method (16.7 steps vs 17-20 for Comm-MAT). Attention entropy 0.611 shows agents actively choosing who to message (max for 2 targets ≈ 0.693).
+- **Signal hunt:** attention entropy collapsed to 0.000 — with only 2 agents, each agent has exactly 1 possible recipient, making the attention mechanism degenerate. TarMAC's advantage (targeted routing) requires 3+ agents.
+- **Implication:** TarMAC is best suited for scenarios with many agents where routing decisions matter. For 2-agent tasks, Comm-MAT's discrete token approach is more effective.
+
 ---
 
 ## 16. Running/Pending Experiments
 
 | Experiment | Status | Platform |
 |---|---|---|
-| TarMAC (signal_hunt + energy_grid) | Running | RunPod |
 | LLM 16x16 (gpt-oss:20b signal + energy) | Running | Local |
+| TarMAC (signal_hunt + energy_grid) | **Done** | RunPod |
 | Comm-MAT 16x16 (signal + energy) | **Done** | RunPod |
 | BC→RL v2 16x16 (signal + energy) | **Done** | RunPod |
 | gpt-oss:20b pipeline_assembly | **Done** (0%) | Local |
