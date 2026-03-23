@@ -61,7 +61,7 @@
 | Oracle | Full-state planner | 50% | 189 | No | Greedy version |
 | gpt-4o-mini | LLM (API) | **20%** | 277 | Text | Best learned method |
 | gpt-4o-mini (executor) | LLM (API) | 0% | 300 | Text | Gets stuck on plans |
-| gpt-oss:20b | LLM (local) | pending | — | Text | Running with improved prompt |
+| gpt-oss:20b | LLM (local) | 0% | 200 | Text | Timeouts + can't chain deps |
 | BC→RL v2 (KL) | IL→RL | 0% | 300 | Tokens | KL preserved init but BC can't chain deps |
 | BC→RL v1 | IL→RL | 0% | 300 | No | RL destroyed BC init (return 36→3) |
 | All BC/DAgger variants | IL | 0% | 300 | No | 92% action acc but can't chain deps |
@@ -217,7 +217,7 @@
 
 | Model | Size | Access | signal_hunt | energy_grid | pipeline_assembly | Cost |
 |---|---|---|---|---|---|---|
-| gpt-oss:20b | 20B | Local (ollama) | **67%** | **100%** | pending | Free |
+| gpt-oss:20b | 20B | Local (ollama) | **67%** | **100%** | 0% | Free |
 | gpt-4o | ~200B+ | API | — | **60%** | quota error | $$$ |
 | gpt-4o-mini | ~8B | API | **60%** | 20% | **20%** | $ |
 
@@ -295,11 +295,126 @@
 
 ---
 
-## 13. Next Steps
+## 13. Scale Experiments: 8x8 → 16x16
 
-1. **Check gpt-oss:20b on pipeline_assembly** — improved prompt eval (running locally)
-2. **Extend Comm-MAT on signal_hunt** — 30% and improving, more updates likely pushes higher
-3. **Improve IRL for signal_hunt** — more oracle demos, reward model ensembles, or adversarial training to prevent exploitation
-4. **TarMAC baseline** — classic emergent communication method (reviewer expectation)
-5. **Larger-scale experiments** — 16x16 maps, more agents, harder FOV presets
-6. **Paper writing** — results tables, analysis figures, discussion of findings
+**Settings:** 16x16 map (4x area), 4 agents (up from 2-3), medium FOV (smaller view)
+
+### Oracle at 16x16
+
+| Scenario | 8x8 Success | 16x16 Success | 16x16 Steps | Scaling |
+|---|---|---|---|---|
+| signal_hunt | 100% | **100%** | 11.7 | No degradation — faster with 4 agents |
+| energy_grid | 100% | **90-100%** | 48-60 | Slight drop for oracle_strong |
+| pipeline_assembly | 50-60% | **60-70%** | 155-158 | Improves — 4 agents help parallelize |
+
+### Trained Methods at 16x16
+
+| Method | signal 8x8 | signal 16x16 | energy 8x8 | energy 16x16 |
+|---|---|---|---|---|
+| **BC→RL v2** | **80%** | **30%** | **100%** | **100%** |
+| **Comm-MAT** | 30% | 20% | **100%** | **100%** |
+
+### Key Scaling Findings:
+- **Energy grid scales perfectly** — both BC→RL v2 and Comm-MAT maintain 100% at 16x16. The task structure (typed resource delivery) generalizes to larger maps. Steps increase (72 vs 17-50) but success is maintained.
+- **Signal hunt degrades significantly** — BC→RL drops 80% → 30%, Comm-MAT drops 30% → 20%. Larger map + medium FOV = larger search space, reduced mutual visibility, harder timing coordination.
+- **BC→RL v2 remains best trained method at scale** — 30% at 16x16 matches Comm-MAT's 8x8 performance.
+- **Communication becomes more critical at scale** — more information to share across larger distances with less visibility. Comm-MAT's send rate at 16x16 energy is 2.5% (agents learn independent coordination even at scale).
+
+### LLM at 16x16 (pending — gpt-oss:20b running locally)
+
+---
+
+## 14. Pipeline Assembly: The Open Challenge
+
+Pipeline assembly remains **0% for all trained methods** across every approach tried:
+
+| Method | Success | Why it fails |
+|---|---|---|
+| gpt-4o-mini (API) | **20%** | Only method to crack it — prior knowledge about task decomposition |
+| gpt-oss:20b (local, improved prompt) | 0% | Timeout issues with 3-agent prompts; can't chain dependencies |
+| BC→RL v2 (KL) | 0% | BC can't chain multi-step dependencies; RL can't improve beyond BC |
+| BC→RL v1 (naive) | 0% | RL destroyed BC initialization |
+| DAgger BC (93k demos, 92% acc) | 0% | High action accuracy but can't sequence dependency chains |
+| Comm-MAT | 0% | Cannot learn multi-step planning from RL alone |
+| IRL MAPPO | 0% | Reward hacking — exploits gaps in learned reward |
+| Oracle Strong | **60%** | Even oracle struggles — genuinely hard task |
+
+**Why pipeline assembly is hard:**
+- Multi-step dependency chains: stage A → stage B → stage C (in order)
+- Partial blueprints: each agent only knows some stages, must communicate to learn the full plan
+- Resource type matching: must pick up the RIGHT resource type for each stage
+- Sync interactions: some stages require 2 agents to interact simultaneously
+- Even the oracle only achieves 60% — the task has inherent difficulty from map layout and resource placement
+
+**What might help (future work):**
+- Hierarchical RL with explicit sub-task decomposition
+- LLM-guided exploration (use LLM to suggest high-level plans, RL for low-level execution)
+- Curriculum learning (start with 1-2 stages, gradually increase)
+- Stronger LLMs (gpt-4o with sufficient quota)
+
+---
+
+## 15. TarMAC Baseline
+
+TarMAC (Targeted Multi-Agent Communication) implemented and ready for training:
+- Learns WHO to communicate with via attention-weighted message passing
+- Continuous message vectors (vs discrete tokens in Comm-MAT/MAPPO)
+- Self-attention masked — agents attend to others, not themselves
+- Attention entropy bonus encourages diverse communication patterns
+- Running on RunPod for signal_hunt and energy_grid
+
+| Property | MAPPO | Comm-MAT | TarMAC |
+|---|---|---|---|
+| Backbone | MLP | Transformer | MLP + attention |
+| Messages | Discrete tokens via env | Discrete tokens via env | Continuous vectors via attention |
+| Routing | Broadcast to all | Broadcast to all | Learned attention weights |
+| Comm learning | Send gate + token head | Send gate + token head | End-to-end through attention |
+
+---
+
+## 16. Running/Pending Experiments
+
+| Experiment | Status | Platform |
+|---|---|---|
+| TarMAC (signal_hunt + energy_grid) | Running | RunPod |
+| LLM 16x16 (gpt-oss:20b signal + energy) | Running | Local |
+| Comm-MAT 16x16 (signal + energy) | **Done** | RunPod |
+| BC→RL v2 16x16 (signal + energy) | **Done** | RunPod |
+| gpt-oss:20b pipeline_assembly | **Done** (0%) | Local |
+| IRL MAPPO (all 3 scenarios) | **Done** | RunPod |
+| Comm-MAT no-comm ablation | **Done** | RunPod |
+| BC→RL v2 8x8 (all 3 scenarios) | **Done** | RunPod |
+| Comm-MAT 8x8 (all 3 scenarios) | **Done** | RunPod |
+| MAPPO v4 (signal_hunt) | **Done** | RunPod |
+
+---
+
+## 17. Infrastructure
+
+| Component | Status | Files |
+|---|---|---|
+| MAPPO training (DTDE/CTDE) | Done | `syncorsink/train/mappo.py` |
+| Comm-MAT training (+ablation) | Done | `syncorsink/train/comm_mat.py` |
+| TarMAC training | Done | `syncorsink/train/tarmac.py` |
+| BC from oracle (+comm) | Done | `syncorsink/train/bc.py` |
+| DAgger (+comm) | Done | `syncorsink/train/bc.py` |
+| BC→RL warmstart (KL + freeze) | Done | `syncorsink/train/mappo.py` |
+| Reward regression (IRL) | Done | `syncorsink/train/bc.py` |
+| LLM eval (OpenAI + litellm/ollama) | Done | `examples/eval_llm.py` |
+| Oracle/heuristic eval | Done | `examples/eval_run.py` |
+| BC eval | Done | `examples/eval_run.py` |
+| Coordination shaping (v4) | Done | `syncorsink/envs/scenarios.py` |
+| Energy node_critical events | Done | `syncorsink/envs/scenarios.py` |
+| Pipeline hint decoding | Done | `syncorsink/llm/policy.py` |
+| Prompt compression | Done | `syncorsink/llm/policy.py` |
+| Test suite (12 tests) | Done | `tests/` |
+
+---
+
+## 18. Next Steps
+
+1. **Check TarMAC results** — classic comm method comparison
+2. **Check LLM 16x16 results** — gpt-oss:20b scaling
+3. **Crack pipeline assembly** — hierarchical approach or curriculum learning
+4. **Paper writing** — results tables, analysis figures, discussion of findings
+5. **32x32 experiments** — further scaling study if needed
