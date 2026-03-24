@@ -309,11 +309,11 @@ class EnergyGrid(ScenarioBase):
         sqrt_s = math.sqrt(env.map_size)
         n_nodes = len(env.meta["nodes"])
         if preset == "easy":
-            scaled_energy = max(15, int(sqrt_s * 8))
-            grace = max(4, int(sqrt_s * 2))
+            scaled_energy = max(15, int(sqrt_s * 10))
+            grace = max(4, int(sqrt_s * 3))
         else:
-            scaled_energy = max(10, int(sqrt_s * 5))
-            grace = max(2, int(sqrt_s * 1.5))
+            scaled_energy = max(10, int(sqrt_s * 6))
+            grace = max(2, int(sqrt_s * 2))
         node_energy = {pos: scaled_energy for pos in env.meta["nodes"]}
         node_types = {pos: int(rng.integers(1, 3)) for pos in env.meta["nodes"]}
         # distribute resources to ensure coverage of node types

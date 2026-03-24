@@ -18,6 +18,7 @@ from syncorsink.policies.oracle import (
     pipeline_oracle_strong,
     energy_oracle,
     energy_oracle_strong,
+    energy_oracle_planner,
     signal_hunt_oracle,
     signal_hunt_oracle_strong,
 )
@@ -83,6 +84,7 @@ def main():
             "scripted",
             "oracle",
             "oracle_strong",
+            "oracle_planner",
             "oracle_comm",
             "local_oracle",
             "local_oracle_comm",
@@ -173,6 +175,13 @@ def main():
             policy = pipeline_oracle_strong(env)
         elif args.scenario == "energy_grid":
             policy = energy_oracle_strong(env)
+        else:
+            policy = signal_hunt_oracle_strong(env)
+    elif args.policy == "oracle_planner":
+        if args.scenario == "energy_grid":
+            policy = energy_oracle_planner(env)
+        elif args.scenario == "pipeline_assembly":
+            policy = pipeline_oracle_strong(env)
         else:
             policy = signal_hunt_oracle_strong(env)
     elif args.policy == "oracle_comm":

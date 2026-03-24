@@ -289,6 +289,148 @@ def energy_oracle_strong(env):
     return _policy
 
 
+def energy_oracle_planner(env):
+    """
+    Planning oracle for energy_grid: optimal agent-to-node assignment based on
+    distance and urgency. Handles many-nodes-few-agents via priority scheduling.
+
+    Strategy:
+      1. Rank nodes by urgency (lowest energy first)
+      2. Assign each agent to the best (closest + most urgent) node it can serve
+      3. If carrying a resource, deliver to the matching lowest-energy node
+      4. If not carrying, pick up the resource type needed by the most urgent reachable node
+      5. Avoid duplicate assignments — spread agents across different nodes
+    """
+    from collections import deque
+
+    def _bfs_dist(grid, start, goal, blocked_positions=None):
+        """BFS distance from start to goal."""
+        size = grid.shape[0]
+        q = deque([start])
+        dist = {start: 0}
+        bp = blocked_positions or set()
+        while q:
+            x, y = q.popleft()
+            if (x, y) == goal:
+                return dist[(x, y)]
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < size and 0 <= ny < size and (nx, ny) not in dist:
+                    if (nx, ny) in bp:
+                        continue
+                    if grid[ny, nx] in (1, 9):
+                        continue
+                    dist[(nx, ny)] = dist[(x, y)] + 1
+                    q.append((nx, ny))
+        return 999  # unreachable
+
+    def _policy(obs, info, state):
+        actions = {}
+        node_energy = env.scenario_state.data.get("node_energy", {})
+        node_types = env.scenario_state.data.get("node_types", {})
+        resource_types = env.scenario_state.data.get("resource_types", {})
+        sync_threshold = env.scenario_state.data.get("sync_threshold", 3)
+
+        if not node_energy:
+            return {i: {"action": env.ACTION_STAY, "message_tokens": []} for i in range(env.num_agents)}
+
+        # Sort nodes by urgency (lowest energy first)
+        nodes_by_urgency = sorted(node_energy.items(), key=lambda kv: kv[1])
+
+        # Track which nodes are claimed this step
+        claimed_nodes = set()
+
+        # First pass: agents carrying resources → deliver to best matching node
+        for agent_id in range(env.num_agents):
+            pos = env.agent_positions[agent_id]
+            inv = env.inventories[agent_id]
+            if inv == 0:
+                continue
+
+            # Find lowest-energy node matching this resource type
+            matching = [
+                (npos, e) for npos, e in nodes_by_urgency
+                if node_types.get(npos) == inv and npos not in claimed_nodes
+            ]
+            if not matching:
+                # No unclaimed matching node — try any matching
+                matching = [
+                    (npos, e) for npos, e in nodes_by_urgency
+                    if node_types.get(npos) == inv
+                ]
+            if not matching:
+                actions[agent_id] = {"action": env.ACTION_STAY, "message_tokens": []}
+                continue
+
+            target_node = matching[0][0]
+            claimed_nodes.add(target_node)
+
+            if pos == target_node:
+                # Check sync requirement
+                energy = node_energy.get(target_node, 999)
+                if energy <= sync_threshold:
+                    # Need 2 agents — check if another is here
+                    others_here = [
+                        a for a in range(env.num_agents)
+                        if a != agent_id and env.agent_positions[a] == target_node
+                        and env.inventories[a] == inv
+                    ]
+                    if others_here:
+                        actions[agent_id] = {"action": env.ACTION_INTERACT, "message_tokens": []}
+                    else:
+                        actions[agent_id] = {"action": env.ACTION_INTERACT, "message_tokens": []}
+                else:
+                    actions[agent_id] = {"action": env.ACTION_INTERACT, "message_tokens": []}
+            else:
+                actions[agent_id] = {"action": _move_or_open(env, agent_id, pos, target_node), "message_tokens": []}
+
+        # Second pass: agents without resources → pick up what's needed most
+        for agent_id in range(env.num_agents):
+            if agent_id in actions:
+                continue
+            pos = env.agent_positions[agent_id]
+
+            # Check if standing on a useful resource
+            current_res = resource_types.get(pos)
+            if current_res is not None and current_res in node_types.values():
+                actions[agent_id] = {"action": env.ACTION_PICKUP, "message_tokens": []}
+                continue
+
+            # Find the most urgent unclaimed node, then find a resource of its type
+            best_score = 999999
+            best_resource = None
+            for npos, energy in nodes_by_urgency:
+                if npos in claimed_nodes:
+                    continue
+                ntype = node_types.get(npos)
+                # Find nearest resource of this type
+                for rpos, rtype in resource_types.items():
+                    if rtype == ntype:
+                        dist_to_res = _bfs_dist(env.grid, pos, rpos, _blocked_positions(env, agent_id))
+                        dist_res_to_node = _bfs_dist(env.grid, rpos, npos)
+                        # Score: urgency (lower energy = higher priority) + distance
+                        score = energy * 0.5 + (dist_to_res + dist_res_to_node)
+                        if score < best_score:
+                            best_score = score
+                            best_resource = rpos
+                            best_node = npos
+
+            if best_resource is not None:
+                claimed_nodes.add(best_node)
+                actions[agent_id] = {"action": _move_to_any_or_open(env, agent_id, pos, [best_resource]), "message_tokens": []}
+            else:
+                # No useful resource found — explore toward unclaimed nodes
+                unclaimed = [npos for npos, _ in nodes_by_urgency if npos not in claimed_nodes]
+                if unclaimed:
+                    actions[agent_id] = {"action": _move_to_any_or_open(env, agent_id, pos, unclaimed), "message_tokens": []}
+                else:
+                    actions[agent_id] = {"action": env.ACTION_STAY, "message_tokens": []}
+
+        return actions
+
+    return _policy
+
+
 def signal_hunt_oracle(env):
     """
     Oracle: goes directly to true target and synchronizes scan.
