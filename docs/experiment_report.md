@@ -240,10 +240,41 @@
 | **signal_hunt** | **30%** | 3.5% | Improving — more training likely helps |
 | **pipeline_assembly** | 0% | 2.3% | Cannot learn multi-step planning |
 
-### Ablation insight:
-- **Energy grid** can be solved by independent agents learning typed-resource-to-node delivery. Communication helps in theory but isn't necessary on 8x8 easy settings. The transformer backbone's attention mechanism over grid observations is sufficient.
-- **Signal hunt** genuinely requires explicit communication. Without it, agents can't share clue information or coordinate the synchronized target scan. The drop from 30% → ~0% confirms communication is the differentiating factor, not just having a better backbone.
-- **Implication for the paper:** Energy grid tests *learned coordination* (achievable without messaging), signal hunt tests *learned communication* (necessary for success), and pipeline assembly tests *both* (unsolved by all trained methods).
+### Why communication doesn't matter for energy_grid (any size/difficulty):
+
+Verified that observations are properly partial (no privileged info leaks):
+- Agents see only a 7x7 local grid (medium FOV on 16x16)
+- `explored_mask` exists but is NOT included in `flatten_obs` for MAPPO/BC-RL
+- Comm-MAT only uses: `local_grid`, `inventory`, `self_pos`, `goal_hint`, messages
+- Track is correctly `dtde` — no centralized state
+
+**The real reason energy_grid is easy: no information asymmetry.**
+- `self_pos` (absolute position) lets the policy learn a spatial function — "when at (x,y) and I see resource type T, pick up and go to direction D"
+- Only 3 nodes on 16x16 — with 4 agents exploring, all nodes are discovered within ~50 steps
+- Resources spawn continuously (15%/step on hard) — always something nearby to pick up
+- Unlike signal_hunt, there's nothing one agent knows that another can't independently discover
+
+**16x16 hard results confirm this — all methods still 100%:**
+
+| Method | 16x16 Hard Success | Steps | Comm Rate |
+|---|---|---|---|
+| Comm-MAT | 100% | 72 | 1.3% |
+| Comm-MAT no-comm | 100% | 68-72 | disabled |
+| TarMAC | 100% | 207 | attn 1.07 |
+| BC→RL | 100% | 72 | 0% |
+| Oracle Strong | 90% | 49 | N/A |
+
+Note: trained methods (100%) outperform the oracle (90%) because the oracle uses a greedy heuristic while learned policies find globally better strategies.
+
+### Information structure determines communication necessity:
+
+| Scenario | Information Structure | Comm Required? | Evidence |
+|---|---|---|---|
+| **Energy grid** | Symmetric — all info independently discoverable | **No** | Comm-MAT = Comm-MAT no-comm (100% both) at every size/difficulty |
+| **Signal hunt** | Asymmetric — agents get different clues | **Yes** | Comm-MAT 30% → 0% without comm |
+| **Pipeline assembly** | Asymmetric — partial blueprints per agent | **Yes** (presumed) | 0% for all trained methods — unsolved |
+
+**Key benchmark design insight:** Communication becomes necessary only when agents have complementary partial information that must be fused. Tasks with symmetric information (where any agent can independently discover everything) can be solved by coordination without messaging.
 
 ---
 
