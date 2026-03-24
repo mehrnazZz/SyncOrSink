@@ -30,6 +30,8 @@ class CommMATTrainConfig:
     comm_max_messages: int = 8
     comm_len_cost: float = 0.0
     comm_cost: float = 0.01
+    energy_preset: str = "hard"
+    energy_private_monitor: bool = False
     # reward shaping
     pipeline_shaping: bool = False
     pipeline_shaping_scale: float = 0.01
@@ -224,6 +226,8 @@ def train_comm_mat(cfg: CommMATTrainConfig):
         max_messages=cfg.comm_max_messages,
         comm_len_cost=cfg.comm_len_cost,
         comm_cost=cfg.comm_cost,
+        energy_preset=cfg.energy_preset,
+        energy_private_monitor=cfg.energy_private_monitor,
         pipeline_shaping=cfg.pipeline_shaping,
         pipeline_shaping_scale=cfg.pipeline_shaping_scale,
         energy_shaping=cfg.energy_shaping,
@@ -579,6 +583,8 @@ def main():
     p.add_argument("--comm-max-messages", type=int, default=8)
     p.add_argument("--comm-len-cost", type=float, default=0.0)
     p.add_argument("--comm-cost", type=float, default=0.01)
+    p.add_argument("--energy-preset", default="hard")
+    p.add_argument("--energy-private-monitor", action="store_true")
     # reward shaping
     p.add_argument("--pipeline-shaping", action="store_true")
     p.add_argument("--pipeline-shaping-scale", type=float, default=0.01)
@@ -637,6 +643,8 @@ def main():
         comm_max_messages=args.comm_max_messages,
         comm_len_cost=args.comm_len_cost,
         comm_cost=args.comm_cost,
+        energy_preset=args.energy_preset,
+        energy_private_monitor=args.energy_private_monitor,
         pipeline_shaping=args.pipeline_shaping,
         pipeline_shaping_scale=args.pipeline_shaping_scale,
         energy_shaping=args.energy_shaping,

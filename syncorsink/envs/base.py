@@ -66,6 +66,7 @@ class SyncOrSinkConfig:
     signal_comm_utility: float = 0.0      # reward for sending a message that precedes teammate's useful action
     # energy grid difficulty presets
     energy_preset: str = "hard"  # "easy" or "hard"
+    energy_private_monitor: bool = False  # each agent only sees energy of assigned nodes
     # deterministic map control
     map_seed: int | None = None
     map_variant: int = 0
@@ -519,13 +520,33 @@ class SyncOrSinkEnv(gym.Env):
         node_energy_grid = np.zeros((self.map_size, self.map_size), dtype=np.int16)
         for pos, energy in self.scenario_state.data.get("node_energy", {}).items():
             node_energy_grid[pos[1], pos[0]] = int(energy)
+
+        # Private monitoring: build per-agent energy grids
+        private_monitor = (
+            self.config.energy_private_monitor
+            and self.config.scenario == "energy_grid"
+            and "node_assignments" in self.scenario_state.data
+        )
+        if private_monitor:
+            agent_energy_grids = {}
+            node_assignments = self.scenario_state.data["node_assignments"]
+            for agent_id in range(self.num_agents):
+                masked = np.zeros((self.map_size, self.map_size), dtype=np.int16)
+                for pos, energy in self.scenario_state.data.get("node_energy", {}).items():
+                    if node_assignments.get(pos) == agent_id:
+                        masked[pos[1], pos[0]] = int(energy)
+                agent_energy_grids[agent_id] = masked
+
         for agent_id in range(self.num_agents):
             local = extract_local(self.grid, self.agent_positions[agent_id], self.fov_radius)
             if self.obs_onehot:
                 local = self._onehot(local)
             local_resource_types = extract_local(resource_type_grid, self.agent_positions[agent_id], self.fov_radius)
             local_node_types = extract_local(node_type_grid, self.agent_positions[agent_id], self.fov_radius)
-            local_node_energy = extract_local(node_energy_grid, self.agent_positions[agent_id], self.fov_radius)
+            if private_monitor:
+                local_node_energy = extract_local(agent_energy_grids[agent_id], self.agent_positions[agent_id], self.fov_radius)
+            else:
+                local_node_energy = extract_local(node_energy_grid, self.agent_positions[agent_id], self.fov_radius)
             messages_tokens, message_from = self._encode_messages(self.inboxes[agent_id])
             hint_tokens = self._encode_hint(agent_id)
             obs[agent_id] = {
@@ -649,6 +670,13 @@ class SyncOrSinkEnv(gym.Env):
                         1 if stage.get("sync") else 0,
                     ]
                 )
+        elif self.config.scenario == "energy_grid" and self.config.energy_private_monitor:
+            # Encode assigned node positions and types so agent knows its responsibility
+            agent_nodes = self.scenario_state.data.get("agent_nodes", {}).get(agent_id, [])
+            node_types = self.scenario_state.data.get("node_types", {})
+            for node_pos in agent_nodes:
+                ntype = node_types.get(node_pos, 0)
+                hint.extend([node_pos[0], node_pos[1], ntype])
         hint = hint[:16]
         padded = hint + [-1] * (16 - len(hint))
         return np.array(padded, dtype=np.int16)

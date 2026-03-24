@@ -323,6 +323,17 @@ class EnergyGrid(ScenarioBase):
         # boost refill to make coordination solvable with baseline oracles
         if preset == "easy":
             env.energy_refill = max(env.energy_refill, int(env.map_size))
+        # Private monitoring: assign each node to a specific agent.
+        # Only the assigned agent can see that node's energy level.
+        # Other agents see energy=0 (unknown) for unassigned nodes.
+        node_list = list(node_energy.keys())
+        node_assignments = {}  # node_pos -> agent_id
+        agent_nodes = {aid: [] for aid in range(env.num_agents)}  # agent_id -> [node_pos]
+        for i, node_pos in enumerate(node_list):
+            assigned_agent = i % env.num_agents
+            node_assignments[node_pos] = assigned_agent
+            agent_nodes[assigned_agent].append(node_pos)
+
         data = {
             "node_energy": node_energy,
             "node_types": node_types,
@@ -333,6 +344,8 @@ class EnergyGrid(ScenarioBase):
             "success_recharges": max(1, len(env.meta["nodes"]) * 2),
             "grace_steps": max(0, env.map_size) if preset == "easy" else max(0, env.map_size // 2),
             "drain_period": 3 if (preset == "easy" and env.map_size >= 16) else (2 if env.map_size >= 16 else 1),
+            "node_assignments": node_assignments,
+            "agent_nodes": agent_nodes,
         }
         return ScenarioState(data=data)
 
