@@ -256,7 +256,9 @@ class EnergyGrid(ScenarioBase):
     name = "energy_grid"
 
     def build_map(self, size: int, rng: np.random.Generator, config) -> tuple[np.ndarray, dict]:
-        node_count = max(3, size // 4)  # 3 for 8x8, 4 for 16x16, 8 for 32x32
+        n_agents = getattr(config, "num_agents", 3)
+        # Node count: ~1.5-2x agents to force triage without being impossible
+        node_count = max(3, int(n_agents * 1.5) + size // 16)
         resource_count = max(node_count * 2, node_count + 1)
         min_starts = max(6, int(getattr(config, "num_agents", 3)))
         min_component = max(node_count + resource_count + min_starts + 4, int(size * size * 0.30))
@@ -302,15 +304,16 @@ class EnergyGrid(ScenarioBase):
         import math
         rng = env.rng
         preset = getattr(env.config, "energy_preset", "hard")
-        # Energy scales with sqrt(map_size) — proportional to traversal time,
-        # not map area. Drain is always every step (no free passes for large maps).
+        # Energy scales with sqrt(map_size) — tight budget forces coordination.
+        # More nodes than agents means agents must triage and communicate.
         sqrt_s = math.sqrt(env.map_size)
+        n_nodes = len(env.meta["nodes"])
         if preset == "easy":
-            scaled_energy = max(20, int(sqrt_s * 10))
-            grace = max(5, int(sqrt_s * 3))
+            scaled_energy = max(15, int(sqrt_s * 8))
+            grace = max(4, int(sqrt_s * 2))
         else:
-            scaled_energy = max(12, int(sqrt_s * 6))
-            grace = max(3, int(sqrt_s * 2))
+            scaled_energy = max(10, int(sqrt_s * 5))
+            grace = max(2, int(sqrt_s * 1.5))
         node_energy = {pos: scaled_energy for pos in env.meta["nodes"]}
         node_types = {pos: int(rng.integers(1, 3)) for pos in env.meta["nodes"]}
         # distribute resources to ensure coverage of node types
@@ -325,11 +328,8 @@ class EnergyGrid(ScenarioBase):
             resource_types = {pos: pool[i] for i, pos in enumerate(resource_positions)}
         else:
             resource_types = {pos: int(rng.integers(1, 3)) for pos in resource_positions}
-        # refill: enough to buy time but not fully replenish
-        if preset == "easy":
-            env.energy_refill = max(env.energy_refill, int(sqrt_s * 3))
-        else:
-            env.energy_refill = max(env.energy_refill, int(sqrt_s * 2))
+        # refill: small — buys a few steps, not a full reset
+        env.energy_refill = max(3, int(sqrt_s))
         # Private monitoring: assign each node to a specific agent.
         # Only the assigned agent can see that node's energy level.
         # Other agents see energy=0 (unknown) for unassigned nodes.
@@ -348,7 +348,7 @@ class EnergyGrid(ScenarioBase):
             "spawn_rate": 0.3 if preset == "easy" else 0.15,
             "sync_threshold": max(3, int(scaled_energy * 0.4)),
             "recharge_count": 0,
-            "success_recharges": max(1, len(env.meta["nodes"]) * (1 if preset == "hard" else 2)),
+            "success_recharges": len(env.meta["nodes"]),  # 1 recharge per node — many nodes makes this hard
             "grace_steps": grace,
             "drain_period": 1,  # always drain every step — no free passes
             "node_assignments": node_assignments,
