@@ -62,8 +62,9 @@
 | gpt-4o-mini | LLM (API) | **20%** | 277 | Text | Best learned method |
 | gpt-4o-mini (executor) | LLM (API) | 0% | 300 | Text | Gets stuck on plans |
 | gpt-oss:20b | LLM (local) | 0% | 200 | Text | Timeouts + can't chain deps |
-| BC→RL v2 (KL) | IL→RL | 0% | 300 | Tokens | KL preserved init but BC can't chain deps |
-| BC→RL v1 | IL→RL | 0% | 300 | No | RL destroyed BC init (return 36→3) |
+| **Recurrent BC→RL** | **IL→RL (LSTM)** | **10%** | — | No | **First trained method to solve it!** |
+| BC→RL v2 (KL) | IL→RL (MLP) | 0% | 300 | Tokens | KL preserved init but MLP can't track progress |
+| BC→RL v1 | IL→RL (MLP) | 0% | 300 | No | RL destroyed BC init (return 36→3) |
 | All BC/DAgger variants | IL | 0% | 300 | No | 92% action acc but can't chain deps |
 | Comm-MAT | Transformer RL | 0% | 300 | Tokens | Cannot learn multi-step planning |
 | MAPPO (all versions) | PPO RL | 0% | 300 | — | Not tested on this scenario |
@@ -157,15 +158,17 @@
 | **Transformer RL** (Comm-MAT) | 30% | **100%** | 0% |
 | **TarMAC** (attention comm) | 0% | **100%** | — |
 | **IRL MAPPO** (learned reward) | 0% | **100%** | 0% |
+| **Recurrent BC→RL** (LSTM) | 0% | **100%** | **10%** |
 | **PPO RL** (MAPPO v4) | 0% | — | — |
 | **Random** | 0% | 0% | 0% |
 
 ### Key takeaways for the paper:
-1. **IL→RL warmstart** is the strongest trained approach (80%, 100%, 0%)
-2. **LLMs** are the only methods that solve pipeline_assembly (20%)
-3. **Comm-MAT** proves that learned communication enables RL coordination on energy_grid
-4. **Pure MAPPO** fails entirely — reward shaping cannot substitute for pre-training
-5. **Pipeline assembly** is an open challenge — even 60% oracle ceiling shows it's genuinely hard
+1. **IL→RL warmstart** is the strongest trained approach (80%, 100%, 10%)
+2. **LLMs** achieve 20% on pipeline_assembly with zero training
+3. **Recurrent BC→RL** is the first trained method to crack pipeline_assembly (10%) — memory is the key
+4. **Comm-MAT** proves learned communication enables RL coordination on signal_hunt (30% → 0% without comm)
+5. **Pure MAPPO** fails entirely — reward shaping cannot substitute for pre-training
+6. **Memory + communication** is the next frontier for pipeline_assembly
 
 ---
 
@@ -378,15 +381,36 @@ Pipeline assembly remains **0% for all trained methods** across every approach t
 - Sync interactions: some stages require 2 agents to interact simultaneously
 - Even the oracle only achieves 60% — the task has inherent difficulty from map layout and resource placement
 
-**What might help (future work):**
-- Hierarchical RL with explicit sub-task decomposition
-- LLM-guided exploration (use LLM to suggest high-level plans, RL for low-level execution)
+**Breakthrough: Recurrent BC→RL achieves 10%**
+- LSTM memory lets the policy track which stages are complete across steps
+- MLP policies (BC→RL v2) preserved initialization but couldn't chain dependencies — the bottleneck was **lack of memory**, not lack of good actions
+- First success at RL update 1149; appeared at 10% in two separate evals
+- Return improved from 12 → 30 during training; entropy stable at 1.0 (KL preserved policy)
+- The LSTM is the minimal architecture that can represent sequential task progress
+
+**What might push higher:**
+- Bigger LSTM or attention over stage hint tokens
+- Communication-enabled recurrent policy (agents share stage progress)
 - Curriculum learning (start with 1-2 stages, gradually increase)
-- Stronger LLMs (gpt-4o with sufficient quota)
+- More RL training (10% appeared late — may still be improving)
 
 ---
 
-## 15. TarMAC Results
+## 15. Recurrent BC→RL Results
+
+| Scenario | Success | Initial Return | Final Return | Entropy | Notes |
+|---|---|---|---|---|---|
+| **pipeline_assembly** | **10%** | 11.9 | 29.5 | 1.0 (stable) | First trained method to solve it |
+
+- **Architecture:** MLP encoder → LSTMCell → policy head (same width as MAPPO actor + LSTM)
+- **Training:** 200 oracle demos → recurrent BC (truncated BPTT, 30 epochs) → PPO fine-tuning (3000 updates, KL=0.5)
+- **Why it works:** The LSTM maintains hidden state across steps, tracking stage progress (which delivered, which pending). MLP policies can't do this — they see each step independently.
+- **Why only 10%:** Pipeline assembly has 4+ stages with dependencies. The LSTM learns sequential behavior but still struggles with multi-agent coordination (no communication in current version).
+- **Key insight:** Memory is necessary but not sufficient for sequential multi-agent tasks. Communication + memory is the next step.
+
+---
+
+## 16. TarMAC Results (8x8)
 
 | Scenario | Success | Avg Steps | Attn Entropy | Notes |
 |---|---|---|---|---|
