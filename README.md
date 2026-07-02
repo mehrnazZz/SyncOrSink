@@ -392,7 +392,7 @@ Model library lives in `syncorsink/models/` and provides encoders and heads.
 Run tests (determinism + reward sanity):
 
 ```bash
-pytest /Users/mehrnaz/Documents/New\\ project/tests
+pytest /tests
 ```
 
 ## Deterministic map splits
