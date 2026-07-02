@@ -93,6 +93,8 @@ def pipeline_planner_follower(env):
             msg = _decode_message(ob)
             local_ids = _local_grid_ids(ob)
             local_resource = ob.get("local_resource_types")
+            inv = int(ob["inventory"][0])
+            px, py = int(ob["self_pos"][0]), int(ob["self_pos"][1])
             # update memory map
             h, w = local_ids.shape
             cx, cy = w // 2, h // 2
@@ -100,8 +102,6 @@ def pipeline_planner_follower(env):
                 for x in range(w):
                     gx, gy = px + (x - cx), py + (y - cy)
                     mem[aid][(gx, gy)] = int(local_ids[y, x])
-            inv = int(ob["inventory"][0])
-            px, py = int(ob["self_pos"][0]), int(ob["self_pos"][1])
 
             if msg is None:
                 actions[aid] = explore_actions.get(aid, {"action": env.ACTION_STAY, "message_tokens": []})

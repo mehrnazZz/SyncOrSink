@@ -364,14 +364,16 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device):
                 eval_obs, _ = env.reset(seed=10000 + update + ep)
                 h_eval = model.init_hidden(N, device)
                 ep_done, ep_trunc = False, False
+                info = {}
                 while not (ep_done or ep_trunc):
                     obs_t = torch.tensor(build_batch_obs(eval_obs, N), dtype=torch.float32, device=device)
                     with torch.no_grad():
                         logits, h_eval = model(obs_t, h_eval)
                     acts = torch.argmax(logits, dim=-1)
                     actions = {aid: {"action": int(acts[aid].item()), "message_tokens": []} for aid in range(N)}
-                    eval_obs, _, ep_done, ep_trunc, _ = env.step(actions)
-                eval_success.append(1.0 if ep_done else 0.0)
+                    eval_obs, _, ep_done, ep_trunc, info = env.step(actions)
+                success = bool(info.get("success", False)) if cfg.scenario == "energy_grid" else bool(ep_done)
+                eval_success.append(1.0 if success else 0.0)
             sr = np.mean(eval_success)
             print(f"  eval | success {sr:.2f}")
             model.train()

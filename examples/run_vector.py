@@ -11,9 +11,9 @@ from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkVector
 def main():
     venv = SyncOrSinkVector(num_envs=2, config=SyncOrSinkConfig())
     obs, infos = venv.reset(seed=0)
-    done = False
-    truncated = False
-    while not (done or truncated):
+    done = [False] * venv.num_envs
+    truncated = [False] * venv.num_envs
+    while not all(d or t for d, t in zip(done, truncated)):
         actions = []
         for env_idx in range(2):
             env_actions = {}

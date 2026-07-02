@@ -231,12 +231,15 @@ def main():
     elif args.policy == "signal_hunt_planner_comm":
         policy = signal_hunt_planner_comm(env)
     elif args.policy == "comm_mat":
+        checkpoint = args.comm_mat_ckpt
+        if checkpoint and not os.path.isabs(checkpoint):
+            checkpoint = os.path.join(ROOT, checkpoint)
         policy = CommMATPolicy(
             config=CommMATPolicyConfig(
                 deterministic=not args.comm_mat_stochastic,
                 send_threshold=args.comm_mat_send_threshold,
             ),
-            checkpoint=args.comm_mat_ckpt,
+            checkpoint=checkpoint,
         )
     elif args.policy == "bc":
         import torch

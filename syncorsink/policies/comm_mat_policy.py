@@ -82,11 +82,13 @@ class CommMATPolicy(BasePolicy):
         self.device = torch.device(device)
         self.model = model
         self._built = model is not None
+        self._checkpoint_path = checkpoint if checkpoint is not None and model is None else None
         if self.model is not None:
             self.model.to(self.device)
             self.model.eval()
         if checkpoint is not None:
-            self._load_checkpoint(checkpoint)
+            if self.model is not None:
+                self._load_checkpoint(checkpoint)
 
     def _load_checkpoint(self, path: str):
         if self.model is None:
@@ -122,6 +124,9 @@ class CommMATPolicy(BasePolicy):
         self.model = CommMATModel(model_cfg).to(self.device)
         self.model.eval()
         self._built = True
+        if self._checkpoint_path is not None:
+            self._load_checkpoint(self._checkpoint_path)
+            self._checkpoint_path = None
 
     def reset(self):
         return None

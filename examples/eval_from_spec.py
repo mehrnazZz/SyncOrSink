@@ -13,12 +13,98 @@ from syncorsink.eval.runner import run_episodes
 from syncorsink.eval.llm_runner import run_llm_episodes
 from syncorsink.policies.random_policy import random_policy
 from syncorsink.policies.scripted import pipeline_planner, energy_planner, signal_hunt_planner
+from syncorsink.policies.oracle import (
+    pipeline_oracle,
+    pipeline_oracle_strong,
+    energy_oracle,
+    energy_oracle_strong,
+    energy_oracle_planner,
+    signal_hunt_oracle,
+    signal_hunt_oracle_strong,
+)
+from syncorsink.policies.comm_wrapper import wrap_oracle_with_comm
+from syncorsink.policies.planner_comm import (
+    pipeline_planner_comm,
+    pipeline_planner_follower,
+    pipeline_planner_comm_followers,
+    pipeline_planner_comm_followers_regions,
+    pipeline_planner_dispatcher,
+    pipeline_planner_semidec,
+    energy_planner_comm,
+    signal_hunt_planner_comm,
+)
 from syncorsink.policies.comm_mat_policy import CommMATPolicy, CommMATPolicyConfig
 from syncorsink.llm.policy import LLMPolicy
 
 
 def dummy_llm(prompt: str):
     return '{"action": 4, "message_text": ""}'
+
+
+def build_marl_policy(spec, env):
+    policy = spec.policy
+    if policy == "random":
+        return random_policy(env.action_space, env.num_agents)
+    if policy == "scripted":
+        if spec.scenario == "pipeline_assembly":
+            return pipeline_planner(env)
+        if spec.scenario == "energy_grid":
+            return energy_planner(env)
+        return signal_hunt_planner(env)
+    if policy == "oracle":
+        if spec.scenario == "pipeline_assembly":
+            return pipeline_oracle(env)
+        if spec.scenario == "energy_grid":
+            return energy_oracle(env)
+        return signal_hunt_oracle(env)
+    if policy == "oracle_strong":
+        if spec.scenario == "pipeline_assembly":
+            return pipeline_oracle_strong(env)
+        if spec.scenario == "energy_grid":
+            return energy_oracle_strong(env)
+        return signal_hunt_oracle_strong(env)
+    if policy == "oracle_planner":
+        if spec.scenario == "energy_grid":
+            return energy_oracle_planner(env)
+        if spec.scenario == "pipeline_assembly":
+            return pipeline_oracle_strong(env)
+        return signal_hunt_oracle_strong(env)
+    if policy == "oracle_comm":
+        if spec.scenario == "pipeline_assembly":
+            base = pipeline_oracle_strong(env)
+        elif spec.scenario == "energy_grid":
+            base = energy_oracle_strong(env)
+        else:
+            base = signal_hunt_oracle_strong(env)
+        return wrap_oracle_with_comm(base, env)
+    if policy == "pipeline_planner_comm":
+        return pipeline_planner_comm(env)
+    if policy == "pipeline_planner_follower":
+        return pipeline_planner_follower(env)
+    if policy == "pipeline_planner_comm_followers":
+        return pipeline_planner_comm_followers(env)
+    if policy == "pipeline_planner_comm_followers_regions":
+        return pipeline_planner_comm_followers_regions(env)
+    if policy == "pipeline_planner_dispatcher":
+        return pipeline_planner_dispatcher(env)
+    if policy == "pipeline_planner_semidec":
+        return pipeline_planner_semidec(env)
+    if policy == "energy_planner_comm":
+        return energy_planner_comm(env)
+    if policy == "signal_hunt_planner_comm":
+        return signal_hunt_planner_comm(env)
+    if policy == "comm_mat":
+        checkpoint = spec.policy_checkpoint
+        if checkpoint and not os.path.isabs(checkpoint):
+            checkpoint = os.path.join(ROOT, checkpoint)
+        return CommMATPolicy(
+            config=CommMATPolicyConfig(
+                deterministic=spec.comm_mat_deterministic,
+                send_threshold=spec.comm_mat_send_threshold,
+            ),
+            checkpoint=checkpoint,
+        )
+    raise ValueError(f"Unsupported policy in spec: {policy}")
 
 
 def main():
@@ -32,6 +118,12 @@ def main():
         split=spec.split,
         map_variant=spec.map_variant,
         track=getattr(spec, "track", "dtde"),
+        map_size=spec.map_size,
+        num_agents=spec.num_agents,
+        fov_preset=spec.fov_preset,
+        max_steps=spec.max_steps,
+        comm_mode=spec.comm_mode,
+        energy_preset=spec.energy_preset,
     )
     env = SyncOrSinkEnv(config)
 
@@ -40,25 +132,7 @@ def main():
         episodes = run_llm_episodes(env, policy, episodes=spec.episodes, seed=0)
         summary = summarize(episodes)
     else:
-        if spec.policy == "random":
-            policy = random_policy(env.action_space, env.num_agents)
-        elif spec.policy == "scripted":
-            if spec.scenario == "pipeline_assembly":
-                policy = pipeline_planner(env)
-            elif spec.scenario == "energy_grid":
-                policy = energy_planner(env)
-            else:
-                policy = signal_hunt_planner(env)
-        elif spec.policy == "comm_mat":
-            policy = CommMATPolicy(
-                config=CommMATPolicyConfig(
-                    deterministic=bool(getattr(spec, "comm_mat_deterministic", True)),
-                    send_threshold=float(getattr(spec, "comm_mat_send_threshold", 0.5)),
-                ),
-                checkpoint=getattr(spec, "policy_checkpoint", None),
-            )
-        else:
-            policy = random_policy(env.action_space, env.num_agents)
+        policy = build_marl_policy(spec, env)
         summary, _ = run_episodes(env, policy, episodes=spec.episodes, seed=0)
 
     print("episodes", summary.episodes)

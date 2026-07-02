@@ -13,6 +13,26 @@ from syncorsink.eval.runner import run_episodes
 from syncorsink.eval.llm_runner import run_llm_episodes
 from syncorsink.policies.random_policy import random_policy
 from syncorsink.policies.scripted import pipeline_planner, energy_planner, signal_hunt_planner
+from syncorsink.policies.oracle import (
+    pipeline_oracle,
+    pipeline_oracle_strong,
+    energy_oracle,
+    energy_oracle_strong,
+    energy_oracle_planner,
+    signal_hunt_oracle,
+    signal_hunt_oracle_strong,
+)
+from syncorsink.policies.comm_wrapper import wrap_oracle_with_comm
+from syncorsink.policies.planner_comm import (
+    pipeline_planner_comm,
+    pipeline_planner_follower,
+    pipeline_planner_comm_followers,
+    pipeline_planner_comm_followers_regions,
+    pipeline_planner_dispatcher,
+    pipeline_planner_semidec,
+    energy_planner_comm,
+    signal_hunt_planner_comm,
+)
 from syncorsink.policies.comm_mat_policy import CommMATPolicy, CommMATPolicyConfig
 from syncorsink.llm.policy import LLMPolicy
 
@@ -34,15 +54,60 @@ def build_policy(spec, env):
         if env.config.scenario == "energy_grid":
             return energy_planner(env)
         return signal_hunt_planner(env)
+    if policy == "oracle":
+        if env.config.scenario == "pipeline_assembly":
+            return pipeline_oracle(env)
+        if env.config.scenario == "energy_grid":
+            return energy_oracle(env)
+        return signal_hunt_oracle(env)
+    if policy == "oracle_strong":
+        if env.config.scenario == "pipeline_assembly":
+            return pipeline_oracle_strong(env)
+        if env.config.scenario == "energy_grid":
+            return energy_oracle_strong(env)
+        return signal_hunt_oracle_strong(env)
+    if policy == "oracle_planner":
+        if env.config.scenario == "energy_grid":
+            return energy_oracle_planner(env)
+        if env.config.scenario == "pipeline_assembly":
+            return pipeline_oracle_strong(env)
+        return signal_hunt_oracle_strong(env)
+    if policy == "oracle_comm":
+        if env.config.scenario == "pipeline_assembly":
+            base = pipeline_oracle_strong(env)
+        elif env.config.scenario == "energy_grid":
+            base = energy_oracle_strong(env)
+        else:
+            base = signal_hunt_oracle_strong(env)
+        return wrap_oracle_with_comm(base, env)
+    if policy == "pipeline_planner_comm":
+        return pipeline_planner_comm(env)
+    if policy == "pipeline_planner_follower":
+        return pipeline_planner_follower(env)
+    if policy == "pipeline_planner_comm_followers":
+        return pipeline_planner_comm_followers(env)
+    if policy == "pipeline_planner_comm_followers_regions":
+        return pipeline_planner_comm_followers_regions(env)
+    if policy == "pipeline_planner_dispatcher":
+        return pipeline_planner_dispatcher(env)
+    if policy == "pipeline_planner_semidec":
+        return pipeline_planner_semidec(env)
+    if policy == "energy_planner_comm":
+        return energy_planner_comm(env)
+    if policy == "signal_hunt_planner_comm":
+        return signal_hunt_planner_comm(env)
     if policy == "comm_mat":
+        checkpoint = spec.get("policy_checkpoint")
+        if checkpoint and not os.path.isabs(checkpoint):
+            checkpoint = os.path.join(ROOT, checkpoint)
         return CommMATPolicy(
             config=CommMATPolicyConfig(
                 deterministic=bool(spec.get("comm_mat_deterministic", True)),
                 send_threshold=float(spec.get("comm_mat_send_threshold", 0.5)),
             ),
-            checkpoint=spec.get("policy_checkpoint"),
+            checkpoint=checkpoint,
         )
-    return random_policy(env.action_space, env.num_agents)
+    raise ValueError(f"Unsupported benchmark policy: {policy}")
 
 
 def main():
@@ -70,8 +135,11 @@ def main():
             map_variant=int(spec.get("map_variant", 0)),
             fov_preset=spec.get("fov_preset", "medium"),
             map_size=int(spec.get("map_size", 16)),
+            num_agents=int(spec.get("agents", spec.get("num_agents", 3))),
+            max_steps=int(spec.get("max_steps", 300)),
             comm_mode=spec.get("comm_mode", "tokens"),
             track=spec.get("track", "dtde"),
+            energy_preset=spec.get("energy_preset", "hard"),
         )
         env = SyncOrSinkEnv(config)
         policy = build_policy(spec, env)

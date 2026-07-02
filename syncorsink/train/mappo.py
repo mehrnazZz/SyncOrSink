@@ -717,6 +717,7 @@ def train_mappo(cfg: MAPPOConfig):
                 ep_trunc = False
                 steps = 0
                 total_reward = 0.0
+                info = {}
                 while not (ep_done or ep_trunc):
                     obs_batch = build_batch_obs(eval_obs, N)
                     obs_tensor = torch.tensor(obs_batch, dtype=torch.float32, device=device)
@@ -749,7 +750,11 @@ def train_mappo(cfg: MAPPOConfig):
                     steps += 1
                 eval_returns.append(total_reward)
                 eval_steps_list.append(steps)
-                eval_success.append(1.0 if ep_done else 0.0)
+                if cfg.scenario == "energy_grid":
+                    success = bool(info.get("success", False))
+                else:
+                    success = bool(ep_done)
+                eval_success.append(1.0 if success else 0.0)
                 eval_obs, _ = env.reset(seed=10000 + update + ep + 1)
 
             print(
