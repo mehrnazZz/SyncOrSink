@@ -25,6 +25,19 @@ class TrainEvalWorkbenchConfig:
     comm_token_limit: int = 4
     comm_vocab_size: int = 8
     comm_max_messages: int = 4
+    comm_cost: float = 0.01
+    comm_len_cost: float = 0.0
+    pipeline_shaping: bool = False
+    pipeline_shaping_scale: float = 0.01
+    energy_shaping: bool = False
+    energy_shaping_scale: float = 0.01
+    signal_shaping: bool = False
+    signal_shaping_scale: float = 0.01
+    signal_scan_bonus: float = 0.0
+    signal_joint_scan_bonus: float = 0.0
+    signal_colocation_bonus: float = 0.0
+    signal_colocation_radius: int = 2
+    signal_comm_utility: float = 0.0
     critic_mode: str = "central"
     shared_actor: bool = False
     hidden_dim: int = 32
@@ -35,6 +48,8 @@ class TrainEvalWorkbenchConfig:
     lr: float = 3e-4
     device: str = "cpu"
     seed: int = 0
+    train_eval_every: int = 0
+    train_eval_episodes: int = 5
     eval_episodes: int = 2
     eval_seed: int = 1000
     output_dir: str = "logs/workbench"
@@ -54,6 +69,7 @@ def run_train_eval_workbench(cfg: TrainEvalWorkbenchConfig) -> dict[str, Any]:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = checkpoint_dir / "mappo.pt"
     summary_path = run_dir / "summary.json"
+    wandb_run, wandb_info = _start_wandb(cfg, run_dir)
 
     train_cfg = MAPPOConfig(
         scenario=cfg.scenario,
@@ -66,6 +82,19 @@ def run_train_eval_workbench(cfg: TrainEvalWorkbenchConfig) -> dict[str, Any]:
         comm_token_limit=cfg.comm_token_limit,
         comm_vocab_size=cfg.comm_vocab_size,
         comm_max_messages=cfg.comm_max_messages,
+        comm_cost=cfg.comm_cost,
+        comm_len_cost=cfg.comm_len_cost,
+        pipeline_shaping=cfg.pipeline_shaping,
+        pipeline_shaping_scale=cfg.pipeline_shaping_scale,
+        energy_shaping=cfg.energy_shaping,
+        energy_shaping_scale=cfg.energy_shaping_scale,
+        signal_shaping=cfg.signal_shaping,
+        signal_shaping_scale=cfg.signal_shaping_scale,
+        signal_scan_bonus=cfg.signal_scan_bonus,
+        signal_joint_scan_bonus=cfg.signal_joint_scan_bonus,
+        signal_colocation_bonus=cfg.signal_colocation_bonus,
+        signal_colocation_radius=cfg.signal_colocation_radius,
+        signal_comm_utility=cfg.signal_comm_utility,
         critic_mode=cfg.critic_mode,
         shared_actor=cfg.shared_actor,
         hidden_dim=cfg.hidden_dim,
@@ -76,12 +105,12 @@ def run_train_eval_workbench(cfg: TrainEvalWorkbenchConfig) -> dict[str, Any]:
         lr=cfg.lr,
         device=cfg.device,
         seed=cfg.seed,
-        eval_every=0,
-        eval_episodes=0,
+        eval_every=cfg.train_eval_every,
+        eval_episodes=cfg.train_eval_episodes,
         save=str(checkpoint_path),
         save_every=max(1, cfg.updates),
     )
-    train_mappo(train_cfg)
+    train_mappo(train_cfg, wandb_run=wandb_run, finish_wandb=False)
 
     env_config = SyncOrSinkConfig(
         scenario=cfg.scenario,
@@ -93,6 +122,19 @@ def run_train_eval_workbench(cfg: TrainEvalWorkbenchConfig) -> dict[str, Any]:
         comm_token_limit=cfg.comm_token_limit,
         token_vocab_size=cfg.comm_vocab_size,
         max_messages=cfg.comm_max_messages,
+        comm_cost=cfg.comm_cost,
+        comm_len_cost=cfg.comm_len_cost,
+        pipeline_shaping=cfg.pipeline_shaping,
+        pipeline_shaping_scale=cfg.pipeline_shaping_scale,
+        energy_shaping=cfg.energy_shaping,
+        energy_shaping_scale=cfg.energy_shaping_scale,
+        signal_shaping=cfg.signal_shaping,
+        signal_shaping_scale=cfg.signal_shaping_scale,
+        signal_scan_bonus=cfg.signal_scan_bonus,
+        signal_joint_scan_bonus=cfg.signal_joint_scan_bonus,
+        signal_colocation_bonus=cfg.signal_colocation_bonus,
+        signal_colocation_radius=cfg.signal_colocation_radius,
+        signal_comm_utility=cfg.signal_comm_utility,
     )
     env = SyncOrSinkEnv(env_config)
     policy = load_mappo_checkpoint_policy(
@@ -114,9 +156,16 @@ def run_train_eval_workbench(cfg: TrainEvalWorkbenchConfig) -> dict[str, Any]:
         "train_config": asdict(train_cfg),
         "eval": asdict(summary),
         "episodes": [asdict(ep) for ep in episodes],
+        "wandb": wandb_info,
     }
     _write_json(summary_path, result)
-    result["wandb"] = _log_wandb(cfg, result, files=[checkpoint_path, summary_path])
+    result["wandb"] = _finish_wandb(
+        cfg,
+        run=wandb_run,
+        current_info=wandb_info,
+        result=result,
+        files=[checkpoint_path, summary_path],
+    )
     _write_json(summary_path, result)
     return result
 
@@ -133,10 +182,8 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _log_wandb(cfg: TrainEvalWorkbenchConfig, result: dict[str, Any], files: list[Path]) -> dict[str, Any]:
-    if not cfg.wandb:
-        return {"enabled": False}
-    wandb_dir = Path(result["run_dir"]) / "wandb"
+def _prepare_wandb_dirs(run_dir: Path) -> Path:
+    wandb_dir = run_dir / "wandb"
     data_dir = wandb_dir / "data"
     artifact_dir = wandb_dir / "artifacts"
     cache_dir = wandb_dir / "cache"
@@ -148,46 +195,72 @@ def _log_wandb(cfg: TrainEvalWorkbenchConfig, result: dict[str, Any], files: lis
     os.environ["WANDB_ARTIFACT_DIR"] = str(artifact_dir)
     os.environ["WANDB_CACHE_DIR"] = str(cache_dir)
     os.environ["WANDB_CONFIG_DIR"] = str(config_dir)
+    return wandb_dir
+
+
+def _start_wandb(cfg: TrainEvalWorkbenchConfig, run_dir: Path):
+    if not cfg.wandb:
+        return None, {"enabled": False}
+    wandb_dir = _prepare_wandb_dirs(run_dir)
     try:
         import wandb
     except Exception as exc:
-        return {"enabled": False, "error": f"wandb unavailable: {exc}"}
+        return None, {"enabled": False, "error": f"wandb unavailable: {exc}"}
 
-    run = None
     try:
         run = wandb.init(
             project=cfg.wandb_project,
-            name=cfg.wandb_run or Path(result["run_dir"]).name,
+            name=cfg.wandb_run or run_dir.name,
             mode=cfg.wandb_mode,
-            config=result["workbench_config"],
+            config=asdict(cfg),
             dir=str(wandb_dir),
         )
+        return run, _wandb_info(run, cfg, wandb_dir)
+    except Exception as exc:
+        return None, {"enabled": False, "error": str(exc), "local_dir": str(wandb_dir)}
+
+
+def _finish_wandb(
+    cfg: TrainEvalWorkbenchConfig,
+    *,
+    run,
+    current_info: dict[str, Any],
+    result: dict[str, Any],
+    files: list[Path],
+) -> dict[str, Any]:
+    if run is None:
+        return current_info
+    try:
         run.log(
             {
                 "eval/success_rate": float(result["eval"]["success_rate"]),
                 "eval/avg_return": float(result["eval"]["avg_return"]),
                 "eval/avg_steps": float(result["eval"]["avg_steps"]),
                 "eval/avg_comm_tokens": float(result["eval"]["avg_comm_tokens"]),
-                "train/updates": int(cfg.updates),
-                "train/rollout_steps": int(cfg.rollout_steps),
+                "workbench/status_complete": 1,
             }
         )
         if cfg.wandb_mode != "disabled":
+            import wandb
             artifact = wandb.Artifact(Path(result["run_dir"]).name, type="train_eval_workbench")
             for file_path in files:
                 artifact.add_file(str(file_path))
             run.log_artifact(artifact)
-        info = {
-            "enabled": True,
-            "mode": cfg.wandb_mode,
-            "run_id": getattr(run, "id", None),
-            "run_name": getattr(run, "name", None),
-            "run_path": getattr(run, "path", None),
-            "local_dir": str(wandb_dir),
-        }
-        return info
+        return _wandb_info(run, cfg, Path(result["run_dir"]) / "wandb")
     except Exception as exc:
-        return {"enabled": False, "error": str(exc)}
+        info = dict(current_info)
+        info["final_log_error"] = str(exc)
+        return info
     finally:
-        if run is not None:
-            run.finish()
+        run.finish()
+
+
+def _wandb_info(run, cfg: TrainEvalWorkbenchConfig, wandb_dir: Path) -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "mode": cfg.wandb_mode,
+        "run_id": getattr(run, "id", None),
+        "run_name": getattr(run, "name", None),
+        "run_path": getattr(run, "path", None),
+        "local_dir": str(wandb_dir),
+    }

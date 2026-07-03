@@ -425,7 +425,13 @@ python examples/train_eval_workbench.py --scenario signal_hunt --comm --updates 
 W&B workbench logging can run online or locally:
 
 ```bash
-python examples/train_eval_workbench.py --scenario signal_hunt --comm --wandb --wandb-mode offline
+python examples/train_eval_workbench.py \
+  --scenario signal_hunt \
+  --comm \
+  --signal-shaping \
+  --signal-joint-scan-bonus 3.0 \
+  --wandb \
+  --wandb-mode offline
 ```
 
 ### LLM / Tool‑Calling Policies

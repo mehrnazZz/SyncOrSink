@@ -331,6 +331,21 @@ def load_mappo_checkpoint_policy(
     )
 
 
+def _safe_wandb_log(wandb_run, payload: dict):
+    if wandb_run is None:
+        return None
+    try:
+        wandb_run.log(payload)
+        return wandb_run
+    except Exception as exc:
+        print(f"wandb log failed, disabling wandb for this run: {exc}")
+        try:
+            wandb_run.finish()
+        except Exception:
+            pass
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Rollout helpers — batched actor forward
 # ---------------------------------------------------------------------------
@@ -416,7 +431,7 @@ def _actor_forward_minibatch(actors, obs_batch, agent_ids, shared_actor, comm):
 # Training loop
 # ---------------------------------------------------------------------------
 
-def train_mappo(cfg: MAPPOConfig):
+def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
     set_global_seeds(cfg.seed)
     env_config = SyncOrSinkConfig(
         scenario=cfg.scenario,
@@ -534,8 +549,7 @@ def train_mappo(cfg: MAPPOConfig):
         start_update = load_checkpoint(cfg.load, actors, critic, optimizer)
 
     # --- W&B ---
-    wandb_run = None
-    if cfg.wandb:
+    if wandb_run is None and cfg.wandb:
         try:
             import wandb
             wandb_run = wandb.init(
@@ -896,7 +910,7 @@ def train_mappo(cfg: MAPPOConfig):
                     log_payload["rollout/comm_len_hist"] = wandb.Histogram(comm_len_samples)
                 except Exception:
                     pass
-            wandb_run.log(log_payload)
+            wandb_run = _safe_wandb_log(wandb_run, log_payload)
 
         # ---- Periodic evaluation ----
         if cfg.eval_every > 0 and (update + 1) % cfg.eval_every == 0:
@@ -953,7 +967,7 @@ def train_mappo(cfg: MAPPOConfig):
                 f"success {np.mean(eval_success):.2f}"
             )
             if wandb_run is not None:
-                wandb_run.log({
+                wandb_run = _safe_wandb_log(wandb_run, {
                     "eval/mean_return": float(np.mean(eval_returns)),
                     "eval/mean_steps": float(np.mean(eval_steps_list)),
                     "eval/success_rate": float(np.mean(eval_success)),
@@ -966,7 +980,7 @@ def train_mappo(cfg: MAPPOConfig):
 
     if cfg.save:
         save_checkpoint(cfg.save, actors, critic, optimizer, cfg.updates, metadata=checkpoint_metadata)
-    if wandb_run is not None:
+    if wandb_run is not None and finish_wandb:
         wandb_run.finish()
 
 

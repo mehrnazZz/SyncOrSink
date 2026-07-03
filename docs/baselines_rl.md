@@ -51,8 +51,10 @@ python examples/train_eval_workbench.py \
   --agents 3 \
   --fov-preset easy \
   --comm \
+  --pipeline-shaping \
   --updates 20 \
   --rollout-steps 128 \
+  --train-eval-every 10 \
   --eval-episodes 5
 ```
 
@@ -65,12 +67,30 @@ W&B workbench logging:
 
 ```bash
 python examples/train_eval_workbench.py \
-  --scenario pipeline_assembly \
+  --scenario signal_hunt \
+  --map-size 8 \
+  --agents 2 \
+  --fov-preset easy \
   --comm \
+  --comm-token-limit 8 \
+  --comm-vocab-size 32 \
+  --comm-cost 0.001 \
+  --signal-shaping \
+  --signal-shaping-scale 0.1 \
+  --signal-scan-bonus 0.2 \
+  --signal-joint-scan-bonus 3.0 \
+  --signal-colocation-bonus 0.5 \
+  --signal-colocation-radius 2 \
+  --signal-comm-utility 0.1 \
+  --train-eval-every 20 \
   --wandb \
   --wandb-project syncorsink-workbench \
   --wandb-mode offline
 ```
+
+The workbench logs MAPPO update metrics and final reload-eval metrics to the
+same W&B run, then uploads `summary.json` and the saved checkpoint as an
+artifact when W&B is enabled.
 
 Small sanity run:
 
