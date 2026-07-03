@@ -212,6 +212,78 @@ def test_energy_grid_node_critical_events():
     assert done or truncated
 
 
+def test_energy_grid_private_monitor_masks_unassigned_node_energy():
+    """Default energy grid observations hide unassigned node urgency."""
+    from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig
+
+    config = SyncOrSinkConfig(
+        scenario="energy_grid", map_size=8, num_agents=2,
+        fov_preset="easy", energy_preset="easy",
+    )
+    env = SyncOrSinkEnv(config)
+    env.reset(seed=0)
+
+    node_assignments = env.scenario_state.data["node_assignments"]
+    node_energy = env.scenario_state.data["node_energy"]
+    node_pos = next(pos for pos, assigned in node_assignments.items() if assigned != 0)
+    assigned_agent = node_assignments[node_pos]
+    env.agent_positions[0] = node_pos
+    env.agent_positions[assigned_agent] = node_pos
+
+    obs = env._build_observations()
+    center = tuple(dim // 2 for dim in obs[0]["local_node_energy"].shape)
+
+    assert env.config.energy_private_monitor is True
+    assert int(obs[0]["local_node_energy"][center]) == 0
+    assert int(obs[assigned_agent]["local_node_energy"][center]) == int(node_energy[node_pos])
+
+
+def test_energy_grid_private_monitor_routes_node_critical_events_to_assigned_agent():
+    """Default node_critical events must not leak private node state to every agent."""
+    from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig
+
+    config = SyncOrSinkConfig(
+        scenario="energy_grid", map_size=8, num_agents=3,
+        fov_preset="easy", energy_preset="easy",
+    )
+    env = SyncOrSinkEnv(config)
+    env.reset(seed=0)
+    node_pos, assigned_agent = next(iter(env.scenario_state.data["node_assignments"].items()))
+    env.scenario_state.data["node_energy"][node_pos] = env.scenario_state.data["sync_threshold"]
+
+    actions = {i: {"action": env.ACTION_STAY} for i in range(env.num_agents)}
+    _, _, _, _, info = env.step(actions)
+
+    for agent_id, events in info["events"].items():
+        critical = [event for event in events if event.get("event") == "node_critical" and event.get("node") == node_pos]
+        if agent_id == assigned_agent:
+            assert len(critical) == 1
+        else:
+            assert critical == []
+
+
+def test_energy_grid_symmetric_control_broadcasts_node_critical_events():
+    """The legacy symmetric ablation remains explicit and observable."""
+    from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig
+
+    config = SyncOrSinkConfig(
+        scenario="energy_grid", map_size=8, num_agents=3,
+        fov_preset="easy", energy_preset="easy", energy_private_monitor=False,
+    )
+    env = SyncOrSinkEnv(config)
+    env.reset(seed=0)
+    node_pos = next(iter(env.scenario_state.data["node_energy"]))
+    env.scenario_state.data["node_energy"][node_pos] = env.scenario_state.data["sync_threshold"]
+
+    actions = {i: {"action": env.ACTION_STAY} for i in range(env.num_agents)}
+    _, _, _, _, info = env.step(actions)
+
+    assert all(
+        any(event.get("event") == "node_critical" and event.get("node") == node_pos for event in events)
+        for events in info["events"].values()
+    )
+
+
 def test_oracle_policies_all_scenarios():
     """Verify all oracle policies run without error."""
     from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig

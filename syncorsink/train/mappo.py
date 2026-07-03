@@ -34,7 +34,7 @@ class MAPPOConfig:
     comm_cost: float = 0.01
     max_steps: int = 300
     energy_preset: str = "hard"
-    energy_private_monitor: bool = False
+    energy_private_monitor: bool = True
     # reward shaping
     pipeline_shaping: bool = False
     pipeline_shaping_scale: float = 0.01
@@ -1003,7 +1003,7 @@ def main():
     parser.add_argument("--comm-cost", type=float, default=0.01)
     parser.add_argument("--max-steps", type=int, default=300)
     parser.add_argument("--energy-preset", default="hard")
-    parser.add_argument("--energy-private-monitor", action="store_true")
+    parser.add_argument("--energy-private-monitor", action=argparse.BooleanOptionalAction, default=True)
     # reward shaping
     parser.add_argument("--pipeline-shaping", action="store_true")
     parser.add_argument("--pipeline-shaping-scale", type=float, default=0.01)

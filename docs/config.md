@@ -20,6 +20,8 @@ All configuration options are defined in `syncorsink/envs/base.py` under `SyncOr
 | `signal_decoy_count` | int? | `None` | Override decoy target count in Signal Hunt. |
 | `decoy_penalty` | float | `0.5` | Penalty multiplier for decoy scan. |
 | `scan_window` | int | `3` | Steps window for joint scan. |
+| `energy_preset` | str | `"hard"` | Energy Grid difficulty preset: `easy` or `hard`. |
+| `energy_private_monitor` | bool | `True` | If true, each Energy Grid node's energy is visible only to its assigned monitor; use `False` only for the legacy symmetric-information ablation. |
 | `map_seed` | int? | `None` | Fixed map seed. |
 | `map_variant` | int | `0` | Variant offset for seed. |
 | `split` | str? | `None` | Split name: `train`, `val`, `test`. |

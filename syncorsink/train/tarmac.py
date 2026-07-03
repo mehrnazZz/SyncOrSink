@@ -41,7 +41,7 @@ class TarMACTrainConfig:
     fov_preset: str = "easy"
     max_steps: int = 300
     energy_preset: str = "hard"
-    energy_private_monitor: bool = False
+    energy_private_monitor: bool = True
     # reward shaping
     pipeline_shaping: bool = False
     pipeline_shaping_scale: float = 0.01
@@ -400,7 +400,7 @@ def main():
     p.add_argument("--fov-preset", default="easy", choices=["easy", "medium", "hard"])
     p.add_argument("--max-steps", type=int, default=300)
     p.add_argument("--energy-preset", default="hard")
-    p.add_argument("--energy-private-monitor", action="store_true")
+    p.add_argument("--energy-private-monitor", action=argparse.BooleanOptionalAction, default=True)
     # shaping
     p.add_argument("--pipeline-shaping", action="store_true")
     p.add_argument("--pipeline-shaping-scale", type=float, default=0.01)

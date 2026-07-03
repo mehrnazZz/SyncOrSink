@@ -18,6 +18,9 @@ manifest remains frozen. Packs are now used to generate
 `benchmarks/syncorsink_v0_2.json`, the forward-compatible manifest line for
 future advanced and procedural packs.
 
+The v0.2 core packs use private node monitoring for `energy_grid`; the old
+symmetric-information setting remains available only as an explicit ablation.
+
 ## Inspect Packs
 
 ```bash

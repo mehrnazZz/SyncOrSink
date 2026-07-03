@@ -19,7 +19,7 @@ def test_scenario_registry_matches_implemented_scenarios():
     assert set(scenario_names()) == set(SCENARIOS)
     assert all(meta.tier == "core" for meta in SCENARIO_REGISTRY.values())
     assert get_scenario_metadata("signal_hunt").communication_role == "required"
-    assert get_scenario_metadata("energy_grid").communication_role == "control"
+    assert get_scenario_metadata("energy_grid").communication_role == "required"
 
 
 def test_scenario_metadata_is_json_serializable():
@@ -42,7 +42,11 @@ def test_benchmark_cases_reference_registered_scenarios_and_tags():
     for case in bench.cases:
         meta = get_scenario_metadata(case.spec["scenario"])
         assert meta.tier == "core"
-        assert set(case.tags) & set(meta.benchmark_tags)
+        legacy_energy_control = case.spec["scenario"] == "energy_grid" and case.spec.get("energy_private_monitor") is False
+        if legacy_energy_control:
+            assert "communication_control" in case.tags
+        else:
+            assert set(case.tags) & set(meta.benchmark_tags)
 
 
 def test_spec_validation_rejects_unregistered_scenario():

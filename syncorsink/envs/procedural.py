@@ -110,7 +110,7 @@ SCENARIO_PACKS: dict[str, ScenarioPack] = {
         axes=(
             ProceduralAxis("scenario", "Core diagnostic scenario family.", tuple(scenario_names(tier="core"))),
             ProceduralAxis("map_size", "Canonical small-map benchmark scale.", (8,)),
-            ProceduralAxis("information_structure", "Whether communication is required or a control variable.", ("required", "control")),
+            ProceduralAxis("information_structure", "Private information structure that makes communication necessary.", ("required",)),
         ),
         presets=(
             ProceduralPreset(
@@ -129,8 +129,8 @@ SCENARIO_PACKS: dict[str, ScenarioPack] = {
                 map_size=8,
                 num_agents=3,
                 fov_preset="easy",
-                tags=("communication_control", "symmetric_information", "resource_allocation", "in_distribution"),
-                overrides={"energy_preset": "easy"},
+                tags=("communication_required", "private_information", "resource_allocation", "synchronized_recharge", "in_distribution"),
+                overrides={"energy_preset": "easy", "energy_private_monitor": True},
             ),
             ProceduralPreset(
                 name="pipeline_core_8x8",
@@ -170,8 +170,8 @@ SCENARIO_PACKS: dict[str, ScenarioPack] = {
                 map_size=16,
                 num_agents=4,
                 fov_preset="medium",
-                tags=("communication_control", "symmetric_information", "scale_generalization", "resource_allocation", "ood"),
-                overrides={"energy_preset": "hard"},
+                tags=("communication_required", "private_information", "scale_generalization", "resource_allocation", "synchronized_recharge", "ood"),
+                overrides={"energy_preset": "hard", "energy_private_monitor": True},
             ),
             ProceduralPreset(
                 name="pipeline_ood_16x16",

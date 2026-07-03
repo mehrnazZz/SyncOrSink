@@ -11,7 +11,7 @@ mutated after results have been recorded against them.
 - Cases: 6
 - Coverage:
   - `signal_hunt` 8x8 and 16x16
-  - `energy_grid` 8x8 and 16x16
+  - `energy_grid` 8x8 and 16x16 as the legacy symmetric-information ablation
   - `pipeline_assembly` 8x8 and 16x16
 
 Use v0.1 for the current public leaderboard under
@@ -24,7 +24,8 @@ Use v0.1 for the current public leaderboard under
 - Source packs: `core`, `core_ood`
 - Cases: 6
 - Compatibility: covers the same core and scaled scenario surface as v0.1, but
-  uses pack-derived case names and richer pack metadata.
+  uses pack-derived case names, richer pack metadata, and private node
+  monitoring for `energy_grid`.
 
 v0.2 is the forward-compatible manifest line for future scenario packs. New
 advanced or procedural families should extend v0.2 or later, rather than editing

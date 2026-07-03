@@ -55,9 +55,10 @@
       "name": "energy_grid_core_8x8_easy",
       "weight": 1.0,
       "tags": [
-        "communication_control",
-        "symmetric_information",
+        "communication_required",
+        "private_information",
         "resource_allocation",
+        "synchronized_recharge",
         "in_distribution"
       ],
       "spec": {
@@ -71,7 +72,8 @@
         "fov_preset": "easy",
         "max_steps": 300,
         "comm_mode": "tokens",
-        "energy_preset": "easy"
+        "energy_preset": "easy",
+        "energy_private_monitor": true
       }
     },
     {
@@ -123,10 +125,11 @@
       "name": "energy_grid_ood_16x16_hard",
       "weight": 1.0,
       "tags": [
-        "communication_control",
-        "symmetric_information",
+        "communication_required",
+        "private_information",
         "scale_generalization",
         "resource_allocation",
+        "synchronized_recharge",
         "ood"
       ],
       "spec": {
@@ -140,7 +143,8 @@
         "fov_preset": "medium",
         "max_steps": 300,
         "comm_mode": "tokens",
-        "energy_preset": "hard"
+        "energy_preset": "hard",
+        "energy_private_monitor": true
       }
     },
     {

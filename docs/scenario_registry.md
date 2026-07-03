@@ -22,8 +22,12 @@ Procedural pack metadata lives in `syncorsink/envs/procedural.py`; see
 | Scenario | Domain | Communication role | Private information | Main diagnostic |
 |---|---|---|---|---|
 | `signal_hunt` | Cooperative search | Required | Complementary clues | Agents must fuse private clues and synchronize target verification. |
-| `energy_grid` | Resource sharing | Control | Mostly symmetric | Tests whether communication helps when information is independently discoverable. |
+| `energy_grid` | Resource sharing | Required | Private node monitors | Agents must broadcast local urgency for assigned nodes and coordinate typed recharge. |
 | `pipeline_assembly` | Task planning | Required | Complementary blueprints | Agents must share partial plans and execute long-horizon dependencies. |
+
+`energy_grid` still supports the legacy symmetric-information ablation with
+`energy_private_monitor=False` or `--no-energy-private-monitor`, but the default
+core scenario uses private node monitoring so communication is necessary.
 
 `signal_hunt` is disaster-adjacent because it uses search, clues, decoys, and
 joint verification. It remains a `core` diagnostic scenario because it isolates

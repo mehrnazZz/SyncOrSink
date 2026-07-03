@@ -26,6 +26,7 @@ SCHEMA: Dict[str, Any] = {
         "comm_mode": {"type": "string"},
         "track": {"type": "string", "enum": ["dtde", "ctde"]},
         "energy_preset": {"type": "string"},
+        "energy_private_monitor": {"type": "boolean"},
         "policy_checkpoint": {"type": ["string", "null"]},
         "comm_mat_deterministic": {"type": "boolean"},
         "comm_mat_send_threshold": {"type": "number"},
@@ -67,6 +68,8 @@ def _manual_validate(data: Dict[str, Any]) -> None:
         raise ValueError("spec.comm_mode must be 'tokens' or 'text'")
     if "track" in data and data["track"] not in ("dtde", "ctde"):
         raise ValueError("spec.track must be 'dtde' or 'ctde'")
+    if "energy_private_monitor" in data and not isinstance(data["energy_private_monitor"], bool):
+        raise ValueError("spec.energy_private_monitor must be boolean")
     if "policy_entrypoint" in data and data["policy_entrypoint"] is not None and not isinstance(data["policy_entrypoint"], str):
         raise ValueError("spec.policy_entrypoint must be a string or null")
     if "policy_kwargs" in data and not isinstance(data["policy_kwargs"], dict):

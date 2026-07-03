@@ -28,7 +28,7 @@ families at 8x8 and 16x16 scales. These are `core` diagnostic scenarios:
 | Scenario | Communication Structure | Main Challenge |
 |---|---|---|
 | `signal_hunt` | Complementary private clues | Information fusion and synchronized scan |
-| `energy_grid` | Mostly symmetric information | Resource sharing and time pressure |
+| `energy_grid` | Legacy symmetric-information ablation | Resource sharing and time pressure |
 | `pipeline_assembly` | Private blueprints | Long-horizon dependency execution |
 
 The primary leaderboard score is:
@@ -40,7 +40,9 @@ The primary leaderboard score is:
 Return, steps, and communication tokens are reported as secondary diagnostics.
 
 `syncorsink_v0_2` is also available as a pack-generated successor manifest built
-from `core` and `core_ood` packs. See [Benchmark Versions](benchmark_versions.md).
+from `core` and `core_ood` packs. In v0.2 and in the environment defaults,
+`energy_grid` uses private node monitoring so communication is necessary. See
+[Benchmark Versions](benchmark_versions.md).
 
 ## Install
 

@@ -4,6 +4,11 @@
 **Benchmark:** SyncOrSink — Communication-focused cooperative multi-agent POMDP
 **Setting:** DTDE (decentralized training, decentralized execution), 8x8 maps, easy FOV
 
+**Energy Grid note:** the Energy Grid results below are historical results for
+the legacy symmetric-information variant. The current environment default and
+`syncorsink_v0_2` use private node monitoring, which is intended to make
+communication necessary.
+
 ---
 
 ## 1. Scenarios

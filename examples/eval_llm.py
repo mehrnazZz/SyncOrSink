@@ -199,6 +199,7 @@ def main():
     parser.add_argument("--split", default=None)
     parser.add_argument("--variant", type=int, default=0)
     parser.add_argument("--energy-preset", choices=["easy", "hard"], default="hard")
+    parser.add_argument("--energy-private-monitor", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--provider", choices=["dummy", "openai-chat", "openai-responses", "litellm"], default="dummy")
     parser.add_argument("--mode", choices=["text", "tools"], default="tools")
     parser.add_argument("--planner", choices=["action", "executor"], default="action")
@@ -234,6 +235,7 @@ def main():
         comm_mode="text",
         track="dtde",
         energy_preset=args.energy_preset,
+        energy_private_monitor=args.energy_private_monitor,
         render_split_view=args.render_split_view,
         render_god_view=args.render_god_view,
         render_style=args.render_style,

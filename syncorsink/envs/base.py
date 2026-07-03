@@ -66,7 +66,7 @@ class SyncOrSinkConfig:
     signal_comm_utility: float = 0.0      # reward for sending a message that precedes teammate's useful action
     # energy grid difficulty presets
     energy_preset: str = "hard"  # "easy" or "hard"
-    energy_private_monitor: bool = False  # each agent only sees energy of assigned nodes
+    energy_private_monitor: bool = True  # each agent only sees energy of assigned nodes
     # deterministic map control
     map_seed: int | None = None
     map_variant: int = 0

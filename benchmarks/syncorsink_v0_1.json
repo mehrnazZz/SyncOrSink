@@ -90,7 +90,8 @@
         "fov_preset": "easy",
         "max_steps": 300,
         "comm_mode": "tokens",
-        "energy_preset": "easy"
+        "energy_preset": "easy",
+        "energy_private_monitor": false
       }
     },
     {
@@ -114,7 +115,8 @@
         "fov_preset": "medium",
         "max_steps": 300,
         "comm_mode": "tokens",
-        "energy_preset": "hard"
+        "energy_preset": "hard",
+        "energy_private_monitor": false
       }
     },
     {

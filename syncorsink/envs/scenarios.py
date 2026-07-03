@@ -401,9 +401,16 @@ class EnergyGrid(ScenarioBase):
 
         # emit node_critical events when energy drops below sync threshold
         sync_thresh = env.scenario_state.data.get("sync_threshold", 3)
+        node_assignments = env.scenario_state.data.get("node_assignments", {})
+        private_monitor = bool(getattr(env.config, "energy_private_monitor", False))
         for pos, energy in env.scenario_state.data["node_energy"].items():
             if energy == sync_thresh or energy == sync_thresh // 2:
-                for agent_id in range(env.num_agents):
+                if private_monitor:
+                    assigned_agent = node_assignments.get(pos)
+                    recipients = [assigned_agent] if assigned_agent is not None else []
+                else:
+                    recipients = range(env.num_agents)
+                for agent_id in recipients:
                     events[agent_id].append({
                         "event": "node_critical",
                         "node": pos,

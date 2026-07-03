@@ -24,6 +24,7 @@ class EvalSpec:
     max_steps: int = 300
     comm_mode: str = "tokens"
     energy_preset: str = "hard"
+    energy_private_monitor: bool = True
     policy_checkpoint: str | None = None
     comm_mat_deterministic: bool = True
     comm_mat_send_threshold: float = 0.5
@@ -49,6 +50,7 @@ def load_spec(path: str) -> EvalSpec:
         max_steps=int(data.get("max_steps", 300)),
         comm_mode=data.get("comm_mode", "tokens"),
         energy_preset=data.get("energy_preset", "hard"),
+        energy_private_monitor=bool(data.get("energy_private_monitor", True)),
         policy_checkpoint=data.get("policy_checkpoint"),
         comm_mat_deterministic=bool(data.get("comm_mat_deterministic", True)),
         comm_mat_send_threshold=float(data.get("comm_mat_send_threshold", 0.5)),

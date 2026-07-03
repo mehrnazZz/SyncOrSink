@@ -134,6 +134,7 @@ def main():
         max_steps=spec.max_steps,
         comm_mode=spec.comm_mode,
         energy_preset=spec.energy_preset,
+        energy_private_monitor=spec.energy_private_monitor,
     )
     env = SyncOrSinkEnv(config)
 

@@ -53,6 +53,7 @@ def test_eval_spec_loads_extended_benchmark_fields(tmp_path):
         "comm_mode": "tokens",
         "track": "ctde",
         "energy_preset": "easy",
+        "energy_private_monitor": True,
         "policy": "comm_mat",
         "policy_entrypoint": "my_package.agent:build_policy",
         "policy_kwargs": {"temperature": 0.0},
@@ -68,6 +69,7 @@ def test_eval_spec_loads_extended_benchmark_fields(tmp_path):
     assert spec.max_steps == 90
     assert spec.track == "ctde"
     assert spec.energy_preset == "easy"
+    assert spec.energy_private_monitor is True
     assert spec.policy_entrypoint == "my_package.agent:build_policy"
     assert spec.policy_kwargs == {"temperature": 0.0}
     assert spec.policy_checkpoint == "checkpoints/comm_mat_energy.pt"

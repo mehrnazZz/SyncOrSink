@@ -111,6 +111,7 @@ def main():
     )
     parser.add_argument("--bc-ckpt", default=None, help="Path to BC model checkpoint")
     parser.add_argument("--energy-preset", default="hard", choices=["easy", "hard"])
+    parser.add_argument("--energy-private-monitor", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", default="syncorsink")
     parser.add_argument("--wandb-run", default=None)
@@ -140,6 +141,7 @@ def main():
         map_variant=args.variant,
         track="ctde" if "oracle" in args.policy else "dtde",
         energy_preset=args.energy_preset,
+        energy_private_monitor=args.energy_private_monitor,
         render_split_view=args.render_split_view,
         render_god_view=args.render_god_view,
         render_style=args.render_style,

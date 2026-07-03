@@ -33,7 +33,7 @@ class CommMATTrainConfig:
     comm_len_cost: float = 0.0
     comm_cost: float = 0.01
     energy_preset: str = "hard"
-    energy_private_monitor: bool = False
+    energy_private_monitor: bool = True
     # reward shaping
     pipeline_shaping: bool = False
     pipeline_shaping_scale: float = 0.01
@@ -590,7 +590,7 @@ def main():
     p.add_argument("--comm-len-cost", type=float, default=0.0)
     p.add_argument("--comm-cost", type=float, default=0.01)
     p.add_argument("--energy-preset", default="hard")
-    p.add_argument("--energy-private-monitor", action="store_true")
+    p.add_argument("--energy-private-monitor", action=argparse.BooleanOptionalAction, default=True)
     # reward shaping
     p.add_argument("--pipeline-shaping", action="store_true")
     p.add_argument("--pipeline-shaping-scale", type=float, default=0.01)

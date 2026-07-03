@@ -225,6 +225,7 @@ def main():
             comm_mode=spec.get("comm_mode", "tokens"),
             track=spec.get("track", "dtde"),
             energy_preset=spec.get("energy_preset", "hard"),
+            energy_private_monitor=bool(spec.get("energy_private_monitor", True)),
         )
         env = SyncOrSinkEnv(config)
         policy = build_policy(

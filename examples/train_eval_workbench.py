@@ -27,6 +27,7 @@ def main():
     parser.add_argument("--comm-max-messages", type=int, default=4)
     parser.add_argument("--comm-cost", type=float, default=0.01)
     parser.add_argument("--comm-len-cost", type=float, default=0.0)
+    parser.add_argument("--energy-private-monitor", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--pipeline-shaping", action="store_true")
     parser.add_argument("--pipeline-shaping-scale", type=float, default=0.01)
     parser.add_argument("--energy-shaping", action="store_true")

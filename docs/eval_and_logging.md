@@ -174,7 +174,10 @@ Flag:
 
 - `--spec` (required)
 
-Same spec keys as above are supported for Comm-MAT selection. Specs may also set `map_size`, `agents` or `num_agents`, `fov_preset`, `max_steps`, `comm_mode`, `track`, and `energy_preset`.
+Same spec keys as above are supported for Comm-MAT selection. Specs may also set `map_size`, `agents` or `num_agents`, `fov_preset`, `max_steps`, `comm_mode`, `track`, `energy_preset`, and `energy_private_monitor`.
+
+For `energy_grid`, `energy_private_monitor` defaults to `true`. Set it to
+`false` only for the legacy symmetric-information ablation.
 
 ## Recommended command patterns
 

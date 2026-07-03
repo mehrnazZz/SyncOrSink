@@ -38,8 +38,9 @@ Submissions must declare one track:
 The v0.1 suite covers three communication regimes:
 
 - `signal_hunt`: private clues, synchronized target scan, communication required.
-- `energy_grid`: symmetric information control task where communication should not
-  be necessary for strong policies.
+- `energy_grid`: legacy symmetric-information ablation. The current default and
+  v0.2 pack-generated case use private node monitoring where communication is
+  required.
 - `pipeline_assembly`: private blueprints and long-horizon dependency execution.
 
 Each family has an 8x8 in-distribution case and a 16x16 scaled generalization

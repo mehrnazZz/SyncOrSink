@@ -27,6 +27,7 @@ class TrainEvalWorkbenchConfig:
     comm_max_messages: int = 4
     comm_cost: float = 0.01
     comm_len_cost: float = 0.0
+    energy_private_monitor: bool = True
     pipeline_shaping: bool = False
     pipeline_shaping_scale: float = 0.01
     energy_shaping: bool = False
@@ -78,6 +79,7 @@ def run_train_eval_workbench(cfg: TrainEvalWorkbenchConfig) -> dict[str, Any]:
         fov_preset=cfg.fov_preset,
         max_steps=cfg.max_steps,
         energy_preset=cfg.energy_preset,
+        energy_private_monitor=cfg.energy_private_monitor,
         comm=cfg.comm,
         comm_token_limit=cfg.comm_token_limit,
         comm_vocab_size=cfg.comm_vocab_size,
@@ -119,6 +121,7 @@ def run_train_eval_workbench(cfg: TrainEvalWorkbenchConfig) -> dict[str, Any]:
         fov_preset=cfg.fov_preset,
         max_steps=cfg.max_steps,
         energy_preset=cfg.energy_preset,
+        energy_private_monitor=cfg.energy_private_monitor,
         comm_token_limit=cfg.comm_token_limit,
         token_vocab_size=cfg.comm_vocab_size,
         max_messages=cfg.comm_max_messages,
