@@ -27,6 +27,12 @@ def _run_expert(factory, *, scenario, episodes, seed=0, **config_kwargs):
             {"map_size": 16, "num_agents": 4, "fov_preset": "medium", "max_steps": 180},
         ),
         (
+            "signal_hunt",
+            "syncorsink.policies.planner_comm:signal_hunt_planner_comm",
+            16,
+            {"map_size": 32, "num_agents": 4, "fov_preset": "medium", "max_steps": 400},
+        ),
+        (
             "energy_grid",
             "syncorsink.policies.oracle:energy_oracle_planner",
             8,
@@ -51,6 +57,18 @@ def _run_expert(factory, *, scenario, episodes, seed=0, **config_kwargs):
             },
         ),
         (
+            "energy_grid",
+            "syncorsink.policies.oracle:energy_oracle_planner",
+            16,
+            {
+                "map_size": 32,
+                "num_agents": 4,
+                "fov_preset": "medium",
+                "energy_preset": "hard",
+                "max_steps": 500,
+            },
+        ),
+        (
             "pipeline_assembly",
             "syncorsink.policies.planner_comm:pipeline_planner_comm",
             8,
@@ -61,6 +79,18 @@ def _run_expert(factory, *, scenario, episodes, seed=0, **config_kwargs):
             "syncorsink.policies.planner_comm:pipeline_planner_comm",
             32,
             {"map_size": 16, "num_agents": 4, "fov_preset": "medium", "max_steps": 300},
+        ),
+        (
+            "pipeline_assembly",
+            "syncorsink.policies.planner_comm:pipeline_planner_comm",
+            16,
+            {"map_size": 24, "num_agents": 4, "fov_preset": "medium", "max_steps": 500},
+        ),
+        (
+            "pipeline_assembly",
+            "syncorsink.policies.planner_comm:pipeline_planner_comm",
+            32,
+            {"map_size": 32, "num_agents": 4, "fov_preset": "medium", "max_steps": 600},
         ),
     ],
 )

@@ -332,8 +332,8 @@ class EnergyGrid(ScenarioBase):
         import math
         rng = env.rng
         preset = getattr(env.config, "energy_preset", "hard")
-        # Energy scales with sqrt(map_size) — tight budget forces coordination.
-        # More nodes than agents means agents must triage and communicate.
+        # Energy scales with map size while staying tight enough to force
+        # triage; more nodes than agents means agents must communicate.
         sqrt_s = math.sqrt(env.map_size)
         n_nodes = len(env.meta["nodes"])
         if preset == "easy":
@@ -342,7 +342,7 @@ class EnergyGrid(ScenarioBase):
             sync_threshold = max(3, int(scaled_energy * 0.4))
             success_recharges = n_nodes
         else:
-            scaled_energy = max(12, int(sqrt_s * 8))
+            scaled_energy = max(12, int(sqrt_s * 8), int(env.map_size * 2.25))
             grace = max(2, int(sqrt_s * 2))
             sync_threshold = max(3, int(scaled_energy * 0.3))
             success_recharges = min(n_nodes, max(env.num_agents + 1, int(math.ceil(n_nodes * 0.7))))

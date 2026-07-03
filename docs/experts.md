@@ -22,13 +22,14 @@ These policies are deterministic and should solve their respective scenarios und
 
 The automated expert acceptance tests cover:
 
-- `signal_hunt` 8x8 and 16x16 with `signal_hunt_planner_comm`
-- `energy_grid` 8x8 easy and 16x16 hard with `energy_oracle_planner`
-- `pipeline_assembly` 8x8 and 16x16 with `pipeline_planner_comm`
+- `signal_hunt` 8x8, 16x16, and 32x32 with `signal_hunt_planner_comm`
+- `energy_grid` 8x8 easy, 16x16 hard, and 32x32 hard with `energy_oracle_planner`
+- `pipeline_assembly` 8x8, 16x16, 24x24, and 32x32 with `pipeline_planner_comm`
   - The 16x16 acceptance case runs a 32-episode seed sweep.
+  - The 24x24 and 32x32 acceptance cases cover larger-map traffic deadlocks.
 
 Stress sweeps beyond the acceptance window are still useful, but the known
-32-seed scaled-pipeline deadlock is now covered by tests.
+scaled-pipeline deadlocks are now covered by tests.
 
 ### Pipeline Assembly
 
@@ -41,6 +42,8 @@ Stress sweeps beyond the acceptance window are still useful, but the known
 - Assigns agents to required resources by greedy shortest-path cost.
 - Delivers resources to the stage station.
 - Synchronizes all agents at the station for sync-required stages.
+- Resolves carrier-vs-pickup corridor conflicts so scaled maps do not deadlock
+  when agents meet head-on in narrow passages.
 
 **Comm broadcast:**
 `[12, stage_id, station_x, station_y, req_len, req1, req2, ...]`
