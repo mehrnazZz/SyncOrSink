@@ -118,7 +118,7 @@ def build_litellm_call(model: str, planner_style: str = "action", num_retries: i
 
     litellm supports many backends via model prefixes:
       - "gpt-4o"               → OpenAI (needs OPENAI_API_KEY)
-      - "claude-sonnet-4-20250514"  → Anthropic (needs ANTHROPIC_API_KEY)
+      - "anthropic/<model-name>"    → Anthropic (needs ANTHROPIC_API_KEY)
       - "ollama/llama3"        → local ollama
       - "ollama_chat/llama3"   → local ollama (chat format)
       - "together_ai/..."      → Together AI
