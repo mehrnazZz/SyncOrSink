@@ -2,6 +2,8 @@
 
 SyncOrSink is a communication‑focused, cooperative multi‑agent POMDP benchmark with long‑horizon coordination tasks. It provides multiple scenario families that stress different coordination problems while keeping a unified interface for MARL and LLM‑based agents.
 
+Documentation site: https://mehrnazzz.github.io/SyncOrSink/
+
 Key goals:
 - Partial observability with adjustable FOV presets (`hard`, `medium`, `easy`)
 - Explicit communication with token budgets and efficiency penalties
