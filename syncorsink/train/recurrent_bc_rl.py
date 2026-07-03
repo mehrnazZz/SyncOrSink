@@ -30,6 +30,7 @@ from syncorsink.train.mappo import (
     mask_action_logits,
     resolve_device,
 )
+from syncorsink.train.seed import set_global_seeds
 from syncorsink.policies.mappo_models import MAPPORecurrentActor, MAPPOCritic
 
 
@@ -70,6 +71,7 @@ class RecurrentConfig:
     bc_kl_coeff: float = 0.5
     # device
     device: str = "auto"
+    seed: Optional[int] = 0
     # output
     save: Optional[str] = None
     wandb: bool = False
@@ -96,6 +98,7 @@ def collect_episode_demos(cfg: RecurrentConfig):
     """Collect oracle demonstrations as full episodes (not shuffled transitions)."""
     from syncorsink.policies.oracle import pipeline_oracle_strong
 
+    set_global_seeds(cfg.seed)
     env = _build_env(cfg)
     oracle_fn = pipeline_oracle_strong(env)
 
@@ -129,6 +132,7 @@ def collect_episode_demos(cfg: RecurrentConfig):
 
 def train_recurrent_bc(cfg: RecurrentConfig, episodes, device):
     """Train recurrent BC via truncated BPTT on episode sequences."""
+    set_global_seeds(cfg.seed)
     obs_dim = episodes[0]["obs"].shape[-1]
     model = MAPPORecurrentActor(
         obs_dim=obs_dim, action_dim=8, hidden_dim=cfg.hidden_dim,
@@ -184,6 +188,7 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device):
     """Fine-tune recurrent policy with PPO, carrying hidden state across steps."""
     import copy
 
+    set_global_seeds(cfg.seed)
     env = _build_env(cfg)
     N = env.num_agents
     obs_dim = flatten_obs(env.reset(seed=0)[0][0]).shape[0]
@@ -416,6 +421,8 @@ def main():
     p.add_argument("--rl-lr", type=float, default=3e-5)
     p.add_argument("--bc-kl-coeff", type=float, default=0.5)
     p.add_argument("--device", default="auto")
+    p.add_argument("--seed", type=int, default=0,
+                   help="Seed Python, NumPy, and Torch RNGs (default: 0)")
     p.add_argument("--save", default=None)
     p.add_argument("--wandb", action="store_true")
     p.add_argument("--wandb-project", default="syncorsink")
@@ -436,6 +443,7 @@ def main():
         rl_lr=args.rl_lr,
         bc_kl_coeff=args.bc_kl_coeff,
         device=args.device,
+        seed=args.seed,
         save=args.save,
         wandb=args.wandb,
         wandb_project=args.wandb_project,

@@ -12,6 +12,7 @@ import torch.optim as optim
 from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig
 from syncorsink.eval.success import episode_success
 from syncorsink.policies.mappo_models import MAPPOActor, MAPPOCritic
+from syncorsink.train.seed import set_global_seeds
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,7 @@ class MAPPOConfig:
     bc_kl_coeff: float = 0.0              # KL penalty toward frozen BC policy (0 = disabled)
     bc_freeze_encoder: bool = False       # freeze encoder layers, only fine-tune heads
     device: str = "auto"  # "auto", "cpu", "cuda", "mps"
+    seed: Optional[int] = 0
     # logging
     wandb: bool = False
     wandb_project: str = "syncorsink"
@@ -253,6 +255,7 @@ def _actor_forward_minibatch(actors, obs_batch, agent_ids, shared_actor, comm):
 # ---------------------------------------------------------------------------
 
 def train_mappo(cfg: MAPPOConfig):
+    set_global_seeds(cfg.seed)
     env_config = SyncOrSinkConfig(
         scenario=cfg.scenario,
         map_size=cfg.map_size,
@@ -861,6 +864,8 @@ def main():
                         help="local=DTDE (default), central=CTDE")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"],
                         help="Device for training (default: auto-detect)")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Seed Python, NumPy, and Torch RNGs (default: 0)")
     parser.add_argument("--learned-reward", default=None,
                         help="Path to learned reward model checkpoint (replaces/augments shaping)")
     parser.add_argument("--learned-reward-weight", type=float, default=1.0,
@@ -924,6 +929,7 @@ def main():
         backbone=args.backbone,
         hidden_dim=args.hidden_dim,
         critic_mode=args.critic_mode,
+        seed=args.seed,
         learned_reward=args.learned_reward,
         learned_reward_weight=args.learned_reward_weight,
         bc_init=args.bc_init,

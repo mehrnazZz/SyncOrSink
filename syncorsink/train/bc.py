@@ -19,6 +19,7 @@ import torch.optim as optim
 
 from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig
 from syncorsink.train.mappo import action_mask_from_flat_obs, flatten_obs, mask_action_logits, resolve_device
+from syncorsink.train.seed import set_global_seeds
 from syncorsink.policies.mappo_models import MAPPOActor
 
 
@@ -59,6 +60,7 @@ class BCConfig:
     dagger_episodes: int = 20  # episodes per DAgger round
     # device
     device: str = "auto"
+    seed: Optional[int] = 0
     # output
     save: Optional[str] = None
     wandb: bool = False
@@ -79,6 +81,7 @@ def collect_demos(cfg: BCConfig):
     )
     from syncorsink.policies.comm_wrapper import wrap_oracle_with_comm
 
+    set_global_seeds(cfg.seed)
     env_cfg = SyncOrSinkConfig(
         scenario=cfg.scenario,
         map_size=cfg.map_size,
@@ -182,6 +185,8 @@ def collect_llm_demos(cfg: BCConfig, trace_path: str):
     to get matching observations since traces don't store raw obs arrays.
     """
     import json
+
+    set_global_seeds(cfg.seed)
 
     env_cfg = SyncOrSinkConfig(
         scenario=cfg.scenario,
@@ -437,6 +442,7 @@ def train_bc(cfg: BCConfig):
       Phase 1: Train action head only (comm_weight=0), comm heads frozen.
       Phase 2: Fine-tune comm heads with lower LR, action head frozen.
     """
+    set_global_seeds(cfg.seed)
     device = resolve_device(cfg.device)
     print(f"Using device: {device}")
 
@@ -518,6 +524,7 @@ def train_bc_dagger(cfg: BCConfig):
     )
     from syncorsink.policies.comm_wrapper import wrap_oracle_with_comm
 
+    set_global_seeds(cfg.seed)
     device = resolve_device(cfg.device)
     print(f"Using device: {device}")
 
@@ -679,6 +686,7 @@ def train_reward_model(cfg: BCConfig):
         pipeline_oracle_strong, energy_oracle_strong, signal_hunt_oracle_strong,
     )
 
+    set_global_seeds(cfg.seed)
     device = resolve_device(cfg.device)
     print(f"Using device: {device}")
 
@@ -785,6 +793,8 @@ def main():
                            choices=["oracle", "oracle_strong", "oracle_comm", "oracle_strong_comm"])
     collect_p.add_argument("--comm-token-limit", type=int, default=8)
     collect_p.add_argument("--comm-vocab-size", type=int, default=32)
+    collect_p.add_argument("--seed", type=int, default=0,
+                           help="Seed Python, NumPy, and Torch RNGs (default: 0)")
     collect_p.add_argument("--output", default="demos/signal_hunt_oracle.npz")
 
     # --- collect-llm ---
@@ -798,6 +808,8 @@ def main():
     collect_llm_p.add_argument("--energy-preset", default="easy")
     collect_llm_p.add_argument("--comm-token-limit", type=int, default=8)
     collect_llm_p.add_argument("--comm-vocab-size", type=int, default=32)
+    collect_llm_p.add_argument("--seed", type=int, default=0,
+                               help="Seed Python, NumPy, and Torch RNGs (default: 0)")
     collect_llm_p.add_argument("--output", default="demos/signal_hunt_llm.npz")
 
     # --- train ---
@@ -816,6 +828,8 @@ def main():
     train_p.add_argument("--phase2-epochs", type=int, default=20)
     train_p.add_argument("--phase2-lr", type=float, default=3e-4)
     train_p.add_argument("--device", default="auto")
+    train_p.add_argument("--seed", type=int, default=0,
+                         help="Seed Python, NumPy, and Torch RNGs (default: 0)")
     train_p.add_argument("--save", default=None, help="Path to save trained model")
     train_p.add_argument("--wandb", action="store_true")
     train_p.add_argument("--wandb-project", default="syncorsink")
@@ -843,6 +857,8 @@ def main():
     dagger_p.add_argument("--comm-vocab-size", type=int, default=32)
     dagger_p.add_argument("--comm-loss-weight", type=float, default=0.1)
     dagger_p.add_argument("--device", default="auto")
+    dagger_p.add_argument("--seed", type=int, default=0,
+                          help="Seed Python, NumPy, and Torch RNGs (default: 0)")
     dagger_p.add_argument("--save", default=None)
     dagger_p.add_argument("--wandb", action="store_true")
     dagger_p.add_argument("--wandb-project", default="syncorsink")
@@ -865,6 +881,8 @@ def main():
     reward_p.add_argument("--comm-token-limit", type=int, default=8)
     reward_p.add_argument("--comm-vocab-size", type=int, default=32)
     reward_p.add_argument("--device", default="auto")
+    reward_p.add_argument("--seed", type=int, default=0,
+                          help="Seed Python, NumPy, and Torch RNGs (default: 0)")
     reward_p.add_argument("--save", default=None)
 
     args = parser.parse_args()
@@ -881,6 +899,7 @@ def main():
             oracle_type=args.oracle,
             comm_token_limit=args.comm_token_limit,
             comm_vocab_size=args.comm_vocab_size,
+            seed=args.seed,
             demo_path=args.output,
         )
         collect_demos(cfg)
@@ -895,6 +914,7 @@ def main():
             energy_preset=args.energy_preset,
             comm_token_limit=args.comm_token_limit,
             comm_vocab_size=args.comm_vocab_size,
+            seed=args.seed,
             demo_path=args.output,
         )
         collect_llm_demos(cfg, args.trace)
@@ -914,6 +934,7 @@ def main():
             phase2_epochs=args.phase2_epochs,
             phase2_lr=args.phase2_lr,
             device=args.device,
+            seed=args.seed,
             demo_path=args.demo_path,
             save=args.save,
             wandb=args.wandb,
@@ -943,6 +964,7 @@ def main():
             comm_vocab_size=args.comm_vocab_size,
             comm_loss_weight=args.comm_loss_weight,
             device=args.device,
+            seed=args.seed,
             save=args.save,
             wandb=args.wandb,
             wandb_project=args.wandb_project,
@@ -967,6 +989,7 @@ def main():
             comm_token_limit=args.comm_token_limit,
             comm_vocab_size=args.comm_vocab_size,
             device=args.device,
+            seed=args.seed,
             save=args.save,
         )
         train_reward_model(cfg)

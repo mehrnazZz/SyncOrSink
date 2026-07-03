@@ -12,6 +12,7 @@ import torch.optim as optim
 from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
 from syncorsink.eval.success import episode_success
 from syncorsink.models.comm_mat import CommMATConfig, CommMATModel
+from syncorsink.train.seed import set_global_seeds
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,7 @@ class CommMATTrainConfig:
     deterministic_eval: bool = True
     # device
     device: str = "auto"
+    seed: Optional[int] = 0
     # logging
     wandb: bool = False
     wandb_project: str = "syncorsink"
@@ -216,6 +218,7 @@ def load_checkpoint(path: str, model: CommMATModel, optimizer):
 # ---------------------------------------------------------------------------
 
 def train_comm_mat(cfg: CommMATTrainConfig):
+    set_global_seeds(cfg.seed)
     env_cfg = SyncOrSinkConfig(
         scenario=cfg.scenario,
         map_size=cfg.map_size,
@@ -623,6 +626,8 @@ def main():
                     help="Ablation: disable communication (transformer backbone only)")
     # device
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
+    p.add_argument("--seed", type=int, default=0,
+                   help="Seed Python, NumPy, and Torch RNGs (default: 0)")
     # logging
     p.add_argument("--wandb", action="store_true")
     p.add_argument("--wandb-project", default="syncorsink")
@@ -678,6 +683,7 @@ def main():
         send_threshold=args.send_threshold,
         comm_disabled=args.comm_disabled,
         device=args.device,
+        seed=args.seed,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run=args.wandb_run,

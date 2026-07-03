@@ -60,6 +60,19 @@ def test_mappo_action_mask_all_invalid_fallback():
     assert torch.equal(masked_logits, logits)
 
 
+def test_set_global_seeds_reproducible():
+    import random
+
+    from syncorsink.train.seed import set_global_seeds
+
+    set_global_seeds(123)
+    first = (random.random(), np.random.rand(), torch.rand(1).item())
+    set_global_seeds(123)
+    second = (random.random(), np.random.rand(), torch.rand(1).item())
+
+    assert first == second
+
+
 def test_comm_mat_training():
     from syncorsink.train.comm_mat import train_comm_mat, CommMATTrainConfig
     cfg = CommMATTrainConfig(

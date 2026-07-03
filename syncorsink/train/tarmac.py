@@ -28,6 +28,7 @@ from syncorsink.train.mappo import (
     mask_action_logits,
     resolve_device,
 )
+from syncorsink.train.seed import set_global_seeds
 from syncorsink.models.tarmac import TarMACConfig, TarMACModel
 
 
@@ -75,6 +76,7 @@ class TarMACTrainConfig:
     attn_entropy_coeff: float = 0.001
     # device
     device: str = "auto"
+    seed: Optional[int] = 0
     # logging
     wandb: bool = False
     wandb_project: str = "syncorsink"
@@ -88,6 +90,7 @@ class TarMACTrainConfig:
 
 
 def train_tarmac(cfg: TarMACTrainConfig):
+    set_global_seeds(cfg.seed)
     env_config = SyncOrSinkConfig(
         scenario=cfg.scenario,
         map_size=cfg.map_size,
@@ -431,6 +434,8 @@ def main():
     p.add_argument("--attn-entropy-coeff", type=float, default=0.001)
     # device
     p.add_argument("--device", default="auto")
+    p.add_argument("--seed", type=int, default=0,
+                   help="Seed Python, NumPy, and Torch RNGs (default: 0)")
     # logging
     p.add_argument("--wandb", action="store_true")
     p.add_argument("--wandb-project", default="syncorsink")
@@ -480,6 +485,7 @@ def main():
         n_rounds=args.n_rounds,
         attn_entropy_coeff=args.attn_entropy_coeff,
         device=args.device,
+        seed=args.seed,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run=args.wandb_run,
