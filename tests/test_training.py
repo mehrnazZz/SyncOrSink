@@ -24,6 +24,42 @@ def test_mappo_ctde_with_comm():
     train_mappo(cfg)
 
 
+def test_mappo_action_mask_helpers():
+    from syncorsink.train.mappo import action_mask_from_flat_obs, mask_action_logits
+
+    flat_obs = torch.tensor([
+        [9.0, 8.0, 1, 0, 1, 0, 0, 0, 0, 1],
+        [7.0, 6.0, 0, 0, 0, 0, 1, 0, 0, 0],
+    ])
+    mask = action_mask_from_flat_obs(flat_obs, action_dim=8)
+
+    assert torch.equal(mask, flat_obs[:, -8:])
+
+    logits = torch.tensor([
+        [0.0, 100.0, 1.0, 2.0, 3.0, 4.0, 5.0, -1.0],
+        [100.0, 90.0, 80.0, 70.0, 60.0, 50.0, 40.0, 30.0],
+    ])
+    masked_logits = mask_action_logits(logits, mask)
+    dist = torch.distributions.Categorical(logits=masked_logits)
+    samples = [int(dist.sample()[0].item()) for _ in range(50)]
+
+    assert set(samples).issubset({0, 2, 7})
+    assert int(torch.argmax(masked_logits[0]).item()) == 2
+    assert int(torch.argmax(masked_logits[1]).item()) == 4
+    assert torch.isfinite(dist.entropy()).all()
+
+
+def test_mappo_action_mask_all_invalid_fallback():
+    from syncorsink.train.mappo import mask_action_logits
+
+    logits = torch.tensor([[1.0, 2.0, 3.0]])
+    mask = torch.zeros_like(logits)
+
+    masked_logits = mask_action_logits(logits, mask)
+
+    assert torch.equal(masked_logits, logits)
+
+
 def test_comm_mat_training():
     from syncorsink.train.comm_mat import train_comm_mat, CommMATTrainConfig
     cfg = CommMATTrainConfig(

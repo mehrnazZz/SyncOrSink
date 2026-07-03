@@ -111,6 +111,23 @@ def build_batch_obs(obs: dict, num_agents: int) -> np.ndarray:
     return np.stack([flatten_obs(obs[aid]) for aid in range(num_agents)])
 
 
+def action_mask_from_flat_obs(obs_tensor: torch.Tensor, action_dim: int = 8) -> torch.Tensor:
+    """Extract the flattened action mask appended by ``flatten_obs``."""
+    return obs_tensor[..., -action_dim:].float()
+
+
+def mask_action_logits(logits: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
+    """Set invalid action logits low enough that Categorical/argmax ignore them."""
+    valid = action_mask > 0
+    if valid.ndim != logits.ndim or valid.shape[-1] != logits.shape[-1]:
+        raise ValueError(
+            f"action_mask shape {tuple(valid.shape)} incompatible with logits {tuple(logits.shape)}"
+        )
+    all_invalid = valid.sum(dim=-1, keepdim=True) == 0
+    valid = torch.where(all_invalid, torch.ones_like(valid, dtype=torch.bool), valid)
+    return logits.masked_fill(~valid, -1e9)
+
+
 # ---------------------------------------------------------------------------
 # Device helpers
 # ---------------------------------------------------------------------------
@@ -405,6 +422,7 @@ def train_mappo(cfg: MAPPOConfig):
         for t in range(cfg.rollout_steps):
             obs_batch = build_batch_obs(obs, N)                 # (N, obs_dim)
             obs_tensor = torch.tensor(obs_batch, dtype=torch.float32, device=device)
+            action_mask = action_mask_from_flat_obs(obs_tensor, action_dim)
 
             # --- Critic value ---
             with torch.no_grad():
@@ -422,6 +440,7 @@ def train_mappo(cfg: MAPPOConfig):
 
             if cfg.comm:
                 logits, send_logits, token_logits, len_logits = actor_out
+                logits = mask_action_logits(logits, action_mask)
 
                 action_dist = torch.distributions.Categorical(logits=logits)
                 send_dist = torch.distributions.Bernoulli(logits=send_logits.squeeze(-1))
@@ -466,6 +485,7 @@ def train_mappo(cfg: MAPPOConfig):
                 comm_token_entropy_sum += float(token_dist.entropy().mean().item())
             else:
                 logits = actor_out
+                logits = mask_action_logits(logits, action_mask)
                 dist = torch.distributions.Categorical(logits=logits)
                 acts = dist.sample()
                 logp = dist.log_prob(acts)
@@ -588,15 +608,15 @@ def train_mappo(cfg: MAPPOConfig):
             np.random.shuffle(idx)
             for start in range(0, total, cfg.minibatch):
                 mb = idx[start: start + cfg.minibatch]
-                mb_t = torch.tensor(mb, dtype=torch.long)
-
                 # --- Actor forward ---
                 actor_out = _actor_forward_minibatch(
                     actors, obs_b[mb], agent_ids[mb], cfg.shared_actor, cfg.comm
                 )
+                action_mask = action_mask_from_flat_obs(obs_b[mb], action_dim)
 
                 if cfg.comm:
                     logits, send_logits, token_logits, len_logits = actor_out
+                    logits = mask_action_logits(logits, action_mask)
 
                     action_dist = torch.distributions.Categorical(logits=logits)
                     send_dist = torch.distributions.Bernoulli(logits=send_logits.squeeze(-1))
@@ -623,6 +643,7 @@ def train_mappo(cfg: MAPPOConfig):
                     )
                 else:
                     logits = actor_out
+                    logits = mask_action_logits(logits, action_mask)
                     dist = torch.distributions.Categorical(logits=logits)
                     new_logp = dist.log_prob(act_b[mb])
                     entropy = dist.entropy().mean()
@@ -655,9 +676,11 @@ def train_mappo(cfg: MAPPOConfig):
                         bc_logits = bc_out[0]
                     else:
                         bc_logits = bc_out
-                    bc_probs = torch.softmax(bc_logits, dim=-1)
+                    bc_logits = mask_action_logits(bc_logits, action_mask)
+                    bc_logprobs = torch.log_softmax(bc_logits, dim=-1)
+                    bc_probs = bc_logprobs.exp()
                     current_logprobs = torch.log_softmax(logits, dim=-1)
-                    kl_loss = (bc_probs * (bc_probs.log() - current_logprobs)).sum(dim=-1).mean()
+                    kl_loss = (bc_probs * (bc_logprobs - current_logprobs)).sum(dim=-1).mean()
 
                 # --- Total loss ---
                 loss = policy_loss + value_loss - cfg.entropy * entropy + cfg.bc_kl_coeff * kl_loss
@@ -722,12 +745,14 @@ def train_mappo(cfg: MAPPOConfig):
                 while not (ep_done or ep_trunc):
                     obs_batch = build_batch_obs(eval_obs, N)
                     obs_tensor = torch.tensor(obs_batch, dtype=torch.float32, device=device)
+                    action_mask = action_mask_from_flat_obs(obs_tensor, action_dim)
                     with torch.no_grad():
                         actor_out = _actor_forward_batched(
                             actors, obs_tensor, N, cfg.shared_actor, cfg.comm
                         )
                     if cfg.comm:
                         logits, send_logits, token_logits, len_logits = actor_out
+                        logits = mask_action_logits(logits, action_mask)
                         acts = torch.argmax(logits, dim=-1)
                         send = (torch.sigmoid(send_logits.squeeze(-1)) > 0.5).long()
                         token_samples = torch.argmax(token_logits, dim=-1)
@@ -741,6 +766,7 @@ def train_mappo(cfg: MAPPOConfig):
                             actions[aid] = {"action": int(acts[aid].item()), "message_tokens": msg}
                     else:
                         logits = actor_out
+                        logits = mask_action_logits(logits, action_mask)
                         acts = torch.argmax(logits, dim=-1)
                         actions = {
                             aid: {"action": int(acts[aid].item()), "message_tokens": []}
