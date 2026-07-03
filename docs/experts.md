@@ -25,10 +25,10 @@ The automated expert acceptance tests cover:
 - `signal_hunt` 8x8 and 16x16 with `signal_hunt_planner_comm`
 - `energy_grid` 8x8 easy and 16x16 hard with `energy_oracle_planner`
 - `pipeline_assembly` 8x8 and 16x16 with `pipeline_planner_comm`
+  - The 16x16 acceptance case runs a 32-episode seed sweep.
 
-Stress sweeps beyond the acceptance window are still useful: a 32-seed
-`pipeline_assembly` 16x16 sweep can still expose rare synchronized-layout
-coordination cases for further expert hardening.
+Stress sweeps beyond the acceptance window are still useful, but the known
+32-seed scaled-pipeline deadlock is now covered by tests.
 
 ### Pipeline Assembly
 

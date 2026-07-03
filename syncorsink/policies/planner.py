@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from typing import Dict
 
+from syncorsink.envs.maps import TILE_NODE, TILE_STATION, TILE_TARGET
+
 from .pathing import shortest_path, shortest_path_distance, move_action_from_delta
 from .oracle import _move_or_open, _move_to_any_or_open
 
@@ -13,6 +15,39 @@ def _blocked_positions(env, agent_id, allow_positions=None):
     if allow_positions:
         blocked.difference_update(allow_positions)
     return blocked
+
+
+def _move_destination(pos, action, env):
+    x, y = pos
+    if action == env.ACTION_UP:
+        return (x, y - 1)
+    if action == env.ACTION_DOWN:
+        return (x, y + 1)
+    if action == env.ACTION_LEFT:
+        return (x - 1, y)
+    if action == env.ACTION_RIGHT:
+        return (x + 1, y)
+    return pos
+
+
+def _action_would_collide(env, agent_id, action) -> bool:
+    if action not in (env.ACTION_UP, env.ACTION_DOWN, env.ACTION_LEFT, env.ACTION_RIGHT):
+        return False
+    dest = _move_destination(env.agent_positions[agent_id], action, env)
+    if not (0 <= dest[0] < env.map_size and 0 <= dest[1] < env.map_size):
+        return True
+    if dest not in set(env.agent_positions):
+        return False
+    return int(env.grid[dest[1], dest[0]]) not in {TILE_STATION, TILE_NODE, TILE_TARGET}
+
+
+def _relaxed_move_or_open(env, agent_id, pos, target):
+    dx, dy, found = shortest_path(env.grid, pos, {target})
+    if found is not None:
+        action = move_action_from_delta(dx, dy, env)
+        if not _action_would_collide(env, agent_id, action):
+            return action
+    return _move_or_open(env, agent_id, pos, target)
 
 
 def pipeline_central_planner(env):
@@ -98,7 +133,7 @@ def pipeline_central_planner(env):
                 if pos == station:
                     actions[aid] = {"action": env.ACTION_INTERACT, "message_tokens": []}
                 else:
-                    actions[aid] = {"action": _move_or_open(env, aid, pos, station), "message_tokens": []}
+                    actions[aid] = {"action": _relaxed_move_or_open(env, aid, pos, station), "message_tokens": []}
                 continue
 
             # drop useless inventory to free hands

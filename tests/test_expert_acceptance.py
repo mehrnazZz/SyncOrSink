@@ -59,7 +59,7 @@ def _run_expert(factory, *, scenario, episodes, seed=0, **config_kwargs):
         (
             "pipeline_assembly",
             "syncorsink.policies.planner_comm:pipeline_planner_comm",
-            16,
+            32,
             {"map_size": 16, "num_agents": 4, "fov_preset": "medium", "max_steps": 300},
         ),
     ],
