@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from syncorsink.envs.scenario_registry import scenario_names
+
+_SCENARIO_NAMES = scenario_names()
+
 SCHEMA: Dict[str, Any] = {
     "type": "object",
     "required": ["scenario", "mode"],
     "properties": {
-        "scenario": {"type": "string"},
+        "scenario": {"type": "string", "enum": _SCENARIO_NAMES},
         "mode": {"type": "string", "enum": ["marl", "llm"]},
         "split": {"type": ["string", "null"]},
         "episodes": {"type": "integer", "minimum": 1},
@@ -43,6 +47,8 @@ def validate_spec(data: Dict[str, Any]) -> None:
 def _manual_validate(data: Dict[str, Any]) -> None:
     if "scenario" not in data or not isinstance(data["scenario"], str):
         raise ValueError("spec.scenario must be a string")
+    if data["scenario"] not in _SCENARIO_NAMES:
+        raise ValueError(f"spec.scenario must be one of {_SCENARIO_NAMES}")
     if data.get("mode") not in ("marl", "llm"):
         raise ValueError("spec.mode must be 'marl' or 'llm'")
     if "episodes" in data and (not isinstance(data["episodes"], int) or data["episodes"] < 1):

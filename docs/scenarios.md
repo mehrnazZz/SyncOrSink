@@ -2,6 +2,11 @@
 
 This document defines success conditions, episode termination, and core mechanics for each scenario. These are intended to remain stable for benchmarking.
 
+Scenario tier metadata is defined in `docs/scenario_registry.md`. The scenarios
+below are `core` diagnostic tasks: they isolate specific communication and
+coordination properties before richer `advanced` or `procedural` scenario packs
+are added.
+
 ## Shared
 - Agents act simultaneously each step.
 - Actions: move, interact, pickup, drop.

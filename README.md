@@ -14,6 +14,7 @@ Key goals:
 For detailed design, see:
 - `docs/design.md`
 - `docs/scenarios.md`
+- `docs/scenario_registry.md`
 
 ## Install
 
@@ -92,6 +93,7 @@ Baseline docs:
 
 - RL baselines (MAPPO + comm heads): `docs/baselines_rl.md`
 - Transformer baselines (Comm-MAT): `docs/baselines_transformer.md`
+- Scenario registry and tiers: `docs/scenario_registry.md`
 - Evaluation/logging config (eval flags, traces, video, W&B): `docs/eval_and_logging.md`
 - Leaderboard protocol and result schema: `docs/leaderboard.md`
 - Current leaderboard table: `docs/leaderboard_results.md`

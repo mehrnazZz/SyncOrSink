@@ -14,13 +14,14 @@ submissions through lightweight result artifacts.
 - [Current leaderboard](leaderboard_results.md)
 - [Leaderboard protocol](leaderboard.md)
 - [External policy submissions](policy_submissions.md)
+- [Scenario registry and tiers](scenario_registry.md)
 - [Scenario descriptions](scenarios.md)
 - [Experiment report](experiment_report.md)
 
 ## Official v0.1 Benchmark
 
 The first public suite is `syncorsink_v0_1`. It evaluates three scenario
-families at 8x8 and 16x16 scales:
+families at 8x8 and 16x16 scales. These are `core` diagnostic scenarios:
 
 | Scenario | Communication Structure | Main Challenge |
 |---|---|---|

@@ -4,7 +4,7 @@ All configuration options are defined in `syncorsink/envs/base.py` under `SyncOr
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `scenario` | str | `"pipeline_assembly"` | Scenario name: `pipeline_assembly`, `energy_grid`, `signal_hunt`. |
+| `scenario` | str | `"pipeline_assembly"` | Registered scenario name. Current core scenarios: `pipeline_assembly`, `energy_grid`, `signal_hunt`. See `docs/scenario_registry.md`. |
 | `map_size` | int | `16` | Grid size (supports 8/16/32). |
 | `num_agents` | int | `3` | Number of agents. |
 | `fov_preset` | str | `"medium"` | Partial observability radius: `hard`, `medium`, `easy`. |

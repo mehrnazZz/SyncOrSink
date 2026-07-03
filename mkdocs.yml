@@ -23,6 +23,7 @@ nav:
       - Configuration: config.md
       - Documentation Site: docs_site.md
   - Environment:
+      - Scenario Registry And Tiers: scenario_registry.md
       - Design: design.md
       - Scenarios: scenarios.md
       - Experts: experts.md
