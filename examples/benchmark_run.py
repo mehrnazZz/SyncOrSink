@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 
@@ -41,6 +42,7 @@ from syncorsink.policies.planner_comm import (
     signal_hunt_planner_comm,
 )
 from syncorsink.policies.comm_mat_policy import CommMATPolicy, CommMATPolicyConfig
+from syncorsink.policies.submission import load_policy_entrypoint
 from syncorsink.llm.policy import LLMPolicy
 
 
@@ -48,7 +50,35 @@ def dummy_llm(prompt: str) -> str:
     return '{"action": 4, "message_text": ""}'
 
 
-def build_policy(spec, env):
+def _parse_policy_kwargs(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("--policy-kwargs must decode to a JSON object")
+    return data
+
+
+def build_policy(
+    spec,
+    env,
+    external_entrypoint: str | None = None,
+    external_checkpoint: str | None = None,
+    external_kwargs: dict | None = None,
+):
+    entrypoint = external_entrypoint or spec.get("policy_entrypoint")
+    if entrypoint:
+        policy_kwargs = dict(spec.get("policy_kwargs", {}))
+        policy_kwargs.update(external_kwargs or {})
+        checkpoint = external_checkpoint if external_checkpoint is not None else spec.get("policy_checkpoint")
+        return load_policy_entrypoint(
+            entrypoint,
+            env=env,
+            spec=spec,
+            checkpoint=checkpoint,
+            kwargs=policy_kwargs,
+        ).policy
+
     policy = spec.get("policy", "random")
     mode = spec.get("mode", "marl")
     if mode == "llm":
@@ -117,6 +147,18 @@ def build_policy(spec, env):
     raise ValueError(f"Unsupported benchmark policy: {policy}")
 
 
+def _effective_result_spec(spec: dict, args, external_kwargs: dict) -> dict:
+    result_spec = dict(spec)
+    if args.policy_entrypoint:
+        result_spec["policy"] = "external"
+        result_spec["policy_entrypoint"] = args.policy_entrypoint
+    if args.policy_checkpoint:
+        result_spec["policy_checkpoint"] = args.policy_checkpoint
+    if external_kwargs:
+        result_spec["policy_kwargs"] = dict(external_kwargs)
+    return result_spec
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--spec", required=True)
@@ -133,10 +175,26 @@ def main():
     parser.add_argument("--checkpoint-uri", default=None, help="Optional checkpoint or artifact URI")
     parser.add_argument("--paper-uri", default=None, help="Optional paper/preprint URI")
     parser.add_argument("--notes", default=None, help="Optional submission notes")
+    parser.add_argument(
+        "--policy-entrypoint",
+        default=None,
+        help="External policy factory as 'module.submodule:object'; overrides built-in policy dispatch",
+    )
+    parser.add_argument(
+        "--policy-checkpoint",
+        default=None,
+        help="Optional checkpoint path/URI passed to external policy loading",
+    )
+    parser.add_argument(
+        "--policy-kwargs",
+        default=None,
+        help="Optional JSON object passed as extra keyword args to the external policy factory",
+    )
     args = parser.parse_args()
 
     bench = load_benchmark(args.spec)
     case_results = []
+    external_kwargs = _parse_policy_kwargs(args.policy_kwargs)
 
     wandb_run = None
     if args.wandb:
@@ -160,7 +218,13 @@ def main():
             energy_preset=spec.get("energy_preset", "hard"),
         )
         env = SyncOrSinkEnv(config)
-        policy = build_policy(spec, env)
+        policy = build_policy(
+            spec,
+            env,
+            external_entrypoint=args.policy_entrypoint,
+            external_checkpoint=args.policy_checkpoint,
+            external_kwargs=external_kwargs,
+        )
         episodes = int(spec.get("episodes", 1))
 
         if spec.get("mode", "marl") == "llm":
@@ -174,7 +238,7 @@ def main():
             summary_to_case_result(
                 case.name,
                 summary,
-                spec=spec,
+                spec=_effective_result_spec(spec, args, external_kwargs),
                 weight=case.weight,
                 tags=case.tags,
             )

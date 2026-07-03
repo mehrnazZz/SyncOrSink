@@ -85,6 +85,7 @@ Baseline docs:
 - Transformer baselines (Comm-MAT): `docs/baselines_transformer.md`
 - Evaluation/logging config (eval flags, traces, video, W&B): `docs/eval_and_logging.md`
 - Leaderboard protocol and result schema: `docs/leaderboard.md`
+- External policy submission API: `docs/policy_submissions.md`
 
 Evaluation harness:
 
@@ -176,6 +177,16 @@ python examples/benchmark_run.py \
   --method-name "My Comm Policy" \
   --method-type "Transformer MARL" \
   --authors "First Author,Second Author"
+```
+
+External policy submission:
+
+```bash
+python examples/benchmark_run.py \
+  --spec benchmarks/syncorsink_v0_1.json \
+  --policy-entrypoint my_package.my_agent:build_policy \
+  --results-json results/my_method_v0_1.json \
+  --track symbolic_dtde
 ```
 
 Benchmark presets:

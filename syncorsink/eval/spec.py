@@ -16,6 +16,8 @@ class EvalSpec:
     policy: str
     mode: str  # "marl" or "llm"
     track: str = "dtde"
+    policy_entrypoint: str | None = None
+    policy_kwargs: Dict[str, Any] | None = None
     map_size: int = 16
     num_agents: int = 3
     fov_preset: str = "medium"
@@ -39,6 +41,8 @@ def load_spec(path: str) -> EvalSpec:
         policy=data.get("policy", "random"),
         mode=data.get("mode", "marl"),
         track=data.get("track", "dtde"),
+        policy_entrypoint=data.get("policy_entrypoint"),
+        policy_kwargs=dict(data.get("policy_kwargs", {})),
         map_size=int(data.get("map_size", 16)),
         num_agents=int(data.get("agents", data.get("num_agents", 3))),
         fov_preset=data.get("fov_preset", "medium"),

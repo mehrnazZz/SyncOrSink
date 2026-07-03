@@ -5,6 +5,7 @@ import time
 
 from .metrics import EpisodeStats, EvalSummary, summarize
 from .success import episode_success
+from syncorsink.policies.submission import reset_policy
 
 
 PolicyFn = Callable[[dict, dict, dict], Dict[int, dict]]
@@ -25,6 +26,7 @@ def run_episodes(
     for ep in range(episodes):
         ep_seed = None if base_seed is None else base_seed + ep
         obs, info = env.reset(seed=ep_seed)
+        reset_policy(policy, episode=ep, seed=ep_seed)
         done = False
         truncated = False
         steps = 0

@@ -7,6 +7,7 @@ import json
 
 from .metrics import EpisodeStats
 from .success import episode_success
+from syncorsink.policies.submission import reset_policy
 
 
 @dataclass
@@ -29,6 +30,7 @@ def run_llm_episodes(
     for ep in range(episodes):
         ep_seed = None if base_seed is None else base_seed + ep
         obs, info = env.reset(seed=ep_seed)
+        reset_policy(policy, episode=ep, seed=ep_seed)
         done = False
         truncated = False
         steps = 0

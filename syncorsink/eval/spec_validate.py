@@ -12,6 +12,8 @@ SCHEMA: Dict[str, Any] = {
         "episodes": {"type": "integer", "minimum": 1},
         "map_variant": {"type": "integer", "minimum": 0},
         "policy": {"type": "string"},
+        "policy_entrypoint": {"type": ["string", "null"]},
+        "policy_kwargs": {"type": "object"},
         "map_size": {"type": "integer", "minimum": 1},
         "agents": {"type": "integer", "minimum": 1},
         "num_agents": {"type": "integer", "minimum": 1},
@@ -59,3 +61,7 @@ def _manual_validate(data: Dict[str, Any]) -> None:
         raise ValueError("spec.comm_mode must be 'tokens' or 'text'")
     if "track" in data and data["track"] not in ("dtde", "ctde"):
         raise ValueError("spec.track must be 'dtde' or 'ctde'")
+    if "policy_entrypoint" in data and data["policy_entrypoint"] is not None and not isinstance(data["policy_entrypoint"], str):
+        raise ValueError("spec.policy_entrypoint must be a string or null")
+    if "policy_kwargs" in data and not isinstance(data["policy_kwargs"], dict):
+        raise ValueError("spec.policy_kwargs must be an object")

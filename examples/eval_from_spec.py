@@ -34,6 +34,7 @@ from syncorsink.policies.planner_comm import (
     signal_hunt_planner_comm,
 )
 from syncorsink.policies.comm_mat_policy import CommMATPolicy, CommMATPolicyConfig
+from syncorsink.policies.submission import load_policy_entrypoint
 from syncorsink.llm.policy import LLMPolicy
 
 
@@ -42,6 +43,15 @@ def dummy_llm(prompt: str):
 
 
 def build_marl_policy(spec, env):
+    if spec.policy_entrypoint:
+        return load_policy_entrypoint(
+            spec.policy_entrypoint,
+            env=env,
+            spec=spec.__dict__,
+            checkpoint=spec.policy_checkpoint,
+            kwargs=spec.policy_kwargs or {},
+        ).policy
+
     policy = spec.policy
     if policy == "random":
         return random_policy(env.action_space, env.num_agents)

@@ -58,6 +58,19 @@ python examples/benchmark_run.py \
   --checkpoint-uri https://huggingface.co/example/my-policy
 ```
 
+External policies can be supplied without modifying SyncOrSink:
+
+```bash
+python examples/benchmark_run.py \
+  --spec benchmarks/syncorsink_v0_1.json \
+  --policy-entrypoint my_package.my_agent:build_policy \
+  --policy-checkpoint /path/to/checkpoint.pt \
+  --results-json results/my_method_v0_1.json \
+  --track symbolic_dtde
+```
+
+See `docs/policy_submissions.md` for the policy interface.
+
 The result JSON contains:
 
 - `schema_version`

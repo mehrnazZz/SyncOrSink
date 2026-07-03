@@ -54,6 +54,8 @@ def test_eval_spec_loads_extended_benchmark_fields(tmp_path):
         "track": "ctde",
         "energy_preset": "easy",
         "policy": "comm_mat",
+        "policy_entrypoint": "my_package.agent:build_policy",
+        "policy_kwargs": {"temperature": 0.0},
         "policy_checkpoint": "checkpoints/comm_mat_energy.pt",
         "comm_mat_deterministic": False,
         "comm_mat_send_threshold": 0.25,
@@ -66,11 +68,15 @@ def test_eval_spec_loads_extended_benchmark_fields(tmp_path):
     assert spec.max_steps == 90
     assert spec.track == "ctde"
     assert spec.energy_preset == "easy"
+    assert spec.policy_entrypoint == "my_package.agent:build_policy"
+    assert spec.policy_kwargs == {"temperature": 0.0}
     assert spec.policy_checkpoint == "checkpoints/comm_mat_energy.pt"
     assert spec.comm_mat_deterministic is False
     assert spec.comm_mat_send_threshold == 0.25
     with pytest.raises(Exception):
         validate_spec({"scenario": "energy_grid", "mode": "marl", "max_steps": 0})
+    with pytest.raises(Exception):
+        validate_spec({"scenario": "energy_grid", "mode": "marl", "policy_kwargs": []})
 
 
 def test_official_benchmark_v0_1_loads():
@@ -163,6 +169,77 @@ def test_benchmark_policy_dispatch_no_random_fallback_and_pipeline_follower_runs
     summary, _ = run_episodes(env, policy, episodes=1, seed=0)
 
     assert summary.episodes == 1
+
+
+def test_external_policy_entrypoint_runs_and_resets(tmp_path, monkeypatch):
+    import importlib
+
+    module_path = tmp_path / "external_submission.py"
+    module_path.write_text(
+        """
+RESET_CALLS = 0
+CHECKPOINTS = []
+BUILD_SPECS = []
+TEMPERATURES = []
+
+
+class SubmittedPolicy:
+    def __init__(self, env, spec, temperature=1.0):
+        self.num_agents = env.num_agents
+        BUILD_SPECS.append(dict(spec))
+        TEMPERATURES.append(temperature)
+
+    def load_checkpoint(self, path):
+        CHECKPOINTS.append(path)
+
+    def reset(self, episode=None, seed=None):
+        global RESET_CALLS
+        RESET_CALLS += 1
+
+    def metadata(self):
+        return {"method_name": "SubmittedPolicy"}
+
+    def act(self, obs, info, state):
+        return {
+            int(agent_id): {"action": 4, "message_tokens": [], "message_text": ""}
+            for agent_id in obs
+        }
+
+
+def build_policy(env, spec, temperature=1.0):
+    return SubmittedPolicy(env, spec, temperature=temperature)
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    from examples.benchmark_run import build_policy
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.eval.runner import run_episodes
+
+    env = SyncOrSinkEnv(SyncOrSinkConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        num_agents=2,
+        fov_preset="easy",
+        max_steps=2,
+    ))
+    spec = {"scenario": "signal_hunt", "mode": "marl", "policy": "random"}
+    policy = build_policy(
+        spec,
+        env,
+        external_entrypoint="external_submission:build_policy",
+        external_checkpoint="checkpoint.pt",
+        external_kwargs={"temperature": 0.25},
+    )
+    summary, _ = run_episodes(env, policy, episodes=2, seed=0)
+    external_submission = importlib.import_module("external_submission")
+
+    assert summary.episodes == 2
+    assert external_submission.RESET_CALLS == 2
+    assert external_submission.CHECKPOINTS == ["checkpoint.pt"]
+    assert external_submission.BUILD_SPECS[0]["scenario"] == "signal_hunt"
+    assert external_submission.TEMPERATURES == [0.25]
 
 
 def test_eval_from_spec_policy_dispatch_rejects_unknown_policy():
