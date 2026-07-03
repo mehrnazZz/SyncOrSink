@@ -24,6 +24,7 @@ nav:
       - Documentation Site: docs_site.md
   - Environment:
       - Scenario Registry And Tiers: scenario_registry.md
+      - Procedural Packs: procedural_packs.md
       - Design: design.md
       - Scenarios: scenarios.md
       - Experts: experts.md

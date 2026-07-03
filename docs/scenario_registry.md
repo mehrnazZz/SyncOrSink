@@ -5,6 +5,8 @@ This keeps the default benchmark interpretable while leaving room for realistic
 procedural task families.
 
 Scenario metadata lives in `syncorsink/envs/scenario_registry.py`.
+Procedural pack metadata lives in `syncorsink/envs/procedural.py`; see
+`docs/procedural_packs.md`.
 
 ## Tiers
 
