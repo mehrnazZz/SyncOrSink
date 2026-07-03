@@ -213,6 +213,55 @@ The transformer preset expects local checkpoint artifacts:
 
 These checkpoint files are not tracked in the repository. Train or restore them before running `benchmarks/transformer_presets.json`.
 
+End-to-end checkpoint smoke test:
+
+```bash
+mkdir -p checkpoints
+
+python examples/comm_mat_train.py \
+  --scenario pipeline_assembly \
+  --map-size 8 \
+  --agents 3 \
+  --fov-preset easy \
+  --updates 1 \
+  --rollout-steps 32 \
+  --epochs 1 \
+  --minibatch 32 \
+  --device cpu \
+  --eval-every 0 \
+  --save checkpoints/comm_mat_pipeline.pt
+
+python examples/comm_mat_train.py \
+  --scenario energy_grid \
+  --map-size 8 \
+  --agents 3 \
+  --fov-preset easy \
+  --updates 1 \
+  --rollout-steps 32 \
+  --epochs 1 \
+  --minibatch 32 \
+  --device cpu \
+  --eval-every 0 \
+  --save checkpoints/comm_mat_energy.pt
+
+python examples/comm_mat_train.py \
+  --scenario signal_hunt \
+  --map-size 8 \
+  --agents 3 \
+  --fov-preset easy \
+  --updates 1 \
+  --rollout-steps 32 \
+  --epochs 1 \
+  --minibatch 32 \
+  --device cpu \
+  --eval-every 0 \
+  --save checkpoints/comm_mat_signal.pt
+
+python examples/benchmark_run.py --spec benchmarks/transformer_presets.json
+```
+
+This verifies train-save-load-eval plumbing only. One-update checkpoints are not meaningful baselines.
+
 Fresh-checkout smoke checks that do not require checkpoints:
 
 ```bash
