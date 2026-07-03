@@ -111,13 +111,14 @@ Each JSONL row from `--trace-jsonl` includes:
 - `episode`, `step`
 - `actions`, `rewards`, `done`, `truncated`
 - `comm_tokens`, `messages_text`, `messages_with_sender`
-- `goal_hint_texts`
 - `llm_calls` (prompt/response and parsed actions)
 - `task_metrics`, `task_events`
 - optional: `obs` (if `--trace-local-obs`)
 - optional: `ansi_map` (if `--trace-render-ansi`)
 
 This supports prompt/response analysis, communication timeline inspection, and post-hoc debugging.
+Private scenario hints are encoded in each agent's `goal_hint` observation, not
+in shared `info`, so traces should use `--trace-local-obs` when inspecting them.
 
 ## W&B outputs by script
 

@@ -77,7 +77,7 @@ Per‑agent observation dict:
 - `local_node_energy`: `(2r+1, 2r+1)` int grid (node energy values)
 - `messages_tokens`: `(max_messages, comm_token_limit)`
 - `message_from`: `(max_messages,)`
-- `goal_hint`: `(16,)` hint tokens (scenario‑dependent)
+- `goal_hint`: `(16,)` per-agent private hint tokens (scenario-dependent)
 - `explored_mask`: `(map_size, map_size)` binary per-agent explored map (if `obs_exploration_memory=True`)
 - `explored_age`: `(map_size, map_size)` steps since last seen, `-1` unseen (if `obs_exploration_age=True`)
 
@@ -86,6 +86,11 @@ Info dict (per step):
 - `messages_with_sender`: list of incoming `{from, text}` entries (text mode)
 - `comm_tokens`: per‑agent token counts
 - `central_obs` (CTDE track only): full grid + agent positions + inventories
+
+Shared `info` must not expose private scenario state such as Signal Hunt clue
+constraints, Pipeline blueprints, or Energy Grid node assignments. DTDE policies
+should treat per-agent observations and received messages as the only private
+information channels.
 
 ## World Elements (Tiles)
 

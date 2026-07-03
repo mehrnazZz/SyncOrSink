@@ -546,36 +546,42 @@ def local_signal_policy(env):
     shared_mem: dict[tuple[int, int], int] = {}
     constraints = {"water": set(), "beacon": set(), "parity": None, "quadrant": None}
 
-    def _parse_goal_hint_text(hint: str):
-        if not hint:
+    def _parse_goal_hint_tokens(raw):
+        if raw is None:
             return
-        if "near water" in hint:
-            constraints["water"].add("near")
-        if "beacon" in hint and "east" in hint:
-            constraints["beacon"].add("east2")
-        if "x+y is" in hint:
-            try:
-                parity = int(hint.split("x+y is")[1].split(",")[0].strip())
-                constraints["parity"] = parity
-            except Exception:
-                pass
-        if "quadrant" in hint:
-            for q in ("NW", "NE", "SW", "SE"):
-                if q in hint:
-                    constraints["quadrant"] = q
-                    break
+        try:
+            tokens = [int(v) for v in raw.tolist()]
+        except AttributeError:
+            tokens = [int(v) for v in raw]
+        i = 0
+        while i < len(tokens):
+            code = tokens[i]
+            if code < 0:
+                break
+            if code == 21 and i + 4 < len(tokens):
+                constraints["water"].add("near")
+                i += 5
+            elif code == 22 and i + 5 < len(tokens):
+                constraints["beacon"].add("east2")
+                i += 6
+            elif code == 23 and i + 3 < len(tokens):
+                constraints["parity"] = int(tokens[i + 1])
+                for name, value in {"NW": 0, "NE": 1, "SW": 2, "SE": 3}.items():
+                    if int(tokens[i + 2]) == value:
+                        constraints["quadrant"] = name
+                        break
+                i += 4
+            elif code == 24 and i + 1 < len(tokens):
+                i += 2
+            elif code == 25 and i + 1 < len(tokens):
+                i += 2
+            else:
+                break
 
     def _policy(obs: Dict[int, dict], info: dict, state: dict):
         actions = {}
-        # ingest textual hints if provided
-        if info and "goal_hint_texts" in info:
-            for hints in info["goal_hint_texts"].values():
-                if isinstance(hints, list):
-                    for h in hints:
-                        _parse_goal_hint_text(h)
-                elif isinstance(hints, str):
-                    _parse_goal_hint_text(hints)
         for aid, ob in obs.items():
+            _parse_goal_hint_tokens(ob.get("goal_hint"))
             local_ids = _local_grid_as_ids(ob["local_grid"])
             px, py = int(ob["self_pos"][0]), int(ob["self_pos"][1])
 

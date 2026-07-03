@@ -604,17 +604,23 @@ class SignalHunt(ScenarioBase):
         constraints.append({"type": "y_parity", "value": target[1] % 2})
 
         agent_hints = {}
+        agent_hint_specs = {}
         for agent_id in range(env.num_agents):
-            agent_hints[agent_id] = clues[agent_id % len(clues)]
+            hint_idx = agent_id % len(clues)
+            agent_hints[agent_id] = clues[hint_idx]
+            agent_hint_specs[agent_id] = constraints[hint_idx]
 
         data = {
             "target": target,
             "clues": clues,
+            "clue_specs": constraints,
             "agent_hints": agent_hints,
+            "agent_hint_specs": agent_hint_specs,
             "constraints": constraints,
             "decoys": decoys,
             "clue_claimed": set(),
             "agent_clues": {i: [] for i in range(env.num_agents)},
+            "agent_clue_specs": {i: [] for i in range(env.num_agents)},
             "scan_log": {},
             "scan_window": env.config.scan_window,
         }
@@ -630,10 +636,14 @@ class SignalHunt(ScenarioBase):
             if action.get("action") == env.ACTION_INTERACT:
                 pos = env.agent_positions[agent_id]
                 if pos in env.meta["clues"] and pos not in env.scenario_state.data["clue_claimed"]:
-                    clue = env.scenario_state.data["clues"][len(env.scenario_state.data["clue_claimed"]) % len(env.scenario_state.data["clues"])]
+                    clue_idx = len(env.scenario_state.data["clue_claimed"]) % len(env.scenario_state.data["clues"])
+                    clue = env.scenario_state.data["clues"][clue_idx]
                     env.scenario_state.data["agent_clues"][agent_id].append(clue)
+                    env.scenario_state.data["agent_clue_specs"][agent_id].append(
+                        env.scenario_state.data["clue_specs"][clue_idx]
+                    )
                     env.scenario_state.data["clue_claimed"].add(pos)
-                    events[agent_id].append({"event": "clue_found", "clue": clue})
+                    events[agent_id].append({"event": "clue_found"})
 
         # scans on target
         for agent_id, action in actions.items():
@@ -648,7 +658,7 @@ class SignalHunt(ScenarioBase):
         if len(recent) >= 2:
             for i in rewards:
                 rewards[i] += env.reward_complete
-            return rewards, True, {"events": events, "agent_clues": env.scenario_state.data["agent_clues"]}
+            return rewards, True, {"events": events}
 
         if env.config.signal_shaping:
             shaping = env.scenario_state.data.setdefault("shaping", {
@@ -761,7 +771,7 @@ class SignalHunt(ScenarioBase):
                             if env.steps - last_msg_step <= utility_window:
                                 rewards[sender_id] += env.config.signal_comm_utility
 
-        return rewards, False, {"events": events, "agent_clues": env.scenario_state.data["agent_clues"], "constraints": env.scenario_state.data["constraints"]}
+        return rewards, False, {"events": events}
 
 
 SCENARIOS = {

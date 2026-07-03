@@ -677,15 +677,68 @@ class SyncOrSinkEnv(gym.Env):
             for node_pos in agent_nodes:
                 ntype = node_types.get(node_pos, 0)
                 hint.extend([node_pos[0], node_pos[1], ntype])
+        elif self.config.scenario == "signal_hunt":
+            seen_specs = set()
+            specs = []
+            initial = self.scenario_state.data.get("agent_hint_specs", {}).get(agent_id)
+            if initial:
+                specs.append(initial)
+            specs.extend(self.scenario_state.data.get("agent_clue_specs", {}).get(agent_id, []))
+            for spec in specs:
+                encoded = self._encode_signal_constraint(spec)
+                if not encoded:
+                    continue
+                key = tuple(encoded)
+                if key in seen_specs:
+                    continue
+                seen_specs.add(key)
+                hint.extend(encoded)
+                if len(hint) >= 16:
+                    break
         hint = hint[:16]
         padded = hint + [-1] * (16 - len(hint))
         return np.array(padded, dtype=np.int16)
+
+    def _encode_signal_constraint(self, constraint: dict) -> list[int]:
+        ctype = constraint.get("type")
+        if ctype == "near":
+            pos = constraint.get("pos", (-1, -1))
+            return [21, self._signal_object_code(constraint.get("object")), int(pos[0]), int(pos[1]), int(constraint.get("dist", 0))]
+        if ctype == "offset":
+            pos = constraint.get("pos", (-1, -1))
+            return [
+                22,
+                self._signal_object_code(constraint.get("object")),
+                int(pos[0]),
+                int(pos[1]),
+                int(constraint.get("dx", 0)),
+                int(constraint.get("dy", 0)),
+            ]
+        if ctype == "parity_quadrant":
+            return [
+                23,
+                int(constraint.get("parity", 0)),
+                self._quadrant_code(constraint.get("quadrant")),
+                int(constraint.get("size", self.map_size)),
+            ]
+        if ctype == "x_parity":
+            return [24, int(constraint.get("value", 0))]
+        if ctype == "y_parity":
+            return [25, int(constraint.get("value", 0))]
+        return []
+
+    @staticmethod
+    def _signal_object_code(name: Any) -> int:
+        return {"water": TILE_WATER, "beacon": TILE_BEACON}.get(str(name), 0)
+
+    @staticmethod
+    def _quadrant_code(name: Any) -> int:
+        return {"NW": 0, "NE": 1, "SW": 2, "SE": 3}.get(str(name), -1)
 
     def _build_info(self) -> dict:
         info = {
             "messages_text": {},
             "messages_with_sender": {},
-            "goal_hint_texts": {},
             "scenario": self.config.scenario,
         }
         for agent_id in range(self.num_agents):
@@ -696,9 +749,6 @@ class SyncOrSinkEnv(gym.Env):
                 for m in self.inboxes[agent_id]
                 if m.text
             ]
-        if self.config.scenario == "signal_hunt":
-            for agent_id in range(self.num_agents):
-                info["goal_hint_texts"][agent_id] = self.scenario_state.data.get("agent_hints", {}).get(agent_id)
         return info
 
 

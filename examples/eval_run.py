@@ -353,7 +353,6 @@ def main():
             "comm_tokens": _to_jsonable(info_after.get("comm_tokens", {})),
             "messages_text": _to_jsonable(info_before.get("messages_text", {})),
             "messages_with_sender": _to_jsonable(info_before.get("messages_with_sender", {})),
-            "goal_hint_texts": _to_jsonable(info_before.get("goal_hint_texts", {})),
         }
         if args.trace_local_obs:
             row["obs"] = _to_jsonable(obs)

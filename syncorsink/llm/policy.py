@@ -162,6 +162,47 @@ def _parse_stage_target(text: str) -> int | None:
     return int(m.group("s"))
 
 
+def _signal_goal_hint_lines(agent_obs: dict) -> list[str]:
+    raw = agent_obs.get("goal_hint")
+    if raw is None:
+        return []
+    try:
+        tokens = [int(v) for v in raw.tolist()]
+    except AttributeError:
+        tokens = [int(v) for v in raw]
+    lines = []
+    object_names = {7: "water", 8: "beacon"}
+    quadrant_names = {0: "NW", 1: "NE", 2: "SW", 3: "SE"}
+    i = 0
+    while i < len(tokens):
+        code = tokens[i]
+        if code < 0:
+            break
+        if code == 21 and i + 4 < len(tokens):
+            obj = object_names.get(tokens[i + 1], "object")
+            lines.append(f"Private clue: target near {obj} at ({tokens[i + 2]},{tokens[i + 3]}) within {tokens[i + 4]}.")
+            i += 5
+        elif code == 22 and i + 5 < len(tokens):
+            obj = object_names.get(tokens[i + 1], "object")
+            lines.append(
+                f"Private clue: target offset from {obj} at ({tokens[i + 2]},{tokens[i + 3]}) by dx={tokens[i + 4]}, dy={tokens[i + 5]}."
+            )
+            i += 6
+        elif code == 23 and i + 3 < len(tokens):
+            quadrant = quadrant_names.get(tokens[i + 2], "unknown")
+            lines.append(f"Private clue: target x+y parity is {tokens[i + 1]} in quadrant {quadrant}.")
+            i += 4
+        elif code == 24 and i + 1 < len(tokens):
+            lines.append(f"Private clue: target x parity is {tokens[i + 1]}.")
+            i += 2
+        elif code == 25 and i + 1 < len(tokens):
+            lines.append(f"Private clue: target y parity is {tokens[i + 1]}.")
+            i += 2
+        else:
+            break
+    return lines
+
+
 def grid_to_ascii(local_grid) -> str:
     mapping = {
         0: ".",
@@ -871,7 +912,6 @@ def _common_prompt_header(agent_obs: dict, info: dict, agent_id: int, state: dic
     local = agent_obs["local_grid"]
     inventory = int(agent_obs["inventory"][0])
     pos = agent_obs.get("self_pos")
-    hints = info.get("goal_hint_texts", {}).get(agent_id)
     messages = info.get("messages_text", {}).get(agent_id, [])
     step = None if state is None else state.get("step")
     center_tile = center_tile_id(agent_obs)
@@ -899,8 +939,8 @@ def _common_prompt_header(agent_obs: dict, info: dict, agent_id: int, state: dic
         prompt.append(f"Step: {step}")
     prompt.append("Local tile view:")
     prompt.append(grid_to_ascii(local))
-    if hints:
-        prompt.append(f"Agent hint: {hints}")
+    if scenario == "signal_hunt":
+        prompt.extend(_signal_goal_hint_lines(agent_obs))
     if local_events:
         prompt.append("Recent local events:")
         for ev in local_events[-4:]:
@@ -1921,9 +1961,7 @@ def executor_prompt(obs: dict, info: dict, agent_id: int, state: dict | None = N
                 prompt.append(f"agent_{int(item.get('from', -1))}: {txt}")
 
     if scenario == "signal_hunt":
-        hint_txt = info.get("goal_hint_texts", {}).get(agent_id)
-        if hint_txt:
-            prompt.append(f"Agent clue hint: {hint_txt}")
+        prompt.extend(_signal_goal_hint_lines(agent_obs))
     if scenario == "pipeline_assembly":
         prompt.extend(_pipeline_goal_hint_lines(agent_obs, info, agent_id))
         prompt.extend(_pipeline_progress_prompt_lines(agent_id, state))

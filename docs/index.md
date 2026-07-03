@@ -16,6 +16,7 @@ submissions through lightweight result artifacts.
 - [Leaderboard protocol](leaderboard.md)
 - [External policy submissions](policy_submissions.md)
 - [Scenario registry and tiers](scenario_registry.md)
+- [Communication necessity audit](communication_audit.md)
 - [Procedural packs](procedural_packs.md)
 - [Scenario descriptions](scenarios.md)
 - [Experiment report](experiment_report.md)
