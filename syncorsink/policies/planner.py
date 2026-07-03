@@ -4,6 +4,7 @@ from collections import Counter
 from typing import Dict
 
 from .pathing import shortest_path, shortest_path_distance, move_action_from_delta
+from .oracle import _move_or_open, _move_to_any_or_open
 
 
 def _blocked_positions(env, agent_id, allow_positions=None):
@@ -38,28 +39,36 @@ def pipeline_central_planner(env):
         required = stage["required"]
         delivered = stage.get("delivered", [])
 
-        # compute needs (multiset)
+        # Compute needs as a multiset. ``remaining_needs`` are not delivered
+        # yet; ``pickup_needs`` also subtract resources already being carried so
+        # empty agents do not fetch duplicates and block carriers.
         need_counts = Counter(required) - Counter(delivered)
-        needs = []
+        remaining_needs = []
         for k, v in need_counts.items():
-            needs.extend([k] * v)
+            remaining_needs.extend([k] * v)
+
+        pickup_counts = need_counts.copy()
+        for inv in env.inventories:
+            if pickup_counts.get(inv, 0) > 0:
+                pickup_counts[inv] -= 1
+        pickup_needs = []
+        for k, v in pickup_counts.items():
+            pickup_needs.extend([k] * v)
 
         # if no needs and sync required, converge & sync
-        if stage["sync"] and not needs:
+        if stage["sync"] and not remaining_needs:
             for aid in range(env.num_agents):
                 pos = env.agent_positions[aid]
                 if pos == station:
                     actions[aid] = {"action": env.ACTION_INTERACT, "message_tokens": []}
                 else:
-                    blocked = _blocked_positions(env, aid, {station})
-                    dx, dy, _ = shortest_path(env.grid, pos, {station}, blocked_positions=blocked)
-                    actions[aid] = {"action": move_action_from_delta(dx, dy, env), "message_tokens": []}
+                    actions[aid] = {"action": _move_or_open(env, aid, pos, station), "message_tokens": []}
             return actions
 
         # assign agents to needs (greedy by distance)
         free_agents = [aid for aid in range(env.num_agents) if env.inventories[aid] == 0]
         assigned = {}
-        for need in needs:
+        for need in pickup_needs:
             best = None
             best_cost = None
             best_pos = None
@@ -89,9 +98,7 @@ def pipeline_central_planner(env):
                 if pos == station:
                     actions[aid] = {"action": env.ACTION_INTERACT, "message_tokens": []}
                 else:
-                    blocked = _blocked_positions(env, aid, {station})
-                    dx, dy, _ = shortest_path(env.grid, pos, {station}, blocked_positions=blocked)
-                    actions[aid] = {"action": move_action_from_delta(dx, dy, env), "message_tokens": []}
+                    actions[aid] = {"action": _move_or_open(env, aid, pos, station), "message_tokens": []}
                 continue
 
             # drop useless inventory to free hands
@@ -106,15 +113,18 @@ def pipeline_central_planner(env):
                 if current == need:
                     actions[aid] = {"action": env.ACTION_PICKUP, "message_tokens": []}
                     continue
-                blocked = _blocked_positions(env, aid, set(candidates))
-                dx, dy, _ = shortest_path(env.grid, pos, set(candidates), blocked_positions=blocked)
-                actions[aid] = {"action": move_action_from_delta(dx, dy, env), "message_tokens": []}
+                actions[aid] = {"action": _move_to_any_or_open(env, aid, pos, candidates), "message_tokens": []}
+                continue
+
+            if not pickup_needs and stage["sync"]:
+                if pos == station:
+                    actions[aid] = {"action": env.ACTION_INTERACT, "message_tokens": []}
+                else:
+                    actions[aid] = {"action": _move_or_open(env, aid, pos, station), "message_tokens": []}
                 continue
 
             # fallback: move toward station
-            blocked = _blocked_positions(env, aid, {station})
-            dx, dy, _ = shortest_path(env.grid, pos, {station}, blocked_positions=blocked)
-            actions[aid] = {"action": move_action_from_delta(dx, dy, env), "message_tokens": []}
+            actions[aid] = {"action": _move_or_open(env, aid, pos, station), "message_tokens": []}
 
         return actions
 

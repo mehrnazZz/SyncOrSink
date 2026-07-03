@@ -46,17 +46,45 @@ class PipelineAssembly(ScenarioBase):
     name = "pipeline_assembly"
 
     def build_map(self, size: int, rng: np.random.Generator, config) -> tuple[np.ndarray, dict]:
-        if config.use_rooms:
-            grid, rooms = generate_room_map(MapSpec(size=size), rng)
-            if not config.use_doors:
-                grid[grid == 9] = 0
-        else:
-            grid = generate_base_map(MapSpec(size=size), rng)
         station_count = max(3, min(5, size // 6))
         resource_count = station_count * 3
-        stations = place_tiles(grid, rng, TILE_STATION, count=station_count)
-        resources = place_tiles(grid, rng, TILE_RESOURCE, count=resource_count)
-        agent_starts = place_random_positions(grid, rng, count=6)
+        min_starts = max(6, int(getattr(config, "num_agents", 3)))
+        min_component = max(station_count + resource_count + min_starts + 4, int(size * size * 0.25))
+
+        for _ in range(20):
+            if config.use_rooms:
+                grid, rooms = generate_room_map(MapSpec(size=size), rng)
+                if not config.use_doors:
+                    grid[grid == 9] = 0
+            else:
+                grid = generate_base_map(MapSpec(size=size), rng)
+                rooms = []
+
+            component = largest_component_positions(grid)
+            if not component:
+                component = [(x, y) for y in range(size) for x in range(size) if grid[y, x] == 0]
+            if len(component) < min_component:
+                continue
+
+            stations = place_tiles_in_positions(grid, rng, TILE_STATION, count=station_count, positions=component)
+            resources = place_tiles_in_positions(grid, rng, TILE_RESOURCE, count=resource_count, positions=component)
+            agent_starts = place_tiles_in_positions(grid, rng, TILE_EMPTY, count=min_starts, positions=component)
+            if len(stations) == station_count and len(resources) == resource_count and len(agent_starts) >= min_starts:
+                break
+        else:
+            if config.use_rooms:
+                grid, rooms = generate_room_map(MapSpec(size=size), rng)
+                if not config.use_doors:
+                    grid[grid == 9] = 0
+            else:
+                grid = generate_base_map(MapSpec(size=size), rng)
+                rooms = []
+            component = largest_component_positions(grid)
+            if not component:
+                component = [(x, y) for y in range(size) for x in range(size) if grid[y, x] == 0]
+            stations = place_tiles_in_positions(grid, rng, TILE_STATION, count=station_count, positions=component)
+            resources = place_tiles_in_positions(grid, rng, TILE_RESOURCE, count=resource_count, positions=component)
+            agent_starts = place_tiles_in_positions(grid, rng, TILE_EMPTY, count=min_starts, positions=component)
         meta = {
             "stations": stations,
             "resources": resources,
@@ -311,9 +339,13 @@ class EnergyGrid(ScenarioBase):
         if preset == "easy":
             scaled_energy = max(15, int(sqrt_s * 10))
             grace = max(4, int(sqrt_s * 3))
+            sync_threshold = max(3, int(scaled_energy * 0.4))
+            success_recharges = n_nodes
         else:
-            scaled_energy = max(10, int(sqrt_s * 6))
+            scaled_energy = max(12, int(sqrt_s * 8))
             grace = max(2, int(sqrt_s * 2))
+            sync_threshold = max(3, int(scaled_energy * 0.3))
+            success_recharges = min(n_nodes, max(env.num_agents + 1, int(math.ceil(n_nodes * 0.7))))
         node_energy = {pos: scaled_energy for pos in env.meta["nodes"]}
         node_types = {pos: int(rng.integers(1, 3)) for pos in env.meta["nodes"]}
         # distribute resources to ensure coverage of node types
@@ -346,9 +378,9 @@ class EnergyGrid(ScenarioBase):
             "node_types": node_types,
             "resource_types": resource_types,
             "spawn_rate": 0.3 if preset == "easy" else 0.15,
-            "sync_threshold": max(3, int(scaled_energy * 0.4)),
+            "sync_threshold": sync_threshold,
             "recharge_count": 0,
-            "success_recharges": len(env.meta["nodes"]),  # 1 recharge per node — many nodes makes this hard
+            "success_recharges": success_recharges,
             "grace_steps": grace,
             "drain_period": 1,  # always drain every step — no free passes
             "node_assignments": node_assignments,

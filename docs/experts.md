@@ -7,7 +7,7 @@ This document describes the centralized expert planners for each scenario, how t
 Centralized experts exist for all three scenarios:
 
 - Pipeline Assembly: `pipeline_planner_comm` (centralized planner + comm broadcast)
-- Energy Grid: `energy_planner_comm` (centralized planner + comm broadcast)
+- Energy Grid: `oracle_planner` / `energy_oracle_planner` (stateful centralized dispatcher)
 - Signal Hunt: `signal_hunt_planner_comm` (centralized planner + comm broadcast)
 
 These policies are deterministic and should solve their respective scenarios under default conditions. They can be used for:
@@ -17,6 +17,18 @@ These policies are deterministic and should solve their respective scenarios und
 - Regression tests for map generation and reward logic
 
 ## Scenario Experts
+
+## Current Acceptance Status
+
+The automated expert acceptance tests cover:
+
+- `signal_hunt` 8x8 and 16x16 with `signal_hunt_planner_comm`
+- `energy_grid` 8x8 easy and 16x16 hard with `energy_oracle_planner`
+- `pipeline_assembly` 8x8 and 16x16 with `pipeline_planner_comm`
+
+Stress sweeps beyond the acceptance window are still useful: a 32-seed
+`pipeline_assembly` 16x16 sweep can still expose rare synchronized-layout
+coordination cases for further expert hardening.
 
 ### Pipeline Assembly
 
@@ -35,16 +47,20 @@ These policies are deterministic and should solve their respective scenarios und
 
 ### Energy Grid
 
-**Policy:** `energy_planner_comm`  
-**Where:** `syncorsink/policies/planner.py` and `syncorsink/policies/planner_comm.py`
+**Policy:** `oracle_planner` / `energy_oracle_planner`
+
+**Where:** `syncorsink/policies/oracle.py`
 
 **Logic:**
-- Tracks node energy and prioritizes the lowest-energy node.
-- If an agent is carrying a resource, it routes to the matching node type.
-- Otherwise it navigates to the nearest resource of the target node type.
+- Keeps stable per-agent assignments.
+- Reserves distinct resource targets.
+- Routes carriers to matching nodes by urgency and distance.
+- Coordinates two matching carriers before interacting on sync-gated critical nodes.
 
 **Comm broadcast:**
-`[16, node_x, node_y, node_type]`
+The oracle planner is a centralized solvability policy and does not need to
+broadcast. `energy_planner_comm` remains available as a lighter communication
+baseline, but it is not the hard-preset acceptance expert.
 
 ### Signal Hunt
 
