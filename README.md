@@ -84,6 +84,7 @@ Baseline docs:
 - RL baselines (MAPPO + comm heads): `docs/baselines_rl.md`
 - Transformer baselines (Comm-MAT): `docs/baselines_transformer.md`
 - Evaluation/logging config (eval flags, traces, video, W&B): `docs/eval_and_logging.md`
+- Leaderboard protocol and result schema: `docs/leaderboard.md`
 
 Evaluation harness:
 
@@ -162,6 +163,19 @@ Benchmark suite runner:
 
 ```bash
 python examples/benchmark_run.py --spec examples/benchmark_spec.json --wandb --wandb-project syncorsink
+```
+
+Official v0.1 benchmark suite + leaderboard artifact:
+
+```bash
+python examples/benchmark_run.py \
+  --spec benchmarks/syncorsink_v0_1.json \
+  --results-json results/my_method_v0_1.json \
+  --track symbolic_dtde \
+  --submission-name my-method-v0.1 \
+  --method-name "My Comm Policy" \
+  --method-type "Transformer MARL" \
+  --authors "First Author,Second Author"
 ```
 
 Benchmark presets:

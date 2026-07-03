@@ -73,6 +73,76 @@ def test_eval_spec_loads_extended_benchmark_fields(tmp_path):
         validate_spec({"scenario": "energy_grid", "mode": "marl", "max_steps": 0})
 
 
+def test_official_benchmark_v0_1_loads():
+    from syncorsink.eval.benchmark_spec import load_benchmark
+
+    bench = load_benchmark("benchmarks/syncorsink_v0_1.json")
+
+    assert bench.name == "syncorsink_v0_1"
+    assert bench.version == "0.1.0"
+    assert len(bench.cases) == 6
+    assert all(case.weight > 0 for case in bench.cases)
+    assert any("communication_required" in case.tags for case in bench.cases)
+
+
+def test_leaderboard_result_artifact_validates_saves_and_scores(tmp_path):
+    from syncorsink.eval.metrics import EvalSummary
+    from syncorsink.eval.result_schema import (
+        SubmissionInfo,
+        load_result_artifact,
+        make_result_artifact,
+        save_result_artifact,
+        summary_to_case_result,
+    )
+    from syncorsink.eval.scoring import score_result_artifact
+
+    summary = EvalSummary(
+        episodes=2,
+        success_rate=0.5,
+        avg_return=3.0,
+        avg_steps=20.0,
+        avg_comm_tokens=4.0,
+        avg_agent_reward={0: 1.5},
+        avg_agent_comm={0: 2.0},
+    )
+    case = summary_to_case_result(
+        "signal_hunt_8x8_private_clues",
+        summary,
+        spec={"scenario": "signal_hunt", "mode": "marl"},
+        tags=["communication_required"],
+        seeds=[3000, 3001],
+    )
+    artifact = make_result_artifact(
+        benchmark_name="syncorsink_v0_1",
+        benchmark_version="0.1.0",
+        track="symbolic_dtde",
+        submission=SubmissionInfo(
+            name="smoke",
+            method_name="test_policy",
+            method_type="unit_test",
+            authors=["SyncOrSink"],
+        ),
+        cases=[case],
+        generated_at="2026-01-01T00:00:00+00:00",
+    )
+    artifact["score"] = score_result_artifact(artifact)
+    out = tmp_path / "result.json"
+
+    save_result_artifact(artifact, out)
+    loaded = load_result_artifact(out)
+
+    assert loaded["score"]["official_score"] == 50.0
+    assert loaded["cases"][0]["metrics"]["avg_agent_reward"] == {"0": 1.5}
+    with pytest.raises(ValueError):
+        make_result_artifact(
+            benchmark_name="syncorsink_v0_1",
+            benchmark_version="0.1.0",
+            track="missing_track",
+            submission=artifact["submission"],
+            cases=[case],
+        )
+
+
 def test_benchmark_policy_dispatch_no_random_fallback_and_pipeline_follower_runs():
     from examples.benchmark_run import build_policy
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv

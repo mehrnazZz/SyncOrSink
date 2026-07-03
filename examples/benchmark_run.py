@@ -9,7 +9,14 @@ if ROOT not in sys.path:
 from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig
 from syncorsink.eval.benchmark_spec import load_benchmark
 from syncorsink.eval.metrics import summarize
+from syncorsink.eval.result_schema import (
+    SubmissionInfo,
+    make_result_artifact,
+    save_result_artifact,
+    summary_to_case_result,
+)
 from syncorsink.eval.runner import run_episodes
+from syncorsink.eval.scoring import score_result_artifact
 from syncorsink.eval.llm_runner import run_llm_episodes
 from syncorsink.policies.random_policy import random_policy
 from syncorsink.policies.scripted import pipeline_planner, energy_planner, signal_hunt_planner
@@ -116,9 +123,20 @@ def main():
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", default="syncorsink")
     parser.add_argument("--wandb-run", default=None)
+    parser.add_argument("--results-json", default=None, help="Write a leaderboard result artifact JSON file")
+    parser.add_argument("--track", default="symbolic_dtde", help="Leaderboard track for --results-json")
+    parser.add_argument("--submission-name", default="local_run", help="Submission display name")
+    parser.add_argument("--method-name", default="benchmark_run", help="Method/model name")
+    parser.add_argument("--method-type", default="baseline", help="Method category, e.g. MAPPO, LLM, VLM")
+    parser.add_argument("--authors", default="SyncOrSink Contributors", help="Comma-separated author names")
+    parser.add_argument("--repository", default=None, help="Optional code repository URI")
+    parser.add_argument("--checkpoint-uri", default=None, help="Optional checkpoint or artifact URI")
+    parser.add_argument("--paper-uri", default=None, help="Optional paper/preprint URI")
+    parser.add_argument("--notes", default=None, help="Optional submission notes")
     args = parser.parse_args()
 
     bench = load_benchmark(args.spec)
+    case_results = []
 
     wandb_run = None
     if args.wandb:
@@ -152,6 +170,15 @@ def main():
             summary, _ = run_episodes(env, policy, episodes=episodes, seed=0)
 
         print("case", case.name, "success", summary.success_rate, "return", summary.avg_return)
+        case_results.append(
+            summary_to_case_result(
+                case.name,
+                summary,
+                spec=spec,
+                weight=case.weight,
+                tags=case.tags,
+            )
+        )
 
         if wandb_run is not None:
             wandb_run.log({
@@ -164,6 +191,28 @@ def main():
 
     if wandb_run is not None:
         wandb_run.finish()
+
+    if args.results_json:
+        artifact = make_result_artifact(
+            benchmark_name=bench.name,
+            benchmark_version=bench.version,
+            track=args.track,
+            submission=SubmissionInfo(
+                name=args.submission_name,
+                method_name=args.method_name,
+                method_type=args.method_type,
+                authors=[name.strip() for name in args.authors.split(",") if name.strip()],
+                repository=args.repository,
+                checkpoint_uri=args.checkpoint_uri,
+                paper_uri=args.paper_uri,
+                notes=args.notes,
+            ),
+            cases=case_results,
+        )
+        artifact["score"] = score_result_artifact(artifact)
+        save_result_artifact(artifact, args.results_json)
+        print("wrote", args.results_json)
+        print("official_score", artifact["score"]["official_score"])
 
 
 if __name__ == "__main__":

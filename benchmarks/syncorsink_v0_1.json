@@ -1,0 +1,168 @@
+{
+  "name": "syncorsink_v0_1",
+  "version": "0.1.0",
+  "description": "Official SyncOrSink v0.1 benchmark suite for communication-centric cooperative POMDP generalization.",
+  "metadata": {
+    "primary_metric": "mean_success_rate",
+    "official_score": "100 * weighted_mean(success_rate)",
+    "secondary_metrics": [
+      "avg_return",
+      "avg_steps",
+      "avg_comm_tokens"
+    ],
+    "split_policy": "Use train for development, val for tuning, and test for leaderboard submissions.",
+    "checkpoint_policy": "Do not commit model checkpoints to git; submit checkpoint URIs or artifact references."
+  },
+  "leaderboard_tracks": [
+    "symbolic_dtde",
+    "symbolic_ctde",
+    "rgb_vision",
+    "low_comm",
+    "no_comm",
+    "llm_text",
+    "vlm_rgb",
+    "sample_efficiency",
+    "ood_generalization",
+    "human_playable"
+  ],
+  "cases": [
+    {
+      "name": "signal_hunt_8x8_private_clues",
+      "weight": 1.0,
+      "tags": [
+        "communication_required",
+        "private_information",
+        "synchronized_action",
+        "in_distribution"
+      ],
+      "spec": {
+        "scenario": "signal_hunt",
+        "mode": "marl",
+        "track": "dtde",
+        "split": "test",
+        "episodes": 32,
+        "map_size": 8,
+        "agents": 2,
+        "fov_preset": "easy",
+        "max_steps": 300,
+        "comm_mode": "tokens"
+      }
+    },
+    {
+      "name": "signal_hunt_16x16_scaled_search",
+      "weight": 1.0,
+      "tags": [
+        "communication_required",
+        "private_information",
+        "scale_generalization",
+        "ood"
+      ],
+      "spec": {
+        "scenario": "signal_hunt",
+        "mode": "marl",
+        "track": "dtde",
+        "split": "test",
+        "episodes": 32,
+        "map_size": 16,
+        "agents": 4,
+        "fov_preset": "medium",
+        "max_steps": 300,
+        "comm_mode": "tokens"
+      }
+    },
+    {
+      "name": "energy_grid_8x8_symmetric_info",
+      "weight": 1.0,
+      "tags": [
+        "communication_control",
+        "symmetric_information",
+        "resource_allocation",
+        "in_distribution"
+      ],
+      "spec": {
+        "scenario": "energy_grid",
+        "mode": "marl",
+        "track": "dtde",
+        "split": "test",
+        "episodes": 32,
+        "map_size": 8,
+        "agents": 3,
+        "fov_preset": "easy",
+        "max_steps": 300,
+        "comm_mode": "tokens",
+        "energy_preset": "easy"
+      }
+    },
+    {
+      "name": "energy_grid_16x16_hard_resource_sharing",
+      "weight": 1.0,
+      "tags": [
+        "communication_control",
+        "symmetric_information",
+        "scale_generalization",
+        "resource_allocation",
+        "ood"
+      ],
+      "spec": {
+        "scenario": "energy_grid",
+        "mode": "marl",
+        "track": "dtde",
+        "split": "test",
+        "episodes": 32,
+        "map_size": 16,
+        "agents": 4,
+        "fov_preset": "medium",
+        "max_steps": 300,
+        "comm_mode": "tokens",
+        "energy_preset": "hard"
+      }
+    },
+    {
+      "name": "pipeline_8x8_private_blueprints",
+      "weight": 1.0,
+      "tags": [
+        "communication_required",
+        "private_information",
+        "long_horizon",
+        "sequential_dependencies",
+        "in_distribution"
+      ],
+      "spec": {
+        "scenario": "pipeline_assembly",
+        "mode": "marl",
+        "track": "dtde",
+        "split": "test",
+        "episodes": 32,
+        "map_size": 8,
+        "agents": 3,
+        "fov_preset": "easy",
+        "max_steps": 300,
+        "comm_mode": "tokens"
+      }
+    },
+    {
+      "name": "pipeline_16x16_scaled_dependencies",
+      "weight": 1.0,
+      "tags": [
+        "communication_required",
+        "private_information",
+        "long_horizon",
+        "sequential_dependencies",
+        "scale_generalization",
+        "ood"
+      ],
+      "spec": {
+        "scenario": "pipeline_assembly",
+        "mode": "marl",
+        "track": "dtde",
+        "split": "test",
+        "episodes": 32,
+        "map_size": 16,
+        "agents": 4,
+        "fov_preset": "medium",
+        "max_steps": 300,
+        "comm_mode": "tokens"
+      }
+    }
+  ]
+}
