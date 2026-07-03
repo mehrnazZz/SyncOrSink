@@ -1,0 +1,285 @@
+{
+  "benchmark_name": "syncorsink_v0_1",
+  "benchmark_version": "0.1.0",
+  "cases": [
+    {
+      "metrics": {
+        "avg_agent_comm": {
+          "0": 0.0,
+          "1": 0.0
+        },
+        "avg_agent_reward": {
+          "0": 0.0,
+          "1": 0.0
+        },
+        "avg_comm_tokens": 0.0,
+        "avg_return": 0.0,
+        "avg_steps": 300.0,
+        "episodes": 32,
+        "success_rate": 0.0
+      },
+      "name": "signal_hunt_8x8_private_clues",
+      "seeds": [],
+      "spec": {
+        "agents": 2,
+        "comm_mode": "tokens",
+        "episodes": 32,
+        "fov_preset": "easy",
+        "map_size": 8,
+        "max_steps": 300,
+        "mode": "marl",
+        "policy": "scripted",
+        "scenario": "signal_hunt",
+        "split": "test",
+        "track": "dtde"
+      },
+      "tags": [
+        "communication_required",
+        "private_information",
+        "synchronized_action",
+        "in_distribution"
+      ],
+      "weight": 1.0
+    },
+    {
+      "metrics": {
+        "avg_agent_comm": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0,
+          "3": 0.0
+        },
+        "avg_agent_reward": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0,
+          "3": 0.0
+        },
+        "avg_comm_tokens": 0.0,
+        "avg_return": 0.0,
+        "avg_steps": 300.0,
+        "episodes": 32,
+        "success_rate": 0.0
+      },
+      "name": "signal_hunt_16x16_scaled_search",
+      "seeds": [],
+      "spec": {
+        "agents": 4,
+        "comm_mode": "tokens",
+        "episodes": 32,
+        "fov_preset": "medium",
+        "map_size": 16,
+        "max_steps": 300,
+        "mode": "marl",
+        "policy": "scripted",
+        "scenario": "signal_hunt",
+        "split": "test",
+        "track": "dtde"
+      },
+      "tags": [
+        "communication_required",
+        "private_information",
+        "scale_generalization",
+        "ood"
+      ],
+      "weight": 1.0
+    },
+    {
+      "metrics": {
+        "avg_agent_comm": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0
+        },
+        "avg_agent_reward": {
+          "0": -5.0,
+          "1": -5.0,
+          "2": -5.0
+        },
+        "avg_comm_tokens": 0.0,
+        "avg_return": -15.0,
+        "avg_steps": 36.0,
+        "episodes": 32,
+        "success_rate": 0.0
+      },
+      "name": "energy_grid_8x8_symmetric_info",
+      "seeds": [],
+      "spec": {
+        "agents": 3,
+        "comm_mode": "tokens",
+        "energy_preset": "easy",
+        "episodes": 32,
+        "fov_preset": "easy",
+        "map_size": 8,
+        "max_steps": 300,
+        "mode": "marl",
+        "policy": "scripted",
+        "scenario": "energy_grid",
+        "split": "test",
+        "track": "dtde"
+      },
+      "tags": [
+        "communication_control",
+        "symmetric_information",
+        "resource_allocation",
+        "in_distribution"
+      ],
+      "weight": 1.0
+    },
+    {
+      "metrics": {
+        "avg_agent_comm": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0,
+          "3": 0.0
+        },
+        "avg_agent_reward": {
+          "0": -5.0,
+          "1": -5.0,
+          "2": -5.0,
+          "3": -5.0
+        },
+        "avg_comm_tokens": 0.0,
+        "avg_return": -20.0,
+        "avg_steps": 32.0,
+        "episodes": 32,
+        "success_rate": 0.0
+      },
+      "name": "energy_grid_16x16_hard_resource_sharing",
+      "seeds": [],
+      "spec": {
+        "agents": 4,
+        "comm_mode": "tokens",
+        "energy_preset": "hard",
+        "episodes": 32,
+        "fov_preset": "medium",
+        "map_size": 16,
+        "max_steps": 300,
+        "mode": "marl",
+        "policy": "scripted",
+        "scenario": "energy_grid",
+        "split": "test",
+        "track": "dtde"
+      },
+      "tags": [
+        "communication_control",
+        "symmetric_information",
+        "scale_generalization",
+        "resource_allocation",
+        "ood"
+      ],
+      "weight": 1.0
+    },
+    {
+      "metrics": {
+        "avg_agent_comm": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0
+        },
+        "avg_agent_reward": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0
+        },
+        "avg_comm_tokens": 0.0,
+        "avg_return": 0.0,
+        "avg_steps": 300.0,
+        "episodes": 32,
+        "success_rate": 0.0
+      },
+      "name": "pipeline_8x8_private_blueprints",
+      "seeds": [],
+      "spec": {
+        "agents": 3,
+        "comm_mode": "tokens",
+        "episodes": 32,
+        "fov_preset": "easy",
+        "map_size": 8,
+        "max_steps": 300,
+        "mode": "marl",
+        "policy": "scripted",
+        "scenario": "pipeline_assembly",
+        "split": "test",
+        "track": "dtde"
+      },
+      "tags": [
+        "communication_required",
+        "private_information",
+        "long_horizon",
+        "sequential_dependencies",
+        "in_distribution"
+      ],
+      "weight": 1.0
+    },
+    {
+      "metrics": {
+        "avg_agent_comm": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0,
+          "3": 0.0
+        },
+        "avg_agent_reward": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0,
+          "3": 0.0
+        },
+        "avg_comm_tokens": 0.0,
+        "avg_return": 0.0,
+        "avg_steps": 300.0,
+        "episodes": 32,
+        "success_rate": 0.0
+      },
+      "name": "pipeline_16x16_scaled_dependencies",
+      "seeds": [],
+      "spec": {
+        "agents": 4,
+        "comm_mode": "tokens",
+        "episodes": 32,
+        "fov_preset": "medium",
+        "map_size": 16,
+        "max_steps": 300,
+        "mode": "marl",
+        "policy": "scripted",
+        "scenario": "pipeline_assembly",
+        "split": "test",
+        "track": "dtde"
+      },
+      "tags": [
+        "communication_required",
+        "private_information",
+        "long_horizon",
+        "sequential_dependencies",
+        "scale_generalization",
+        "ood"
+      ],
+      "weight": 1.0
+    }
+  ],
+  "generated_at": "2026-07-03T03:13:01+00:00",
+  "schema_version": "syncorsink.result.v0.1",
+  "score": {
+    "case_count": 6,
+    "mean_avg_comm_tokens": 0.0,
+    "mean_avg_return": -5.833333333333333,
+    "mean_avg_steps": 211.33333333333334,
+    "mean_success_rate": 0.0,
+    "official_score": 0.0
+  },
+  "submission": {
+    "authors": [
+      "SyncOrSink Contributors"
+    ],
+    "checkpoint_uri": null,
+    "method_name": "Scripted",
+    "method_type": "scripted",
+    "name": "scripted-v0.1",
+    "notes": null,
+    "paper_uri": null,
+    "repository": null
+  },
+  "track": "symbolic_dtde"
+}

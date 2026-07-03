@@ -1,0 +1,285 @@
+{
+  "benchmark_name": "syncorsink_v0_1",
+  "benchmark_version": "0.1.0",
+  "cases": [
+    {
+      "metrics": {
+        "avg_agent_comm": {
+          "0": 2.90625,
+          "1": 2.90625
+        },
+        "avg_agent_reward": {
+          "0": 9.9709375,
+          "1": 9.9709375
+        },
+        "avg_comm_tokens": 5.8125,
+        "avg_return": 19.941875,
+        "avg_steps": 3.65625,
+        "episodes": 32,
+        "success_rate": 1.0
+      },
+      "name": "signal_hunt_8x8_private_clues",
+      "seeds": [],
+      "spec": {
+        "agents": 2,
+        "comm_mode": "tokens",
+        "episodes": 32,
+        "fov_preset": "easy",
+        "map_size": 8,
+        "max_steps": 300,
+        "mode": "marl",
+        "policy": "oracle_comm",
+        "scenario": "signal_hunt",
+        "split": "test",
+        "track": "dtde"
+      },
+      "tags": [
+        "communication_required",
+        "private_information",
+        "synchronized_action",
+        "in_distribution"
+      ],
+      "weight": 1.0
+    },
+    {
+      "metrics": {
+        "avg_agent_comm": {
+          "0": 3.0,
+          "1": 3.0,
+          "2": 3.0,
+          "3": 3.0
+        },
+        "avg_agent_reward": {
+          "0": 9.97,
+          "1": 9.97,
+          "2": 9.97,
+          "3": 9.97
+        },
+        "avg_comm_tokens": 12.0,
+        "avg_return": 39.88,
+        "avg_steps": 9.625,
+        "episodes": 32,
+        "success_rate": 1.0
+      },
+      "name": "signal_hunt_16x16_scaled_search",
+      "seeds": [],
+      "spec": {
+        "agents": 4,
+        "comm_mode": "tokens",
+        "episodes": 32,
+        "fov_preset": "medium",
+        "map_size": 16,
+        "max_steps": 300,
+        "mode": "marl",
+        "policy": "oracle_comm",
+        "scenario": "signal_hunt",
+        "split": "test",
+        "track": "dtde"
+      },
+      "tags": [
+        "communication_required",
+        "private_information",
+        "scale_generalization",
+        "ood"
+      ],
+      "weight": 1.0
+    },
+    {
+      "metrics": {
+        "avg_agent_comm": {
+          "0": 22.5,
+          "1": 22.5,
+          "2": 22.5
+        },
+        "avg_agent_reward": {
+          "0": 1.3375,
+          "1": 1.11875,
+          "2": 0.86875
+        },
+        "avg_comm_tokens": 67.5,
+        "avg_return": 3.3249999999999997,
+        "avg_steps": 9.59375,
+        "episodes": 32,
+        "success_rate": 1.0
+      },
+      "name": "energy_grid_8x8_symmetric_info",
+      "seeds": [],
+      "spec": {
+        "agents": 3,
+        "comm_mode": "tokens",
+        "energy_preset": "easy",
+        "episodes": 32,
+        "fov_preset": "easy",
+        "map_size": 8,
+        "max_steps": 300,
+        "mode": "marl",
+        "policy": "oracle_comm",
+        "scenario": "energy_grid",
+        "split": "test",
+        "track": "dtde"
+      },
+      "tags": [
+        "communication_control",
+        "symmetric_information",
+        "resource_allocation",
+        "in_distribution"
+      ],
+      "weight": 1.0
+    },
+    {
+      "metrics": {
+        "avg_agent_comm": {
+          "0": 25.125,
+          "1": 25.125,
+          "2": 25.125,
+          "3": 25.125
+        },
+        "avg_agent_reward": {
+          "0": -4.4075,
+          "1": -4.31375,
+          "2": -4.2825,
+          "3": -4.37625
+        },
+        "avg_comm_tokens": 100.5,
+        "avg_return": -17.38,
+        "avg_steps": 32.0,
+        "episodes": 32,
+        "success_rate": 0.0
+      },
+      "name": "energy_grid_16x16_hard_resource_sharing",
+      "seeds": [],
+      "spec": {
+        "agents": 4,
+        "comm_mode": "tokens",
+        "energy_preset": "hard",
+        "episodes": 32,
+        "fov_preset": "medium",
+        "map_size": 16,
+        "max_steps": 300,
+        "mode": "marl",
+        "policy": "oracle_comm",
+        "scenario": "energy_grid",
+        "split": "test",
+        "track": "dtde"
+      },
+      "tags": [
+        "communication_control",
+        "symmetric_information",
+        "scale_generalization",
+        "resource_allocation",
+        "ood"
+      ],
+      "weight": 1.0
+    },
+    {
+      "metrics": {
+        "avg_agent_comm": {
+          "0": 19.09375,
+          "1": 19.09375,
+          "2": 19.09375
+        },
+        "avg_agent_reward": {
+          "0": 12.6059375,
+          "1": 11.418437500000001,
+          "2": 10.652812500000001
+        },
+        "avg_comm_tokens": 57.28125,
+        "avg_return": 34.6771875,
+        "avg_steps": 28.5,
+        "episodes": 32,
+        "success_rate": 0.96875
+      },
+      "name": "pipeline_8x8_private_blueprints",
+      "seeds": [],
+      "spec": {
+        "agents": 3,
+        "comm_mode": "tokens",
+        "episodes": 32,
+        "fov_preset": "easy",
+        "map_size": 8,
+        "max_steps": 300,
+        "mode": "marl",
+        "policy": "oracle_comm",
+        "scenario": "pipeline_assembly",
+        "split": "test",
+        "track": "dtde"
+      },
+      "tags": [
+        "communication_required",
+        "private_information",
+        "long_horizon",
+        "sequential_dependencies",
+        "in_distribution"
+      ],
+      "weight": 1.0
+    },
+    {
+      "metrics": {
+        "avg_agent_comm": {
+          "0": 23.125,
+          "1": 23.125,
+          "2": 23.125,
+          "3": 23.125
+        },
+        "avg_agent_reward": {
+          "0": 9.05,
+          "1": 9.096875,
+          "2": 8.940625,
+          "3": 8.971875
+        },
+        "avg_comm_tokens": 92.5,
+        "avg_return": 36.059375,
+        "avg_steps": 138.5625,
+        "episodes": 32,
+        "success_rate": 0.75
+      },
+      "name": "pipeline_16x16_scaled_dependencies",
+      "seeds": [],
+      "spec": {
+        "agents": 4,
+        "comm_mode": "tokens",
+        "episodes": 32,
+        "fov_preset": "medium",
+        "map_size": 16,
+        "max_steps": 300,
+        "mode": "marl",
+        "policy": "oracle_comm",
+        "scenario": "pipeline_assembly",
+        "split": "test",
+        "track": "dtde"
+      },
+      "tags": [
+        "communication_required",
+        "private_information",
+        "long_horizon",
+        "sequential_dependencies",
+        "scale_generalization",
+        "ood"
+      ],
+      "weight": 1.0
+    }
+  ],
+  "generated_at": "2026-07-03T03:13:43+00:00",
+  "schema_version": "syncorsink.result.v0.1",
+  "score": {
+    "case_count": 6,
+    "mean_avg_comm_tokens": 55.932291666666664,
+    "mean_avg_return": 19.417239583333338,
+    "mean_avg_steps": 36.989583333333336,
+    "mean_success_rate": 0.7864583333333334,
+    "official_score": 78.64583333333334
+  },
+  "submission": {
+    "authors": [
+      "SyncOrSink Contributors"
+    ],
+    "checkpoint_uri": null,
+    "method_name": "Oracle + Comm",
+    "method_type": "oracle_comm",
+    "name": "oracle-comm-v0.1",
+    "notes": null,
+    "paper_uri": null,
+    "repository": null
+  },
+  "track": "symbolic_ctde"
+}
