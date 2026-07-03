@@ -24,6 +24,46 @@ def test_mappo_ctde_with_comm():
     train_mappo(cfg)
 
 
+def test_mappo_train_save_load_eval_workbench(tmp_path):
+    from syncorsink.train.workbench import TrainEvalWorkbenchConfig, run_train_eval_workbench
+
+    cfg = TrainEvalWorkbenchConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        fov_preset="easy",
+        max_steps=20,
+        comm=True,
+        comm_token_limit=4,
+        comm_vocab_size=8,
+        updates=1,
+        rollout_steps=8,
+        epochs=1,
+        minibatch=8,
+        eval_episodes=1,
+        output_dir=str(tmp_path / "workbench"),
+        run_name="smoke",
+        wandb=True,
+        wandb_mode="disabled",
+        device="cpu",
+    )
+
+    result = run_train_eval_workbench(cfg)
+    checkpoint = tmp_path / "workbench" / "smoke" / "checkpoints" / "mappo.pt"
+    summary = tmp_path / "workbench" / "smoke" / "summary.json"
+
+    assert checkpoint.exists()
+    assert summary.exists()
+    assert result["eval"]["episodes"] == 1
+    assert result["checkpoint_path"] == str(checkpoint)
+    assert "wandb" in result
+
+    payload = torch.load(checkpoint, map_location="cpu")
+    assert payload["algorithm"] == "mappo"
+    assert payload["config"]["comm"] is True
+    assert payload["obs_dim"] > 0
+
+
 def test_mappo_action_mask_helpers():
     from syncorsink.train.mappo import action_mask_from_flat_obs, mask_action_logits
 

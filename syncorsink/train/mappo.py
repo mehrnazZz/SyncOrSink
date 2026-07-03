@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Optional
 
 import numpy as np
@@ -148,16 +148,16 @@ def resolve_device(name: str) -> torch.device:
 # Checkpoint helpers
 # ---------------------------------------------------------------------------
 
-def save_checkpoint(path, actors, critic, optimizer, step):
-    torch.save(
-        {
-            "actors": [a.state_dict() for a in actors],
-            "critic": critic.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "step": step,
-        },
-        path,
-    )
+def save_checkpoint(path, actors, critic, optimizer, step, metadata: dict | None = None):
+    payload = {
+        "actors": [a.state_dict() for a in actors],
+        "critic": critic.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "step": step,
+    }
+    if metadata:
+        payload.update(metadata)
+    torch.save(payload, path)
 
 
 def load_checkpoint(path, actors, critic, optimizer):
@@ -167,6 +167,168 @@ def load_checkpoint(path, actors, critic, optimizer):
     critic.load_state_dict(ckpt["critic"])
     optimizer.load_state_dict(ckpt["optimizer"])
     return ckpt.get("step", 0)
+
+
+def _config_from_checkpoint(ckpt: dict) -> MAPPOConfig | None:
+    raw = ckpt.get("config")
+    if not isinstance(raw, dict):
+        return None
+    allowed = {field.name for field in fields(MAPPOConfig)}
+    return MAPPOConfig(**{key: value for key, value in raw.items() if key in allowed})
+
+
+def _checkpoint_metadata(cfg: MAPPOConfig, *, obs_dim: int, action_dim: int, num_agents: int) -> dict:
+    return {
+        "format_version": 2,
+        "algorithm": "mappo",
+        "config": asdict(cfg),
+        "obs_dim": int(obs_dim),
+        "action_dim": int(action_dim),
+        "num_agents": int(num_agents),
+        "shared_actor": bool(cfg.shared_actor),
+    }
+
+
+class MAPPOCheckpointPolicy:
+    """Inference adapter for MAPPO checkpoints saved by ``train_mappo``."""
+
+    def __init__(
+        self,
+        actors,
+        cfg: MAPPOConfig,
+        *,
+        device: torch.device,
+        deterministic: bool = True,
+        send_threshold: float = 0.5,
+    ):
+        self.actors = actors
+        self.cfg = cfg
+        self.device = device
+        self.deterministic = deterministic
+        self.send_threshold = send_threshold
+        for actor in self.actors:
+            actor.eval()
+
+    def reset(self, *args, **kwargs):
+        return None
+
+    def metadata(self) -> dict:
+        return {
+            "algorithm": "mappo",
+            "deterministic": self.deterministic,
+            "comm": self.cfg.comm,
+            "shared_actor": self.cfg.shared_actor or len(self.actors) == 1,
+        }
+
+    def __call__(self, obs: dict, info: dict, state: dict) -> dict[int, dict]:
+        num_agents = len(obs)
+        obs_batch = build_batch_obs(obs, num_agents)
+        obs_tensor = torch.tensor(obs_batch, dtype=torch.float32, device=self.device)
+        action_mask = action_mask_from_flat_obs(obs_tensor)
+        with torch.no_grad():
+            actor_out = _actor_forward_batched(
+                self.actors,
+                obs_tensor,
+                num_agents,
+                self.cfg.shared_actor or len(self.actors) == 1,
+                self.cfg.comm,
+            )
+
+        if self.cfg.comm:
+            logits, send_logits, token_logits, len_logits = actor_out
+            logits = mask_action_logits(logits, action_mask)
+            if self.deterministic:
+                acts = torch.argmax(logits, dim=-1)
+                send = (torch.sigmoid(send_logits.squeeze(-1)) > self.send_threshold).long()
+                token_samples = torch.argmax(token_logits, dim=-1)
+                len_samples = torch.argmax(len_logits, dim=-1)
+            else:
+                action_dist = torch.distributions.Categorical(logits=logits)
+                send_dist = torch.distributions.Bernoulli(logits=send_logits.squeeze(-1))
+                token_dist = torch.distributions.Categorical(logits=token_logits)
+                len_dist = torch.distributions.Categorical(logits=len_logits)
+                acts = action_dist.sample()
+                send = send_dist.sample().long()
+                token_samples = token_dist.sample()
+                len_samples = len_dist.sample()
+            actions = {}
+            for aid in range(num_agents):
+                if int(send[aid].item()) == 1 and int(len_samples[aid].item()) > 0:
+                    msg = token_samples[aid][: int(len_samples[aid].item())].detach().cpu().tolist()
+                else:
+                    msg = []
+                actions[aid] = {"action": int(acts[aid].item()), "message_tokens": [int(t) for t in msg]}
+            return actions
+
+        logits = mask_action_logits(actor_out, action_mask)
+        if self.deterministic:
+            acts = torch.argmax(logits, dim=-1)
+        else:
+            dist = torch.distributions.Categorical(logits=logits)
+            acts = dist.sample()
+        return {
+            aid: {"action": int(acts[aid].item()), "message_tokens": []}
+            for aid in range(num_agents)
+        }
+
+
+def load_mappo_checkpoint_policy(
+    path,
+    env,
+    cfg: MAPPOConfig | None = None,
+    *,
+    deterministic: bool = True,
+    device: str | torch.device | None = None,
+    sample_seed: int = 0,
+) -> MAPPOCheckpointPolicy:
+    ckpt = torch.load(path, map_location="cpu")
+    if cfg is None:
+        cfg = _config_from_checkpoint(ckpt)
+    if cfg is None:
+        raise ValueError("MAPPO checkpoint does not include config metadata; pass cfg explicitly")
+
+    device_obj = resolve_device(str(device or cfg.device))
+    sample_obs, _ = env.reset(seed=sample_seed)
+    sample_obs_dim = int(flatten_obs(sample_obs[0]).shape[0])
+    obs_dim = int(ckpt.get("obs_dim", sample_obs_dim))
+    if obs_dim != sample_obs_dim:
+        raise ValueError(
+            f"checkpoint obs_dim={obs_dim} does not match env obs_dim={sample_obs_dim}"
+        )
+    action_dim = int(ckpt.get("action_dim", 8))
+
+    actor_states = ckpt.get("actors")
+    if not isinstance(actor_states, list) or not actor_states:
+        raise ValueError("MAPPO checkpoint is missing actor states")
+    shared_actor = bool(ckpt.get("shared_actor", cfg.shared_actor)) or len(actor_states) == 1
+    expected_actors = 1 if shared_actor else env.num_agents
+    if len(actor_states) != expected_actors:
+        raise ValueError(
+            f"checkpoint has {len(actor_states)} actor(s), expected {expected_actors} for env.num_agents={env.num_agents}"
+        )
+
+    actor_kwargs = dict(
+        obs_dim=obs_dim,
+        action_dim=action_dim,
+        hidden_dim=cfg.hidden_dim,
+        backbone=cfg.backbone,
+        comm_enabled=cfg.comm,
+        comm_token_limit=cfg.comm_token_limit,
+        comm_vocab_size=cfg.comm_vocab_size,
+    )
+    actors = [MAPPOActor(**actor_kwargs).to(device_obj) for _ in range(expected_actors)]
+    for actor, state_dict in zip(actors, actor_states):
+        actor.load_state_dict(state_dict)
+
+    policy_cfg = cfg
+    if shared_actor and not cfg.shared_actor:
+        policy_cfg = MAPPOConfig(**{**asdict(cfg), "shared_actor": True})
+    return MAPPOCheckpointPolicy(
+        actors,
+        policy_cfg,
+        device=device_obj,
+        deterministic=deterministic,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +454,7 @@ def train_mappo(cfg: MAPPOConfig):
     sample_obs, _ = env.reset(seed=0)
     obs_dim = flatten_obs(sample_obs[0]).shape[0]
     action_dim = 8
+    checkpoint_metadata = _checkpoint_metadata(cfg, obs_dim=obs_dim, action_dim=action_dim, num_agents=N)
 
     # --- Learned reward model (optional, replaces/augments hand-crafted shaping) ---
     reward_model = None
@@ -799,10 +962,10 @@ def train_mappo(cfg: MAPPOConfig):
 
         # ---- Checkpointing ----
         if cfg.save and (update + 1) % cfg.save_every == 0:
-            save_checkpoint(cfg.save, actors, critic, optimizer, update + 1)
+            save_checkpoint(cfg.save, actors, critic, optimizer, update + 1, metadata=checkpoint_metadata)
 
     if cfg.save:
-        save_checkpoint(cfg.save, actors, critic, optimizer, cfg.updates)
+        save_checkpoint(cfg.save, actors, critic, optimizer, cfg.updates, metadata=checkpoint_metadata)
     if wandb_run is not None:
         wandb_run.finish()
 

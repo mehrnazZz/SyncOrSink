@@ -42,6 +42,36 @@ Install (if needed):
 pip install -e ".[train]"
 ```
 
+End-to-end train/save/load/eval workbench:
+
+```bash
+python examples/train_eval_workbench.py \
+  --scenario pipeline_assembly \
+  --map-size 8 \
+  --agents 3 \
+  --fov-preset easy \
+  --comm \
+  --updates 20 \
+  --rollout-steps 128 \
+  --eval-episodes 5
+```
+
+This creates a local ignored run folder under `logs/workbench/` containing:
+
+- `checkpoints/mappo.pt`
+- `summary.json`
+
+W&B workbench logging:
+
+```bash
+python examples/train_eval_workbench.py \
+  --scenario pipeline_assembly \
+  --comm \
+  --wandb \
+  --wandb-project syncorsink-workbench \
+  --wandb-mode offline
+```
+
 Small sanity run:
 
 ```bash
@@ -94,7 +124,9 @@ Scripted eval harness:
 python examples/eval_run.py --scenario pipeline_assembly --episodes 5 --policy random
 ```
 
-LLM/eval traces are handled by separate scripts. MAPPO evaluation is usually done by loading model checkpoints in custom eval code or extending the runner to include trained policy adapters.
+LLM/eval traces are handled by separate scripts. For MAPPO checkpoints, use
+`syncorsink.train.mappo.load_mappo_checkpoint_policy` or the train/eval
+workbench above.
 
 ## Notes
 

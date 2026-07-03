@@ -416,6 +416,18 @@ Checkpointing:
 - `--save /path/to/ckpt.pt`
 - `--load /path/to/ckpt.pt`
 
+End-to-end train/save/load/eval workbench:
+
+```bash
+python examples/train_eval_workbench.py --scenario signal_hunt --comm --updates 5 --eval-episodes 3
+```
+
+W&B workbench logging can run online or locally:
+
+```bash
+python examples/train_eval_workbench.py --scenario signal_hunt --comm --wandb --wandb-mode offline
+```
+
 ### LLM / Tool‑Calling Policies
 
 LLM evaluation runner:
