@@ -24,7 +24,7 @@ jobs:
       - name: Install package and test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[eval,train]" pytest
+          python -m pip install -e ".[eval,train,docs]" pytest
 
       - name: Run tests
         run: pytest tests
@@ -43,3 +43,6 @@ jobs:
 
       - name: Ensure generated files are committed
         run: git diff --exit-code docs/leaderboard_results.md docs/leaderboard_results.csv docs/leaderboard_results.json
+
+      - name: Build docs
+        run: mkdocs build --strict

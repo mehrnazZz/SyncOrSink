@@ -31,6 +31,13 @@ Optional pygame renderer:
 pip install -e ".[render]"
 ```
 
+Optional docs site:
+
+```bash
+pip install -e ".[docs]"
+mkdocs serve
+```
+
 ## Quick start
 
 ```bash
@@ -203,6 +210,12 @@ Validate generated leaderboard outputs before submitting a PR:
 
 ```bash
 python examples/validate_leaderboard.py
+```
+
+Build the documentation site:
+
+```bash
+mkdocs build --strict
 ```
 
 Benchmark presets:

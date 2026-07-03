@@ -1,0 +1,45 @@
+site_name: SyncOrSink
+site_description: Communication-focused cooperative multi-agent POMDP benchmark
+site_url: https://mehrnazzz.github.io/SyncOrSink/
+repo_url: https://github.com/mehrnazZz/SyncOrSink
+repo_name: mehrnazZz/SyncOrSink
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - content.code.copy
+
+nav:
+  - Home: index.md
+  - Benchmark:
+      - Current Leaderboard: leaderboard_results.md
+      - Leaderboard Protocol: leaderboard.md
+      - Policy Submissions: policy_submissions.md
+      - Evaluation And Logging: eval_and_logging.md
+      - Configuration: config.md
+      - Documentation Site: docs_site.md
+  - Environment:
+      - Design: design.md
+      - Scenarios: scenarios.md
+      - Experts: experts.md
+  - Baselines:
+      - RL Baselines: baselines_rl.md
+      - Transformer Baselines: baselines_transformer.md
+      - Masked Baseline Smoke: masked_baseline_smoke.md
+  - Experiments:
+      - Experiment Report: experiment_report.md
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  - pymdownx.highlight

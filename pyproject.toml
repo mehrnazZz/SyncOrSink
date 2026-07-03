@@ -17,6 +17,7 @@ pettingzoo = ["pettingzoo>=1.24.0"]
 render = ["pygame>=2.5.0"]
 eval = ["jsonschema>=4.0.0"]
 train = ["torch>=2.0.0"]
+docs = ["mkdocs>=1.5.0", "mkdocs-material>=9.5.0"]
 
 [build-system]
 requires = ["setuptools>=68.0.0"]
