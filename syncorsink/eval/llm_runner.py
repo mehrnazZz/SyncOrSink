@@ -6,6 +6,7 @@ import hashlib
 import json
 
 from .metrics import EpisodeStats
+from .success import episode_success
 
 
 @dataclass
@@ -55,7 +56,8 @@ def run_llm_episodes(
             if per_step_cb is not None:
                 per_step_cb(ep, steps - 1, prev_obs, prev_info, actions, rewards, done, truncated, info, policy_state)
 
-        success_flag = bool(info.get("success", done))
+        scenario = getattr(getattr(env, "config", None), "scenario", None)
+        success_flag = episode_success(scenario, done, info)
         ep_stats = EpisodeStats(
             total_reward=total_reward,
             steps=steps,

@@ -4,6 +4,7 @@ from typing import Callable, Dict, Any, List
 import time
 
 from .metrics import EpisodeStats, EvalSummary, summarize
+from .success import episode_success
 
 
 PolicyFn = Callable[[dict, dict, dict], Dict[int, dict]]
@@ -52,11 +53,8 @@ def run_episodes(
                 env.render()
                 if render_fps > 0:
                     time.sleep(1.0 / render_fps)
-        if getattr(env, "config", None) is not None and env.config.scenario == "energy_grid":
-            # EnergyGrid: success if recharge target hit; failure if depleted early.
-            success = bool(last_info.get("success", False))
-        else:
-            success = bool(done)
+        scenario = getattr(getattr(env, "config", None), "scenario", None)
+        success = episode_success(scenario, done, last_info)
         ep_stats = EpisodeStats(
             total_reward=total_reward,
             steps=steps,

@@ -22,6 +22,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig
+from syncorsink.eval.success import episode_success
 from syncorsink.train.mappo import flatten_obs, build_batch_obs, resolve_device
 from syncorsink.policies.mappo_models import MAPPORecurrentActor, MAPPOCritic
 
@@ -372,7 +373,7 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device):
                     acts = torch.argmax(logits, dim=-1)
                     actions = {aid: {"action": int(acts[aid].item()), "message_tokens": []} for aid in range(N)}
                     eval_obs, _, ep_done, ep_trunc, info = env.step(actions)
-                success = bool(info.get("success", False)) if cfg.scenario == "energy_grid" else bool(ep_done)
+                success = episode_success(cfg.scenario, ep_done, info)
                 eval_success.append(1.0 if success else 0.0)
             sr = np.mean(eval_success)
             print(f"  eval | success {sr:.2f}")

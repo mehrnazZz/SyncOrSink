@@ -141,3 +141,5 @@ Run:
 ```bash
 python examples/benchmark_run.py --spec benchmarks/transformer_presets.json
 ```
+
+The preset references local checkpoint files under `checkpoints/`. Those artifacts are not tracked in the repo; train Comm-MAT or restore the checkpoint files before running the preset end-to-end.

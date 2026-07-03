@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig
+from syncorsink.eval.success import episode_success
 from syncorsink.policies.mappo_models import MAPPOActor, MAPPOCritic
 
 
@@ -750,10 +751,7 @@ def train_mappo(cfg: MAPPOConfig):
                     steps += 1
                 eval_returns.append(total_reward)
                 eval_steps_list.append(steps)
-                if cfg.scenario == "energy_grid":
-                    success = bool(info.get("success", False))
-                else:
-                    success = bool(ep_done)
+                success = episode_success(cfg.scenario, ep_done, info)
                 eval_success.append(1.0 if success else 0.0)
                 eval_obs, _ = env.reset(seed=10000 + update + ep + 1)
 

@@ -166,13 +166,15 @@ For Comm-MAT in spec cases:
 - optional `comm_mat_deterministic`
 - optional `comm_mat_send_threshold`
 
+MARL benchmark/spec runners fail fast on unknown policy names. Supported non-LLM policies include `random`, `scripted`, `oracle`, `oracle_strong`, `oracle_planner`, `oracle_comm`, the `pipeline_planner_*` communication planners, `energy_planner_comm`, `signal_hunt_planner_comm`, and `comm_mat`.
+
 ### `eval_from_spec.py`
 
 Flag:
 
 - `--spec` (required)
 
-Same spec keys as above are supported for Comm-MAT selection.
+Same spec keys as above are supported for Comm-MAT selection. Specs may also set `map_size`, `agents` or `num_agents`, `fov_preset`, `max_steps`, `comm_mode`, `track`, and `energy_preset`.
 
 ## Recommended command patterns
 
@@ -201,6 +203,34 @@ Comm-MAT benchmark preset run:
 
 ```bash
 python examples/benchmark_run.py --spec benchmarks/transformer_presets.json --wandb
+```
+
+The transformer preset expects local checkpoint artifacts:
+
+- `checkpoints/comm_mat_pipeline.pt`
+- `checkpoints/comm_mat_energy.pt`
+- `checkpoints/comm_mat_signal.pt`
+
+These checkpoint files are not tracked in the repository. Train or restore them before running `benchmarks/transformer_presets.json`.
+
+Fresh-checkout smoke checks that do not require checkpoints:
+
+```bash
+pytest tests
+python examples/benchmark_run.py --spec benchmarks/pipeline_presets.json
+```
+
+Locally verified on July 2, 2026:
+
+```text
+pytest tests
+18 passed, 2 warnings
+
+python examples/benchmark_run.py --spec benchmarks/pipeline_presets.json
+case pipeline_easy_expert_comm success 1.0 return 37.6
+case pipeline_hard_coord success 0.0 return -0.23399999999999999
+case energy_easy_expert_comm success 0.6 return -1.6800000000000002
+case signal_hunt_expert_comm success 1.0 return 29.910000000000004
 ```
 
 ## Practical note on diagrams/charts
