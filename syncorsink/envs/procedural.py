@@ -228,22 +228,42 @@ def scenario_pack_table_rows(tier: str | None = None) -> list[dict[str, str]]:
     return rows
 
 
-def pack_benchmark_manifest(pack_names: Iterable[str], *, name: str, version: str, description: str) -> dict[str, Any]:
+def pack_benchmark_manifest(
+    pack_names: Iterable[str],
+    *,
+    name: str,
+    version: str,
+    description: str,
+    extra_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     cases: list[dict[str, Any]] = []
-    source_packs = []
+    source_packs: list[str] = []
+    source_pack_tiers: list[str] = []
+    scenario_coverage: set[str] = set()
+    axes_covered: set[str] = set()
     for pack_name in pack_names:
         pack = get_scenario_pack(pack_name)
         source_packs.append(pack.name)
+        source_pack_tiers.append(pack.tier)
+        axes_covered.update(axis.name for axis in pack.axes)
+        scenario_coverage.update(preset.scenario for preset in pack.presets)
         cases.extend(preset.to_case() for preset in pack.presets)
+    metadata = {
+        "source_packs": source_packs,
+        "source_pack_tiers": sorted(set(source_pack_tiers)),
+        "scenario_coverage": sorted(scenario_coverage),
+        "axes_covered": sorted(axes_covered),
+        "case_count": len(cases),
+        "primary_metric": "mean_success_rate",
+        "official_score": "100 * weighted_mean(success_rate)",
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
     manifest = {
         "name": name,
         "version": version,
         "description": description,
-        "metadata": {
-            "source_packs": source_packs,
-            "primary_metric": "mean_success_rate",
-            "official_score": "100 * weighted_mean(success_rate)",
-        },
+        "metadata": metadata,
         "cases": cases,
     }
     validate_pack_benchmark_manifest(manifest)

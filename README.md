@@ -96,6 +96,7 @@ Baseline docs:
 - Transformer baselines (Comm-MAT): `docs/baselines_transformer.md`
 - Scenario registry and tiers: `docs/scenario_registry.md`
 - Procedural packs: `docs/procedural_packs.md`
+- Benchmark versions: `docs/benchmark_versions.md`
 - Evaluation/logging config (eval flags, traces, video, W&B): `docs/eval_and_logging.md`
 - Leaderboard protocol and result schema: `docs/leaderboard.md`
 - Current leaderboard table: `docs/leaderboard_results.md`

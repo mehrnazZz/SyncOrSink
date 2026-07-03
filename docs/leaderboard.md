@@ -1,12 +1,16 @@
 # SyncOrSink Leaderboard Protocol
 
 SyncOrSink leaderboard submissions are evaluated against a versioned benchmark
-suite. The first public contract is:
+suite. The current public leaderboard uses:
 
 - Benchmark: `syncorsink_v0_1`
 - Manifest: `benchmarks/syncorsink_v0_1.json`
 - Result schema: `syncorsink.result.v0.1`
 - Primary score: `100 * weighted_mean(success_rate)`
+
+`benchmarks/syncorsink_v0_2.json` is available as a pack-generated successor
+manifest, but the committed public leaderboard remains on v0.1 until v0.2
+result artifacts are generated. See `docs/benchmark_versions.md`.
 
 The primary metric is success rate because SyncOrSink scenarios have different
 reward scales and horizon semantics. Return, steps, and communication tokens are

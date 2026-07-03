@@ -14,8 +14,9 @@ Pack metadata lives in `syncorsink/envs/procedural.py`.
 | `core_ood` | `core_ood` | Scaled held-out presets for map, team-size, and partial-observability generalization. |
 
 The current packs do not replace `benchmarks/syncorsink_v0_1.json`. The v0.1
-manifest remains frozen. Packs make it easier to generate future manifests,
-including `syncorsink_v0_2`, without hand-copying every case.
+manifest remains frozen. Packs are now used to generate
+`benchmarks/syncorsink_v0_2.json`, the forward-compatible manifest line for
+future advanced and procedural packs.
 
 ## Inspect Packs
 
@@ -40,8 +41,9 @@ Generate a benchmark manifest from packs:
 ```bash
 python examples/list_scenario_packs.py \
   --benchmark core core_ood \
-  --name syncorsink_generated \
-  --version generated
+  --name syncorsink_v0_2 \
+  --version 0.2.0 \
+  --compatibility-note "Pack-generated successor to syncorsink_v0_1; covers the same core and scaled scenario surface with pack-derived case names so future packs can extend v0.2 without mutating v0.1."
 ```
 
 ## Pack Concepts

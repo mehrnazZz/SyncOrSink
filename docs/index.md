@@ -12,6 +12,7 @@ submissions through lightweight result artifacts.
 ## Start Here
 
 - [Current leaderboard](leaderboard_results.md)
+- [Benchmark versions](benchmark_versions.md)
 - [Leaderboard protocol](leaderboard.md)
 - [External policy submissions](policy_submissions.md)
 - [Scenario registry and tiers](scenario_registry.md)
@@ -37,6 +38,9 @@ The primary leaderboard score is:
 ```
 
 Return, steps, and communication tokens are reported as secondary diagnostics.
+
+`syncorsink_v0_2` is also available as a pack-generated successor manifest built
+from `core` and `core_ood` packs. See [Benchmark Versions](benchmark_versions.md).
 
 ## Install
 

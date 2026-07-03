@@ -16,6 +16,7 @@ theme:
 nav:
   - Home: index.md
   - Benchmark:
+      - Benchmark Versions: benchmark_versions.md
       - Current Leaderboard: leaderboard_results.md
       - Leaderboard Protocol: leaderboard.md
       - Policy Submissions: policy_submissions.md

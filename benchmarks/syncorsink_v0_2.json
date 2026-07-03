@@ -1,0 +1,171 @@
+{
+  "name": "syncorsink_v0_2",
+  "version": "0.2.0",
+  "description": "Generated from scenario packs: core, core_ood",
+  "metadata": {
+    "axes_covered": [
+      "agent_count",
+      "fov_preset",
+      "information_structure",
+      "map_size",
+      "scenario"
+    ],
+    "case_count": 6,
+    "compatibility_note": "Pack-generated successor to syncorsink_v0_1; covers the same core and scaled scenario surface with pack-derived case names so future packs can extend v0.2 without mutating v0.1.",
+    "official_score": "100 * weighted_mean(success_rate)",
+    "primary_metric": "mean_success_rate",
+    "scenario_coverage": [
+      "energy_grid",
+      "pipeline_assembly",
+      "signal_hunt"
+    ],
+    "source_pack_tiers": [
+      "core",
+      "core_ood"
+    ],
+    "source_packs": [
+      "core",
+      "core_ood"
+    ]
+  },
+  "cases": [
+    {
+      "name": "signal_hunt_core_8x8",
+      "weight": 1.0,
+      "tags": [
+        "communication_required",
+        "private_information",
+        "synchronized_action",
+        "in_distribution"
+      ],
+      "spec": {
+        "scenario": "signal_hunt",
+        "mode": "marl",
+        "track": "dtde",
+        "split": "test",
+        "episodes": 32,
+        "map_size": 8,
+        "agents": 2,
+        "fov_preset": "easy",
+        "max_steps": 300,
+        "comm_mode": "tokens"
+      }
+    },
+    {
+      "name": "energy_grid_core_8x8_easy",
+      "weight": 1.0,
+      "tags": [
+        "communication_control",
+        "symmetric_information",
+        "resource_allocation",
+        "in_distribution"
+      ],
+      "spec": {
+        "scenario": "energy_grid",
+        "mode": "marl",
+        "track": "dtde",
+        "split": "test",
+        "episodes": 32,
+        "map_size": 8,
+        "agents": 3,
+        "fov_preset": "easy",
+        "max_steps": 300,
+        "comm_mode": "tokens",
+        "energy_preset": "easy"
+      }
+    },
+    {
+      "name": "pipeline_core_8x8",
+      "weight": 1.0,
+      "tags": [
+        "communication_required",
+        "private_information",
+        "long_horizon",
+        "sequential_dependencies",
+        "in_distribution"
+      ],
+      "spec": {
+        "scenario": "pipeline_assembly",
+        "mode": "marl",
+        "track": "dtde",
+        "split": "test",
+        "episodes": 32,
+        "map_size": 8,
+        "agents": 3,
+        "fov_preset": "easy",
+        "max_steps": 300,
+        "comm_mode": "tokens"
+      }
+    },
+    {
+      "name": "signal_hunt_ood_16x16",
+      "weight": 1.0,
+      "tags": [
+        "communication_required",
+        "private_information",
+        "scale_generalization",
+        "ood"
+      ],
+      "spec": {
+        "scenario": "signal_hunt",
+        "mode": "marl",
+        "track": "dtde",
+        "split": "test",
+        "episodes": 32,
+        "map_size": 16,
+        "agents": 4,
+        "fov_preset": "medium",
+        "max_steps": 300,
+        "comm_mode": "tokens"
+      }
+    },
+    {
+      "name": "energy_grid_ood_16x16_hard",
+      "weight": 1.0,
+      "tags": [
+        "communication_control",
+        "symmetric_information",
+        "scale_generalization",
+        "resource_allocation",
+        "ood"
+      ],
+      "spec": {
+        "scenario": "energy_grid",
+        "mode": "marl",
+        "track": "dtde",
+        "split": "test",
+        "episodes": 32,
+        "map_size": 16,
+        "agents": 4,
+        "fov_preset": "medium",
+        "max_steps": 300,
+        "comm_mode": "tokens",
+        "energy_preset": "hard"
+      }
+    },
+    {
+      "name": "pipeline_ood_16x16",
+      "weight": 1.0,
+      "tags": [
+        "communication_required",
+        "private_information",
+        "long_horizon",
+        "sequential_dependencies",
+        "scale_generalization",
+        "ood"
+      ],
+      "spec": {
+        "scenario": "pipeline_assembly",
+        "mode": "marl",
+        "track": "dtde",
+        "split": "test",
+        "episodes": 32,
+        "map_size": 16,
+        "agents": 4,
+        "fov_preset": "medium",
+        "max_steps": 300,
+        "comm_mode": "tokens"
+      }
+    }
+  ]
+}

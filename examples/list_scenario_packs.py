@@ -27,6 +27,7 @@ def main():
     )
     parser.add_argument("--name", default="syncorsink_generated", help="Generated benchmark name for --benchmark")
     parser.add_argument("--version", default="generated", help="Generated benchmark version for --benchmark")
+    parser.add_argument("--compatibility-note", default=None, help="Optional compatibility note for generated manifests")
     args = parser.parse_args()
 
     validate_all_scenario_packs()
@@ -37,6 +38,7 @@ def main():
             name=args.name,
             version=args.version,
             description=f"Generated from scenario packs: {', '.join(args.benchmark)}",
+            extra_metadata={"compatibility_note": args.compatibility_note} if args.compatibility_note else None,
         )
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return
