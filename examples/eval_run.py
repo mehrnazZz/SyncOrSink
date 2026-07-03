@@ -244,7 +244,7 @@ def main():
     elif args.policy == "bc":
         import torch
         from syncorsink.policies.mappo_models import MAPPOActor
-        from syncorsink.train.mappo import flatten_obs
+        from syncorsink.train.mappo import flatten_obs, mask_action_logits
         if not args.bc_ckpt:
             raise RuntimeError("--bc-ckpt required for bc policy")
         ckpt = torch.load(args.bc_ckpt, map_location="cpu")
@@ -263,11 +263,24 @@ def main():
             import numpy as np
             actions = {}
             for aid in sorted(obs.keys()):
-                flat = torch.tensor(flatten_obs(obs[aid]), dtype=torch.float32).unsqueeze(0)
+                flat_arr = flatten_obs(obs[aid])
+                model_dim = int(ckpt["obs_dim"])
+                if flat_arr.shape[0] > model_dim:
+                    model_arr = flat_arr[:model_dim]
+                elif flat_arr.shape[0] < model_dim:
+                    model_arr = np.pad(flat_arr, (0, model_dim - flat_arr.shape[0]))
+                else:
+                    model_arr = flat_arr
+                flat = torch.tensor(model_arr, dtype=torch.float32).unsqueeze(0)
+                mask = torch.tensor(
+                    np.asarray(obs[aid].get("action_mask", np.ones((8,), dtype=np.float32)), dtype=np.float32),
+                    dtype=torch.float32,
+                ).reshape(1, -1)
                 with torch.no_grad():
                     out = bc_model(flat)
                 if ckpt.get("comm", False):
                     logits, send_logits, token_logits, len_logits = out
+                    logits = mask_action_logits(logits, mask)
                     act = int(torch.argmax(logits, dim=-1).item())
                     send = int(torch.sigmoid(send_logits.squeeze(-1)).item() > 0.5)
                     if send:
@@ -277,7 +290,8 @@ def main():
                         msg_tokens = []
                     actions[aid] = {"action": act, "message_tokens": msg_tokens}
                 else:
-                    act = int(torch.argmax(out, dim=-1).item())
+                    logits = mask_action_logits(out, mask)
+                    act = int(torch.argmax(logits, dim=-1).item())
                     actions[aid] = {"action": act, "message_tokens": []}
             return actions
         policy = _bc_policy

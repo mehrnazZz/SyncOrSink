@@ -21,7 +21,13 @@ import torch.optim as optim
 
 from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig
 from syncorsink.eval.success import episode_success
-from syncorsink.train.mappo import flatten_obs, build_batch_obs, resolve_device
+from syncorsink.train.mappo import (
+    action_mask_from_flat_obs,
+    build_batch_obs,
+    flatten_obs,
+    mask_action_logits,
+    resolve_device,
+)
 from syncorsink.models.tarmac import TarMACConfig, TarMACModel
 
 
@@ -158,11 +164,12 @@ def train_tarmac(cfg: TarMACTrainConfig):
         for t in range(cfg.rollout_steps):
             obs_batch = build_batch_obs(obs, N)
             obs_tensor = torch.tensor(obs_batch, dtype=torch.float32, device=device)
+            action_mask = action_mask_from_flat_obs(obs_tensor)
 
             with torch.no_grad():
                 out = model(obs_tensor)
 
-            logits = out["action_logits"]
+            logits = mask_action_logits(out["action_logits"], action_mask)
             dist = torch.distributions.Categorical(logits=logits)
             acts = dist.sample()
             logp = dist.log_prob(acts)
@@ -243,17 +250,19 @@ def train_tarmac(cfg: TarMACTrainConfig):
 
                 # For each timestep in minibatch, run full N-agent forward
                 all_logits = []
+                all_masks = []
                 all_values = []
                 all_attn_ent = []
                 for t_idx in ts_mb:
                     t_obs = obs_b[t_idx * N:(t_idx + 1) * N]
                     out = model(t_obs)
                     all_logits.append(out["action_logits"])
+                    all_masks.append(action_mask_from_flat_obs(t_obs))
                     all_values.append(out["value"])
                     attn = out["attention"]
                     all_attn_ent.append(-(attn * (attn + 1e-8).log()).sum(dim=-1).mean())
 
-                logits = torch.cat(all_logits, dim=0)
+                logits = mask_action_logits(torch.cat(all_logits, dim=0), torch.cat(all_masks, dim=0))
                 new_values = torch.cat(all_values, dim=0)
                 mean_attn_ent = torch.stack(all_attn_ent).mean()
 
@@ -329,9 +338,11 @@ def train_tarmac(cfg: TarMACTrainConfig):
                 while not (ep_done or ep_trunc):
                     obs_batch = build_batch_obs(eval_obs, N)
                     obs_tensor = torch.tensor(obs_batch, dtype=torch.float32, device=device)
+                    action_mask = action_mask_from_flat_obs(obs_tensor)
                     with torch.no_grad():
                         out = model(obs_tensor)
-                    acts = torch.argmax(out["action_logits"], dim=-1)
+                    logits = mask_action_logits(out["action_logits"], action_mask)
+                    acts = torch.argmax(logits, dim=-1)
                     actions = {
                         aid: {"action": int(acts[aid].item()), "message_tokens": []}
                         for aid in range(N)

@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig
-from syncorsink.train.mappo import flatten_obs, resolve_device
+from syncorsink.train.mappo import action_mask_from_flat_obs, flatten_obs, mask_action_logits, resolve_device
 from syncorsink.policies.mappo_models import MAPPOActor
 
 
@@ -615,6 +615,7 @@ def train_bc_dagger(cfg: BCConfig):
                             logits = out[0]
                         else:
                             logits = out
+                        logits = mask_action_logits(logits, action_mask_from_flat_obs(flat_t))
                         act = int(_torch.argmax(logits, dim=-1).item())
                         model_actions[aid] = {"action": act, "message_tokens": []}
 

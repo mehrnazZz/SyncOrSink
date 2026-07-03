@@ -23,7 +23,13 @@ import torch.optim as optim
 
 from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig
 from syncorsink.eval.success import episode_success
-from syncorsink.train.mappo import flatten_obs, build_batch_obs, resolve_device
+from syncorsink.train.mappo import (
+    action_mask_from_flat_obs,
+    build_batch_obs,
+    flatten_obs,
+    mask_action_logits,
+    resolve_device,
+)
 from syncorsink.policies.mappo_models import MAPPORecurrentActor, MAPPOCritic
 
 
@@ -224,6 +230,7 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device):
             with torch.no_grad():
                 logits, new_hidden = model(obs_tensor, hidden)
                 v = critic(obs_tensor)
+            logits = mask_action_logits(logits, action_mask_from_flat_obs(obs_tensor))
 
             dist = torch.distributions.Categorical(logits=logits)
             acts = dist.sample()
@@ -295,6 +302,8 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device):
                     hidden_replay = model.init_hidden(N, device)
 
                 logits, hidden_replay = model(obs_t, hidden_replay)
+                action_mask = action_mask_from_flat_obs(obs_t)
+                logits = mask_action_logits(logits, action_mask)
                 dist = torch.distributions.Categorical(logits=logits)
                 new_logp = dist.log_prob(act_t)
                 entropy = dist.entropy().mean()
@@ -303,9 +312,11 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device):
                 with torch.no_grad():
                     bc_h = (hidden_buf[t][0].to(device), hidden_buf[t][1].to(device))
                     bc_logits, _ = bc_ref(obs_t, bc_h)
-                bc_probs = torch.softmax(bc_logits, dim=-1)
+                bc_logits = mask_action_logits(bc_logits, action_mask)
+                bc_logprobs = torch.log_softmax(bc_logits, dim=-1)
+                bc_probs = bc_logprobs.exp()
                 current_logprobs = torch.log_softmax(logits, dim=-1)
-                kl = (bc_probs * (bc_probs.log() - current_logprobs)).sum(dim=-1).mean()
+                kl = (bc_probs * (bc_logprobs - current_logprobs)).sum(dim=-1).mean()
 
                 # PPO loss
                 old_logp = logp_buf[t].to(device)
@@ -370,6 +381,7 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device):
                     obs_t = torch.tensor(build_batch_obs(eval_obs, N), dtype=torch.float32, device=device)
                     with torch.no_grad():
                         logits, h_eval = model(obs_t, h_eval)
+                    logits = mask_action_logits(logits, action_mask_from_flat_obs(obs_t))
                     acts = torch.argmax(logits, dim=-1)
                     actions = {aid: {"action": int(acts[aid].item()), "message_tokens": []} for aid in range(N)}
                     eval_obs, _, ep_done, ep_trunc, info = env.step(actions)
