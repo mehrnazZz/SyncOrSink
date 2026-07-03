@@ -225,7 +225,7 @@ def render_markdown(
 
 def render_csv(entries: Iterable[LeaderboardEntry]) -> str:
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=list(asdict(_empty_entry()).keys()))
+    writer = csv.DictWriter(output, fieldnames=list(asdict(_empty_entry()).keys()), lineterminator="\n")
     writer.writeheader()
     for entry in sort_entries(entries):
         writer.writerow(asdict(entry))

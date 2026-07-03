@@ -199,6 +199,12 @@ python examples/build_leaderboard.py \
   --out-md docs/leaderboard_results.md
 ```
 
+Validate generated leaderboard outputs before submitting a PR:
+
+```bash
+python examples/validate_leaderboard.py
+```
+
 Benchmark presets:
 
 - `benchmarks/pipeline_presets.json`

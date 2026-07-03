@@ -209,6 +209,7 @@ def test_leaderboard_builder_collects_ranks_and_validates_manifest(tmp_path):
     assert collection.entries[0].official_score == 75.0
     assert "| 1 | stronger | stronger |" in markdown
     assert "official_score" in csv_text
+    assert "\r\n" not in csv_text
     assert '"submission_name": "stronger"' in json_text
 
     partial_dir = tmp_path / "partial"

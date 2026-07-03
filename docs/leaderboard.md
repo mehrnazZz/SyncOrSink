@@ -149,3 +149,15 @@ name/version and includes exactly the official case set. Use `--allow-partial`
 only for local smoke tests.
 
 See `docs/leaderboard_results.md` for the current rendered table.
+
+Validate that committed result artifacts and generated tables are in sync:
+
+```bash
+python examples/validate_leaderboard.py
+```
+
+To regenerate stale outputs locally:
+
+```bash
+python examples/validate_leaderboard.py --fix
+```

@@ -20,5 +20,11 @@ python examples/build_leaderboard.py \
   --out-json docs/leaderboard_results.json
 ```
 
+Validate committed outputs without rewriting them:
+
+```bash
+python examples/validate_leaderboard.py
+```
+
 If you are testing partial or smoke artifacts locally, use `--allow-partial` and
 write outputs to `/tmp` instead of committing them.
