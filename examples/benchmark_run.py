@@ -149,6 +149,8 @@ def build_policy(
 
 def _effective_result_spec(spec: dict, args, external_kwargs: dict) -> dict:
     result_spec = dict(spec)
+    if args.policy_override:
+        result_spec["policy"] = args.policy_override
     if args.policy_entrypoint:
         result_spec["policy"] = "external"
         result_spec["policy_entrypoint"] = args.policy_entrypoint
@@ -181,6 +183,11 @@ def main():
         help="External policy factory as 'module.submodule:object'; overrides built-in policy dispatch",
     )
     parser.add_argument(
+        "--policy-override",
+        default=None,
+        help="Built-in policy name to use for every case, e.g. random, scripted, oracle_strong",
+    )
+    parser.add_argument(
         "--policy-checkpoint",
         default=None,
         help="Optional checkpoint path/URI passed to external policy loading",
@@ -204,7 +211,9 @@ def main():
         })
 
     for case in bench.cases:
-        spec = case.spec
+        spec = dict(case.spec)
+        if args.policy_override:
+            spec["policy"] = args.policy_override
         config = SyncOrSinkConfig(
             scenario=spec["scenario"],
             split=spec.get("split"),

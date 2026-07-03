@@ -129,3 +129,23 @@ print(score["official_score"])
 
 Result artifacts that fail schema validation should not be accepted into the
 public leaderboard.
+
+## Building The Public Table
+
+Committed result artifacts are collected from `results/syncorsink_v0_1/`.
+Rebuild the Markdown table with:
+
+```bash
+python examples/build_leaderboard.py \
+  --results results/syncorsink_v0_1 \
+  --benchmark benchmarks/syncorsink_v0_1.json \
+  --out-md docs/leaderboard_results.md \
+  --out-csv docs/leaderboard_results.csv \
+  --out-json docs/leaderboard_results.json
+```
+
+By default, the builder validates that every artifact matches the benchmark
+name/version and includes exactly the official case set. Use `--allow-partial`
+only for local smoke tests.
+
+See `docs/leaderboard_results.md` for the current rendered table.

@@ -149,6 +149,101 @@ def test_leaderboard_result_artifact_validates_saves_and_scores(tmp_path):
         )
 
 
+def test_leaderboard_builder_collects_ranks_and_validates_manifest(tmp_path):
+    from syncorsink.eval.benchmark_spec import load_benchmark
+    from syncorsink.eval.leaderboard import (
+        collect_leaderboard_entries,
+        render_csv,
+        render_json,
+        render_markdown,
+    )
+    from syncorsink.eval.metrics import EvalSummary
+    from syncorsink.eval.result_schema import (
+        SubmissionInfo,
+        make_result_artifact,
+        save_result_artifact,
+        summary_to_case_result,
+    )
+
+    bench = load_benchmark("benchmarks/syncorsink_v0_1.json")
+
+    def write_artifact(name, success_rate):
+        cases = []
+        for case in bench.cases:
+            summary = EvalSummary(
+                episodes=32,
+                success_rate=success_rate,
+                avg_return=success_rate * 10.0,
+                avg_steps=100.0,
+                avg_comm_tokens=5.0,
+                avg_agent_reward={0: 1.0},
+                avg_agent_comm={0: 1.0},
+            )
+            cases.append(summary_to_case_result(case.name, summary, spec=case.spec, weight=case.weight, tags=case.tags))
+        artifact = make_result_artifact(
+            benchmark_name=bench.name,
+            benchmark_version=bench.version,
+            track="symbolic_dtde",
+            submission=SubmissionInfo(
+                name=name,
+                method_name=name,
+                method_type="unit_test",
+                authors=["SyncOrSink"],
+            ),
+            cases=cases,
+            generated_at="2026-01-01T00:00:00+00:00",
+        )
+        path = tmp_path / f"{name}.json"
+        save_result_artifact(artifact, path)
+        return path
+
+    weaker = write_artifact("weaker", 0.25)
+    stronger = write_artifact("stronger", 0.75)
+
+    collection = collect_leaderboard_entries([tmp_path], benchmark=bench)
+    markdown = render_markdown(collection.entries, benchmark_name=bench.name, benchmark_version=bench.version)
+    csv_text = render_csv(collection.entries)
+    json_text = render_json(collection.entries)
+
+    assert [entry.submission_name for entry in collection.entries] == ["stronger", "weaker"]
+    assert collection.entries[0].official_score == 75.0
+    assert "| 1 | stronger | stronger |" in markdown
+    assert "official_score" in csv_text
+    assert '"submission_name": "stronger"' in json_text
+
+    partial_dir = tmp_path / "partial"
+    partial_dir.mkdir()
+    partial_artifact = make_result_artifact(
+        benchmark_name=bench.name,
+        benchmark_version=bench.version,
+        track="symbolic_dtde",
+        submission=SubmissionInfo(
+            name="partial",
+            method_name="partial",
+            method_type="unit_test",
+            authors=["SyncOrSink"],
+        ),
+        cases=[
+            summary_to_case_result(
+                bench.cases[0].name,
+                EvalSummary(1, 0.0, 0.0, 1.0, 0.0, {}, {}),
+                spec=bench.cases[0].spec,
+            )
+        ],
+        generated_at="2026-01-01T00:00:00+00:00",
+    )
+    partial_path = partial_dir / "partial.json"
+    save_result_artifact(partial_artifact, partial_path)
+
+    with pytest.raises(ValueError):
+        collect_leaderboard_entries([partial_path], benchmark=bench)
+    allowed = collect_leaderboard_entries([partial_path], benchmark=bench, allow_partial=True)
+    assert allowed.entries[0].submission_name == "partial"
+
+    weaker.unlink()
+    stronger.unlink()
+
+
 def test_benchmark_policy_dispatch_no_random_fallback_and_pipeline_follower_runs():
     from examples.benchmark_run import build_policy
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv

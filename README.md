@@ -85,6 +85,7 @@ Baseline docs:
 - Transformer baselines (Comm-MAT): `docs/baselines_transformer.md`
 - Evaluation/logging config (eval flags, traces, video, W&B): `docs/eval_and_logging.md`
 - Leaderboard protocol and result schema: `docs/leaderboard.md`
+- Current leaderboard table: `docs/leaderboard_results.md`
 - External policy submission API: `docs/policy_submissions.md`
 
 Evaluation harness:
@@ -187,6 +188,15 @@ python examples/benchmark_run.py \
   --policy-entrypoint my_package.my_agent:build_policy \
   --results-json results/my_method_v0_1.json \
   --track symbolic_dtde
+```
+
+Build the public leaderboard table from committed result artifacts:
+
+```bash
+python examples/build_leaderboard.py \
+  --results results/syncorsink_v0_1 \
+  --benchmark benchmarks/syncorsink_v0_1.json \
+  --out-md docs/leaderboard_results.md
 ```
 
 Benchmark presets:
