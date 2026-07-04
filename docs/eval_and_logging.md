@@ -9,6 +9,7 @@ This document is the reference for evaluation/training CLI parameters and W&B lo
   - `examples/eval_llm.py`
   - `examples/benchmark_run.py`
   - `examples/eval_from_spec.py`
+  - `examples/communication_ablation_sweep.py`
 - Training:
   - `examples/mappo_train.py` (`syncorsink/train/mappo.py`)
   - `examples/comm_mat_train.py` (`syncorsink/train/comm_mat.py`)
@@ -143,6 +144,20 @@ in shared `info`, so traces should use `--trace-local-obs` when inspecting them.
   - trace artifact (`llm_trace`)
   - per-episode MP4 videos (`video/episode_*`)
 
+### `communication_ablation_sweep.py`
+
+- Per scenario/size/condition:
+  - success rate, average return, average steps, average communication tokens
+- Per scenario/size gap metrics:
+  - communication expert success
+  - local no-communication success
+  - success gap
+  - communication-token checks
+- Optional:
+  - JSON artifact via `--output-json`
+  - CSV rows via `--output-csv`
+  - W&B scalar logging via `--wandb`
+
 ### Training scripts (`mappo` and `comm_mat`)
 
 Both support:
@@ -209,6 +224,17 @@ Comm-MAT benchmark preset run:
 
 ```bash
 python examples/benchmark_run.py --spec benchmarks/transformer_presets.json --wandb
+```
+
+Communication necessity sweep:
+
+```bash
+python examples/communication_ablation_sweep.py \
+  --episodes 8 \
+  --map-sizes 8 16 \
+  --output-json logs/communication_ablation_sweep/latest.json \
+  --wandb \
+  --wandb-mode offline
 ```
 
 The transformer preset expects local checkpoint artifacts:

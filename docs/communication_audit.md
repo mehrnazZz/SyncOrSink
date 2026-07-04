@@ -15,9 +15,33 @@ channels other than per-agent observations and explicit messages.
 
 - `tests/test_communication_audit.py` checks DTDE shared-info leakage for all
   core scenarios.
+- `examples/communication_ablation_sweep.py` runs a behavioral
+  communication-vs-no-communication sweep with the current expert policies.
 - `central_obs` appears only when `track="ctde"`.
 - Private hints are available through per-agent observation fields, not shared
   `info`.
+
+## Behavioral Sweep
+
+The leakage audit proves that private information is not exposed through shared
+`info`. The behavioral sweep checks the next question: whether an explicit
+communication expert solves the same case better than a local no-message
+baseline.
+
+```bash
+python examples/communication_ablation_sweep.py \
+  --episodes 8 \
+  --map-sizes 8 16 \
+  --output-json logs/communication_ablation_sweep/latest.json
+```
+
+By default the sweep runs `signal_hunt`, `energy_grid`, and
+`pipeline_assembly` at 8x8 and 16x16. It records per-condition success,
+return, steps, communication tokens, and a gap row for each scenario/size.
+`--fail-on-weak-gap` can turn the thresholds into a CI gate, but weak gaps
+should be treated as design findings during scenario development. For example,
+an expert that solves a case without messages indicates that the scenario may
+still be too locally observable or too easy at that size.
 
 ## External Submission Guardrail
 

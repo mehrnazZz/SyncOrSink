@@ -434,6 +434,15 @@ python examples/train_eval_workbench.py \
   --wandb-mode offline
 ```
 
+Communication necessity sweep:
+
+```bash
+python examples/communication_ablation_sweep.py \
+  --episodes 8 \
+  --map-sizes 8 16 \
+  --output-json logs/communication_ablation_sweep/latest.json
+```
+
 ### LLM / Tool‑Calling Policies
 
 LLM evaluation runner:
