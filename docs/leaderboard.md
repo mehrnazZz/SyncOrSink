@@ -75,6 +75,9 @@ python examples/benchmark_run.py \
 ```
 
 See `docs/policy_submissions.md` for the policy interface.
+External policy submissions are evaluated through the decentralized
+`act_agent(...)` adapter by default; centralized external execution is for local
+debugging only and should not be submitted to DTDE tracks.
 
 The result JSON contains:
 

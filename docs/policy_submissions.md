@@ -31,17 +31,9 @@ python examples/benchmark_run.py \
 
 ## Policy Interface
 
-A policy can be a callable:
-
-```python
-def policy(obs, info, state):
-    return {
-        agent_id: {"action": 4, "message_tokens": []}
-        for agent_id in obs
-    }
-```
-
-Or an object with `act`:
+Leaderboard-style external submissions use decentralized execution by default.
+The policy is called once per agent with only that agent's observation, that
+agent's incoming messages/events, and public scalar info:
 
 ```python
 class MyPolicy:
@@ -57,6 +49,35 @@ class MyPolicy:
             "method_type": "Transformer MARL",
         }
 
+    def act_agent(self, agent_id, obs, info, state):
+        return {
+            "action": 4,
+            "message_tokens": [],
+            "message_text": "",
+        }
+```
+
+`obs` is the per-agent observation for `agent_id`, not the full team
+observation dict. `info` includes only that agent's `messages_text`,
+`messages_with_sender`, `events`, `comm_tokens`, and public scalar fields.
+It does not include `central_obs` during external policy execution.
+
+An agent-level callable is also accepted:
+
+```python
+def policy(agent_id, obs, info, state):
+    return {
+        "action": 4,
+        "message_tokens": [],
+    }
+```
+
+For local debugging only, `examples/benchmark_run.py` supports
+`--allow-centralized-external-policy`, which restores the older whole-team
+interface:
+
+```python
+class MyPolicy:
     def act(self, obs, info, state):
         actions = {}
         for agent_id, agent_obs in obs.items():
@@ -67,6 +88,10 @@ class MyPolicy:
             }
         return actions
 ```
+
+Do not use centralized external execution for `symbolic_dtde` or leaderboard
+submissions. Built-in oracle/debug policies may still use centralized state and
+are reported on separate tracks.
 
 The required action payload is:
 

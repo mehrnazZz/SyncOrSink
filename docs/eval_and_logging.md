@@ -159,6 +159,8 @@ Flags:
 
 - `--spec` (required): benchmark JSON file
 - `--wandb`, `--wandb-project`, `--wandb-run`
+- `--policy-entrypoint`, `--policy-checkpoint`, `--policy-kwargs` for external policies
+- `--allow-centralized-external-policy` for local debugging only
 
 For Comm-MAT in spec cases:
 

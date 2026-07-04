@@ -14,14 +14,11 @@ class StayPolicy:
             "method_type": "example",
         }
 
-    def act(self, obs: dict, info: dict, state: dict):
+    def act_agent(self, agent_id: int, obs: dict, info: dict, state: dict):
         return {
-            int(agent_id): {
-                "action": 4,
-                "message_tokens": [],
-                "message_text": "",
-            }
-            for agent_id in obs
+            "action": 4,
+            "message_tokens": [],
+            "message_text": "",
         }
 
 

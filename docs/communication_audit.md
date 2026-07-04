@@ -19,12 +19,13 @@ channels other than per-agent observations and explicit messages.
 - Private hints are available through per-agent observation fields, not shared
   `info`.
 
-## Residual Protocol Risk
+## External Submission Guardrail
 
-The Python policy callback receives the full `obs` dict for all agents. A
-centralized hand-written policy can still read every agent's observation and
-share memory internally. Official DTDE submissions should therefore use a
-decentralized policy wrapper or plugin ABI that calls the same policy per agent
-with only that agent's observation plus received messages. CTDE tracks may use
-centralized training data, but execution-time action selection should respect
-the selected track.
+External policies loaded through `policy_entrypoint` are decentralized by
+default. The adapter passes a read-only environment view to the policy factory
+and calls `act_agent(agent_id, obs, info, state)` once per agent with only that
+agent's observation plus that agent's received messages/events. `central_obs`
+is stripped from external execution even when the case uses CTDE metadata.
+
+Built-in oracle/debug policies can still use centralized state and should be
+reported as oracle or CTDE diagnostic baselines, not as DTDE submissions.

@@ -65,6 +65,7 @@ def build_policy(
     external_entrypoint: str | None = None,
     external_checkpoint: str | None = None,
     external_kwargs: dict | None = None,
+    decentralized_external: bool = True,
 ):
     entrypoint = external_entrypoint or spec.get("policy_entrypoint")
     if entrypoint:
@@ -77,6 +78,7 @@ def build_policy(
             spec=spec,
             checkpoint=checkpoint,
             kwargs=policy_kwargs,
+            decentralized=decentralized_external,
         ).policy
 
     policy = spec.get("policy", "random")
@@ -197,6 +199,11 @@ def main():
         default=None,
         help="Optional JSON object passed as extra keyword args to the external policy factory",
     )
+    parser.add_argument(
+        "--allow-centralized-external-policy",
+        action="store_true",
+        help="Debug only: pass full team obs/info and the live env to external policies",
+    )
     args = parser.parse_args()
 
     bench = load_benchmark(args.spec)
@@ -234,6 +241,7 @@ def main():
             external_entrypoint=args.policy_entrypoint,
             external_checkpoint=args.policy_checkpoint,
             external_kwargs=external_kwargs,
+            decentralized_external=not args.allow_centralized_external_policy,
         )
         episodes = int(spec.get("episodes", 1))
 

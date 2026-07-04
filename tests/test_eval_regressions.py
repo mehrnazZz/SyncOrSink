@@ -279,11 +279,16 @@ RESET_CALLS = 0
 CHECKPOINTS = []
 BUILD_SPECS = []
 TEMPERATURES = []
+ENV_VIEW_HAS_AGENT_POSITIONS = None
+OBS_KEYS = []
+INFO_MESSAGE_KEYS = []
 
 
 class SubmittedPolicy:
     def __init__(self, env, spec, temperature=1.0):
+        global ENV_VIEW_HAS_AGENT_POSITIONS
         self.num_agents = env.num_agents
+        ENV_VIEW_HAS_AGENT_POSITIONS = hasattr(env, "agent_positions")
         BUILD_SPECS.append(dict(spec))
         TEMPERATURES.append(temperature)
 
@@ -297,10 +302,13 @@ class SubmittedPolicy:
     def metadata(self):
         return {"method_name": "SubmittedPolicy"}
 
-    def act(self, obs, info, state):
+    def act_agent(self, agent_id, obs, info, state):
+        OBS_KEYS.append(sorted(obs.keys()))
+        INFO_MESSAGE_KEYS.append(sorted(info.get("messages_text", {}).keys()))
         return {
-            int(agent_id): {"action": 4, "message_tokens": [], "message_text": ""}
-            for agent_id in obs
+            "action": 4,
+            "message_tokens": [],
+            "message_text": "",
         }
 
 
@@ -338,6 +346,73 @@ def build_policy(env, spec, temperature=1.0):
     assert external_submission.CHECKPOINTS == ["checkpoint.pt"]
     assert external_submission.BUILD_SPECS[0]["scenario"] == "signal_hunt"
     assert external_submission.TEMPERATURES == [0.25]
+    assert external_submission.ENV_VIEW_HAS_AGENT_POSITIONS is False
+    assert external_submission.OBS_KEYS
+    assert all("local_grid" in keys for keys in external_submission.OBS_KEYS)
+    assert all(keys in ([0], [1]) for keys in external_submission.INFO_MESSAGE_KEYS)
+
+
+def test_external_dtde_rejects_team_policy_by_default(tmp_path, monkeypatch):
+    module_path = tmp_path / "centralized_submission.py"
+    module_path.write_text(
+        """
+class TeamPolicy:
+    def act(self, obs, info, state):
+        return {int(agent_id): {"action": 4, "message_tokens": []} for agent_id in obs}
+
+
+def build_policy(env, spec):
+    return TeamPolicy()
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    from examples.benchmark_run import build_policy
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.eval.runner import run_episodes
+
+    env = SyncOrSinkEnv(SyncOrSinkConfig(scenario="signal_hunt", map_size=8, num_agents=2, fov_preset="easy", max_steps=1))
+    policy = build_policy(
+        {"scenario": "signal_hunt", "mode": "marl", "policy": "random"},
+        env,
+        external_entrypoint="centralized_submission:build_policy",
+    )
+
+    with pytest.raises(TypeError, match="decentralized external policies"):
+        run_episodes(env, policy, episodes=1, seed=0)
+
+
+def test_external_centralized_debug_escape_hatch(tmp_path, monkeypatch):
+    module_path = tmp_path / "centralized_debug_submission.py"
+    module_path.write_text(
+        """
+class TeamPolicy:
+    def act(self, obs, info, state):
+        return {int(agent_id): {"action": 4, "message_tokens": []} for agent_id in obs}
+
+
+def build_policy(env, spec):
+    return TeamPolicy()
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    from examples.benchmark_run import build_policy
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.eval.runner import run_episodes
+
+    env = SyncOrSinkEnv(SyncOrSinkConfig(scenario="signal_hunt", map_size=8, num_agents=2, fov_preset="easy", max_steps=1))
+    policy = build_policy(
+        {"scenario": "signal_hunt", "mode": "marl", "policy": "random"},
+        env,
+        external_entrypoint="centralized_debug_submission:build_policy",
+        decentralized_external=False,
+    )
+    summary, _ = run_episodes(env, policy, episodes=1, seed=0)
+
+    assert summary.episodes == 1
 
 
 def test_eval_from_spec_policy_dispatch_rejects_unknown_policy():

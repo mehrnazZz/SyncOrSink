@@ -50,6 +50,7 @@ def build_marl_policy(spec, env):
             spec=spec.__dict__,
             checkpoint=spec.policy_checkpoint,
             kwargs=spec.policy_kwargs or {},
+            decentralized=True,
         ).policy
 
     policy = spec.policy
