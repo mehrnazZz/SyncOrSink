@@ -27,7 +27,8 @@ Procedural pack metadata lives in `syncorsink/envs/procedural.py`; see
 
 `energy_grid` still supports the legacy symmetric-information ablation with
 `energy_private_monitor=False` or `--no-energy-private-monitor`, but the default
-core scenario uses private node monitoring so communication is necessary.
+core scenario uses private node monitoring and sync-gated recharges so
+communication is necessary even in the small 8x8 preset.
 
 `signal_hunt` is disaster-adjacent because it uses search, clues, decoys, and
 joint verification. It remains a `core` diagnostic scenario because it isolates

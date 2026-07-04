@@ -7,7 +7,8 @@ This document describes the centralized expert planners for each scenario, how t
 Centralized experts exist for all three scenarios:
 
 - Pipeline Assembly: `pipeline_planner_comm` (centralized planner + comm broadcast)
-- Energy Grid: `oracle_planner` / `energy_oracle_planner` (stateful centralized dispatcher)
+- Energy Grid: `oracle_planner` / `energy_oracle_planner` and
+  `energy_planner_comm` (stateful centralized dispatcher)
 - Signal Hunt: `signal_hunt_planner_comm` (centralized planner + comm broadcast)
 
 These policies are deterministic and should solve their respective scenarios under default conditions. They can be used for:
@@ -50,9 +51,9 @@ scaled-pipeline deadlocks are now covered by tests.
 
 ### Energy Grid
 
-**Policy:** `oracle_planner` / `energy_oracle_planner`
+**Policy:** `oracle_planner` / `energy_oracle_planner` and `energy_planner_comm`
 
-**Where:** `syncorsink/policies/oracle.py`
+**Where:** `syncorsink/policies/oracle.py` and `syncorsink/policies/planner_comm.py`
 
 **Logic:**
 - Keeps stable per-agent assignments.
@@ -61,9 +62,10 @@ scaled-pipeline deadlocks are now covered by tests.
 - Coordinates two matching carriers before interacting on sync-gated critical nodes.
 
 **Comm broadcast:**
-The oracle planner is a centralized solvability policy and does not need to
-broadcast. `energy_planner_comm` remains available as a lighter communication
-baseline, but it is not the hard-preset acceptance expert.
+`energy_oracle_planner` is a centralized solvability policy and does not need
+to broadcast. `energy_planner_comm` wraps the same dispatcher and broadcasts the
+current lowest-energy node as `[16, node_x, node_y, node_type]`, which makes it
+the communication expert used by the behavioral ablation sweep.
 
 ### Signal Hunt
 

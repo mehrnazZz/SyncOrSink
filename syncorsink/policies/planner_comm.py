@@ -165,8 +165,8 @@ def energy_planner_comm(env):
     Centralized energy planner + comm broadcast.
     Message format: [16, node_x, node_y, node_type]
     """
-    from .planner import energy_central_planner
-    base = energy_central_planner(env)
+    from .oracle import energy_oracle_planner
+    base = energy_oracle_planner(env)
     last_tokens: list[int] | None = None
 
     def _message():

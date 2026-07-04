@@ -262,6 +262,47 @@ def test_energy_grid_private_monitor_routes_node_critical_events_to_assigned_age
             assert critical == []
 
 
+def test_energy_grid_easy_preset_sync_gates_initial_recharge():
+    """The small core Energy Grid task requires paired recharge, not solo top-up."""
+    from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig
+
+    config = SyncOrSinkConfig(
+        scenario="energy_grid", map_size=8, num_agents=2,
+        fov_preset="easy", energy_preset="easy",
+    )
+    env = SyncOrSinkEnv(config)
+    env.reset(seed=0)
+    node_pos = next(iter(env.scenario_state.data["node_energy"]))
+    node_type = env.scenario_state.data["node_types"][node_pos]
+
+    assert env.scenario_state.data["node_energy"][node_pos] <= env.scenario_state.data["sync_threshold"]
+
+    env.agent_positions[0] = node_pos
+    env.inventories[0] = node_type
+    actions = {
+        0: {"action": env.ACTION_INTERACT},
+        1: {"action": env.ACTION_STAY},
+    }
+    _, _, _, _, info = env.step(actions)
+
+    assert info["recharge_count"] == 0
+    assert env.inventories[0] == node_type
+
+    env.agent_positions[0] = node_pos
+    env.agent_positions[1] = node_pos
+    env.inventories[0] = node_type
+    env.inventories[1] = node_type
+    actions = {
+        0: {"action": env.ACTION_INTERACT},
+        1: {"action": env.ACTION_INTERACT},
+    }
+    _, _, _, _, info = env.step(actions)
+
+    assert info["recharge_count"] == 2
+    assert env.inventories[0] == 0
+    assert env.inventories[1] == 0
+
+
 def test_energy_grid_symmetric_control_broadcasts_node_critical_events():
     """The legacy symmetric ablation remains explicit and observable."""
     from syncorsink.envs import SyncOrSinkEnv, SyncOrSinkConfig

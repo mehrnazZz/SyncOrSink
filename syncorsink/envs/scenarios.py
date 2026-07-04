@@ -339,7 +339,10 @@ class EnergyGrid(ScenarioBase):
         if preset == "easy":
             scaled_energy = max(15, int(sqrt_s * 10))
             grace = max(4, int(sqrt_s * 3))
-            sync_threshold = max(3, int(scaled_energy * 0.4))
+            # The small core task should still require communication: every
+            # recharge is sync-gated, so assigned monitors must bring partners
+            # to the right typed node instead of solo-topping-up visible nodes.
+            sync_threshold = scaled_energy
             success_recharges = n_nodes
         else:
             scaled_energy = max(12, int(sqrt_s * 8), int(env.map_size * 2.25))

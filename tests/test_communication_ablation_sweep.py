@@ -37,3 +37,27 @@ def test_communication_ablation_sweep_include_32_deduplicates_map_sizes():
     args = parse_args(["--map-sizes", "16", "8", "16", "--include-32"])
 
     assert args.map_sizes == [8, 16, 32]
+
+
+def test_communication_ablation_sweep_energy_core_passes_gap_gate():
+    from examples.communication_ablation_sweep import parse_args, run_sweep
+
+    args = parse_args([
+        "--scenarios",
+        "energy_grid",
+        "--map-sizes",
+        "8",
+        "16",
+        "--episodes",
+        "2",
+        "--seed",
+        "0",
+        "--fail-on-weak-gap",
+    ])
+
+    payload = run_sweep(args)
+
+    assert {gap["map_size"] for gap in payload["gaps"]} == {8, 16}
+    assert all(gap["passes_threshold"] for gap in payload["gaps"])
+    assert all(gap["comm_success_rate"] == 1.0 for gap in payload["gaps"])
+    assert all(gap["no_comm_success_rate"] <= 0.5 for gap in payload["gaps"])

@@ -8,7 +8,7 @@ channels other than per-agent observations and explicit messages.
 | Scenario | Private state channel | Shared-info audit | Status |
 |---|---|---|---|
 | `signal_hunt` | Per-agent `goal_hint` encodes private clue constraints; collected clues update only that agent's hint. | Shared `info` no longer returns `goal_hint_texts`, global `constraints`, or `agent_clues`. `clue_found` events do not include clue text. | Communication-required by observation contract. |
-| `energy_grid` | Per-agent `goal_hint` encodes assigned nodes; `local_node_energy` shows only assigned-node energy when `energy_private_monitor=True`. | `node_critical` events are routed only to the assigned monitor. Global node energy and assignments are not in shared `info`. | Communication-required by default; symmetric ablation requires `energy_private_monitor=False`. |
+| `energy_grid` | Per-agent `goal_hint` encodes assigned nodes; `local_node_energy` shows only assigned-node energy when `energy_private_monitor=True`. | `node_critical` events are routed only to the assigned monitor. Global node energy and assignments are not in shared `info`. | Communication-required by default; the small core preset is sync-gated from the first recharge. Symmetric ablation requires `energy_private_monitor=False`. |
 | `pipeline_assembly` | Per-agent `goal_hint` encodes partial stage blueprints. | Shared `info` does not expose `hints`, `stages`, or `full_plan`. | Communication-required by observation contract. |
 
 ## Guardrails
