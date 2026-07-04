@@ -29,6 +29,7 @@ class ScenarioCase:
 class RunRecord:
     algorithm: str
     scenario: str
+    seed: int
     run_dir: str
     checkpoint_path: str
     command: list[str]
@@ -41,6 +42,7 @@ class RunRecord:
     stdout_tail: list[str]
     stderr_tail: list[str]
     eval_metrics: dict[str, float] | None
+    wandb: dict
 
 
 DEFAULT_CASES: dict[str, ScenarioCase] = {
@@ -82,6 +84,7 @@ def build_command(
     checkpoint_path: Path,
     args,
     run_name: str,
+    seed: int,
 ) -> list[str]:
     if algorithm not in TRAIN_SCRIPTS:
         raise ValueError(f"Unknown algorithm: {algorithm}")
@@ -111,7 +114,7 @@ def build_command(
         "--device",
         args.device,
         "--seed",
-        str(args.seed),
+        str(seed),
         "--eval-every",
         str(args.eval_every),
         "--eval-episodes",
@@ -144,35 +147,41 @@ def run_suite(args) -> dict:
 
     for algorithm in args.algorithms:
         for case in cases:
-            run_name = f"{algorithm}_{case.scenario}_{case.map_size}x{case.map_size}_seed{args.seed}"
-            run_dir = suite_dir / run_name
-            checkpoint_dir = run_dir / "checkpoints"
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            checkpoint_path = checkpoint_dir / f"{algorithm}.pt"
-            stdout_path = run_dir / "stdout.log"
-            stderr_path = run_dir / "stderr.log"
-            cmd = build_command(
-                algorithm=algorithm,
-                case=case,
-                checkpoint_path=checkpoint_path,
-                args=args,
-                run_name=run_name,
-            )
-            record = _run_one(
-                cmd=cmd,
-                algorithm=algorithm,
-                case=case,
-                run_dir=run_dir,
-                checkpoint_path=checkpoint_path,
-                stdout_path=stdout_path,
-                stderr_path=stderr_path,
-                dry_run=args.dry_run,
-                wandb_mode=args.wandb_mode,
-            )
-            records.append(record)
-            _write_json(run_dir / "run_summary.json", asdict(record))
-            print(_format_record(record), flush=True)
-            if args.fail_fast and record.status == "failed":
+            for seed in args.seeds:
+                run_name = f"{algorithm}_{case.scenario}_{case.map_size}x{case.map_size}_seed{seed}"
+                run_dir = suite_dir / run_name
+                checkpoint_dir = run_dir / "checkpoints"
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                checkpoint_path = checkpoint_dir / f"{algorithm}.pt"
+                stdout_path = run_dir / "stdout.log"
+                stderr_path = run_dir / "stderr.log"
+                cmd = build_command(
+                    algorithm=algorithm,
+                    case=case,
+                    checkpoint_path=checkpoint_path,
+                    args=args,
+                    run_name=run_name,
+                    seed=seed,
+                )
+                record = _run_one(
+                    cmd=cmd,
+                    algorithm=algorithm,
+                    case=case,
+                    seed=seed,
+                    run_dir=run_dir,
+                    checkpoint_path=checkpoint_path,
+                    stdout_path=stdout_path,
+                    stderr_path=stderr_path,
+                    dry_run=args.dry_run,
+                    wandb_mode=args.wandb_mode,
+                    strict_wandb=args.strict_wandb,
+                )
+                records.append(record)
+                _write_json(run_dir / "run_summary.json", asdict(record))
+                print(_format_record(record), flush=True)
+                if args.fail_fast and record.status == "failed":
+                    break
+            if args.fail_fast and records and records[-1].status == "failed":
                 break
         if args.fail_fast and records and records[-1].status == "failed":
             break
@@ -192,13 +201,15 @@ def run_suite(args) -> dict:
             "eval_every": args.eval_every,
             "eval_episodes": args.eval_episodes,
             "device": args.device,
-            "seed": args.seed,
+            "seeds": args.seeds,
             "wandb": args.wandb,
             "wandb_mode": args.wandb_mode,
             "wandb_project": args.wandb_project,
+            "strict_wandb": args.strict_wandb,
         },
         "cases": [asdict(case) for case in cases],
         "runs": [asdict(record) for record in records],
+        "aggregate": _aggregate_records(records),
         "overall": {
             "total": len(records),
             "complete": sum(record.status == "complete" for record in records),
@@ -219,20 +230,24 @@ def _run_one(
     cmd: list[str],
     algorithm: str,
     case: ScenarioCase,
+    seed: int,
     run_dir: Path,
     checkpoint_path: Path,
     stdout_path: Path,
     stderr_path: Path,
     dry_run: bool,
     wandb_mode: str,
+    strict_wandb: bool,
 ) -> RunRecord:
     start = time.time()
+    wandb_requested = "--wandb" in cmd
     if dry_run:
         stdout_path.write_text("", encoding="utf-8")
         stderr_path.write_text("", encoding="utf-8")
         return RunRecord(
             algorithm=algorithm,
             scenario=case.scenario,
+            seed=seed,
             run_dir=str(run_dir),
             checkpoint_path=str(checkpoint_path),
             command=cmd,
@@ -245,25 +260,34 @@ def _run_one(
             stdout_tail=[],
             stderr_tail=[],
             eval_metrics=None,
+            wandb=_wandb_record(requested=wandb_requested, mode=wandb_mode, status="dry_run", error_lines=[]),
         )
 
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
     env["WANDB_MODE"] = wandb_mode
     env.setdefault("WANDB_SILENT", "true")
-    wandb_dir = run_dir / "wandb"
-    wandb_dir.mkdir(parents=True, exist_ok=True)
+    wandb_dir = _prepare_wandb_dirs(run_dir)
     env["WANDB_DIR"] = str(wandb_dir)
+    env["WANDB_DATA_DIR"] = str(wandb_dir / "data")
+    env["WANDB_ARTIFACT_DIR"] = str(wandb_dir / "artifacts")
+    env["WANDB_CACHE_DIR"] = str(wandb_dir / "cache")
+    env["WANDB_CONFIG_DIR"] = str(wandb_dir / "config")
+    env["TMPDIR"] = str(wandb_dir / "tmp")
 
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
         proc = subprocess.run(cmd, cwd=str(ROOT), env=env, stdout=stdout, stderr=stderr, check=False)
 
     stdout_tail = _tail_lines(stdout_path)
     stderr_tail = _tail_lines(stderr_path)
+    wandb = _parse_wandb_record(stdout_path, stderr_path, requested=wandb_requested, mode=wandb_mode)
     status = "complete" if proc.returncode == 0 and checkpoint_path.exists() else "failed"
+    if strict_wandb and wandb.get("status") == "failed":
+        status = "failed"
     return RunRecord(
         algorithm=algorithm,
         scenario=case.scenario,
+        seed=seed,
         run_dir=str(run_dir),
         checkpoint_path=str(checkpoint_path),
         command=cmd,
@@ -276,6 +300,7 @@ def _run_one(
         stdout_tail=stdout_tail,
         stderr_tail=stderr_tail,
         eval_metrics=_parse_last_eval(stdout_tail),
+        wandb=wandb,
     )
 
 
@@ -294,6 +319,79 @@ def _parse_last_eval(lines: Iterable[str]) -> dict[str, float] | None:
                 metrics["success_rate"] = float(part.split()[1])
         return metrics or None
     return None
+
+
+def _aggregate_records(records: list[RunRecord]) -> list[dict]:
+    groups: dict[tuple[str, str], list[RunRecord]] = {}
+    for record in records:
+        groups.setdefault((record.algorithm, record.scenario), []).append(record)
+
+    aggregate = []
+    for (algorithm, scenario), group in sorted(groups.items()):
+        eval_records = [record.eval_metrics for record in group if record.eval_metrics is not None]
+        aggregate.append(
+            {
+                "algorithm": algorithm,
+                "scenario": scenario,
+                "seeds": sorted(record.seed for record in group),
+                "runs": len(group),
+                "complete": sum(record.status == "complete" for record in group),
+                "failed": sum(record.status == "failed" for record in group),
+                "dry_run": sum(record.status == "dry_run" for record in group),
+                "checkpoint_count": sum(record.checkpoint_exists for record in group),
+                "wandb_requested": sum(bool(record.wandb.get("requested")) for record in group),
+                "wandb_failed": sum(record.wandb.get("status") == "failed" for record in group),
+                "mean_eval_success_rate": _mean_metric(eval_records, "success_rate"),
+                "mean_eval_return": _mean_metric(eval_records, "return"),
+                "mean_eval_steps": _mean_metric(eval_records, "steps"),
+            }
+        )
+    return aggregate
+
+
+def _mean_metric(metrics: list[dict[str, float]], key: str) -> float | None:
+    values = [metric[key] for metric in metrics if key in metric]
+    if not values:
+        return None
+    return float(sum(values) / len(values))
+
+
+def _prepare_wandb_dirs(run_dir: Path) -> Path:
+    wandb_dir = run_dir / "wandb"
+    for name in ("data", "artifacts", "cache", "config", "tmp"):
+        (wandb_dir / name).mkdir(parents=True, exist_ok=True)
+    return wandb_dir
+
+
+def _parse_wandb_record(stdout_path: Path, stderr_path: Path, *, requested: bool, mode: str) -> dict:
+    if not requested:
+        return _wandb_record(requested=False, mode=mode, status="not_requested", error_lines=[])
+    stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
+    stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
+    lines = [line for line in [*stdout.splitlines(), *stderr.splitlines()] if "wandb" in line.lower()]
+    failed = [
+        line
+        for line in lines
+        if "wandb init failed" in line.lower()
+        or "wandb-core exited" in line.lower()
+        or "serve() returned error" in line.lower()
+    ]
+    if failed:
+        return _wandb_record(requested=True, mode=mode, status="failed", error_lines=failed[-5:])
+    if mode == "disabled":
+        status = "disabled"
+    else:
+        status = "initialized"
+    return _wandb_record(requested=True, mode=mode, status=status, error_lines=[])
+
+
+def _wandb_record(*, requested: bool, mode: str, status: str, error_lines: list[str]) -> dict:
+    return {
+        "requested": requested,
+        "mode": mode,
+        "status": status,
+        "error_lines": error_lines,
+    }
 
 
 def _tail_lines(path: Path, limit: int = 20) -> list[str]:
@@ -324,7 +422,7 @@ def _format_record(record: RunRecord) -> str:
             f" eval_return={record.eval_metrics.get('return', 0.0):.2f}"
         )
     return (
-        f"{record.status:8s} {record.algorithm:8s} {record.scenario:18s} "
+        f"{record.status:8s} {record.algorithm:8s} {record.scenario:18s} seed={record.seed:<3d} "
         f"elapsed={record.elapsed_sec:.1f}s ckpt={int(record.checkpoint_exists)}{metrics}"
     )
 
@@ -340,18 +438,26 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--eval-every", type=int, default=3)
     parser.add_argument("--eval-episodes", type=int, default=2)
     parser.add_argument("--device", default="cpu", choices=["auto", "cpu", "cuda", "mps"])
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=None, help="Single-seed alias for --seeds")
+    parser.add_argument("--seeds", nargs="+", type=int, default=None)
     parser.add_argument("--mappo-critic-mode", default="central", choices=["local", "central"])
     parser.add_argument("--mappo-shared-actor", action="store_true")
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-mode", default="offline", choices=["online", "offline", "disabled"])
     parser.add_argument("--wandb-project", default="syncorsink-core-training")
+    parser.add_argument("--strict-wandb", action="store_true", help="Fail a run if W&B was requested but did not initialize")
     parser.add_argument("--output-dir", default="logs/core_training_sweep")
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.seeds is None:
+        args.seeds = [0 if args.seed is None else args.seed]
+    elif args.seed is not None and args.seed not in args.seeds:
+        args.seeds = sorted([*args.seeds, args.seed])
+    args.seeds = sorted(set(args.seeds))
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:

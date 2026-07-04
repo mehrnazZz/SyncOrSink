@@ -175,11 +175,14 @@ core 8x8 cases and writes one manifest:
 - per-run `run_summary.json`
 - per-run `stdout.log` and `stderr.log`
 - per-run checkpoint under `checkpoints/`
+- aggregate mean eval metrics per algorithm/scenario across `--seeds`
+- per-run W&B status, including captured init failures
 
 The child trainers do not all expose a `--wandb-mode` flag, so the sweep runner
 sets `WANDB_MODE` for them. Use `--wandb-mode disabled` for a pure local
 checkpoint pipeline smoke, `offline` for local W&B runs, and `online` after
-`wandb login`.
+`wandb login`. Add `--strict-wandb` when a requested W&B run must fail fast if
+the W&B process cannot initialize.
 
 ## Benchmark/spec configuration
 
@@ -264,6 +267,7 @@ python examples/core_training_sweep.py \
   --minibatch 32 \
   --eval-every 3 \
   --eval-episodes 2 \
+  --seeds 0 1 2 \
   --wandb \
   --wandb-mode offline
 ```

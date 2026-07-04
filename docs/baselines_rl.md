@@ -104,13 +104,16 @@ python examples/core_training_sweep.py \
   --minibatch 32 \
   --eval-every 3 \
   --eval-episodes 2 \
+  --seeds 0 1 2 \
   --wandb \
   --wandb-mode offline
 ```
 
 This runner exercises the public MAPPO, Comm-MAT, and TarMAC training CLIs on
 the small core cases, saves one checkpoint per run, and writes a
-`suite_summary.json` under `logs/core_training_sweep/`.
+`suite_summary.json` under `logs/core_training_sweep/` with aggregate eval
+metrics across seeds. The manifest also records W&B init status per run; use
+`--strict-wandb` when online logging is required and should fail fast.
 
 Small sanity run:
 

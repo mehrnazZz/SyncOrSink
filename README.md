@@ -446,6 +446,7 @@ python examples/core_training_sweep.py \
   --minibatch 32 \
   --eval-every 3 \
   --eval-episodes 2 \
+  --seeds 0 1 2 \
   --wandb \
   --wandb-mode offline
 ```
