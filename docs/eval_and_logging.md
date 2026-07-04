@@ -13,6 +13,8 @@ This document is the reference for evaluation/training CLI parameters and W&B lo
 - Training:
   - `examples/mappo_train.py` (`syncorsink/train/mappo.py`)
   - `examples/comm_mat_train.py` (`syncorsink/train/comm_mat.py`)
+  - `examples/tarmac_train.py` (`syncorsink/train/tarmac.py`)
+  - `examples/core_training_sweep.py`
 
 ## `eval_run.py` parameters
 
@@ -158,13 +160,26 @@ in shared `info`, so traces should use `--trace-local-obs` when inspecting them.
   - CSV rows via `--output-csv`
   - W&B scalar logging via `--wandb`
 
-### Training scripts (`mappo` and `comm_mat`)
+### Training scripts (`mappo`, `comm_mat`, and `tarmac`)
 
-Both support:
+All three support:
 
 - `--wandb`, `--wandb-project`, `--wandb-run`
 - periodic training logs (`loss`, `policy_loss`, `value_loss`, `entropy`, rollout stats)
 - periodic eval logs (`eval/mean_return`, `eval/mean_steps`, `eval/success_rate`)
+
+`examples/core_training_sweep.py` launches the public training CLIs across the
+core 8x8 cases and writes one manifest:
+
+- `suite_summary.json`
+- per-run `run_summary.json`
+- per-run `stdout.log` and `stderr.log`
+- per-run checkpoint under `checkpoints/`
+
+The child trainers do not all expose a `--wandb-mode` flag, so the sweep runner
+sets `WANDB_MODE` for them. Use `--wandb-mode disabled` for a pure local
+checkpoint pipeline smoke, `offline` for local W&B runs, and `online` after
+`wandb login`.
 
 ## Benchmark/spec configuration
 
@@ -233,6 +248,22 @@ python examples/communication_ablation_sweep.py \
   --episodes 8 \
   --map-sizes 8 16 \
   --output-json logs/communication_ablation_sweep/latest.json \
+  --wandb \
+  --wandb-mode offline
+```
+
+Core training sweep:
+
+```bash
+python examples/core_training_sweep.py \
+  --algorithms mappo comm_mat tarmac \
+  --scenarios signal_hunt energy_grid pipeline_assembly \
+  --updates 3 \
+  --rollout-steps 64 \
+  --epochs 2 \
+  --minibatch 32 \
+  --eval-every 3 \
+  --eval-episodes 2 \
   --wandb \
   --wandb-mode offline
 ```

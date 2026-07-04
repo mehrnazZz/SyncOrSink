@@ -434,6 +434,22 @@ python examples/train_eval_workbench.py \
   --wandb-mode offline
 ```
 
+Core learned-policy training sweep:
+
+```bash
+python examples/core_training_sweep.py \
+  --algorithms mappo comm_mat tarmac \
+  --scenarios signal_hunt energy_grid pipeline_assembly \
+  --updates 3 \
+  --rollout-steps 64 \
+  --epochs 2 \
+  --minibatch 32 \
+  --eval-every 3 \
+  --eval-episodes 2 \
+  --wandb \
+  --wandb-mode offline
+```
+
 Communication necessity sweep:
 
 ```bash

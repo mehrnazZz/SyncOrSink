@@ -92,6 +92,26 @@ The workbench logs MAPPO update metrics and final reload-eval metrics to the
 same W&B run, then uploads `summary.json` and the saved checkpoint as an
 artifact when W&B is enabled.
 
+Cross-algorithm core sweep:
+
+```bash
+python examples/core_training_sweep.py \
+  --algorithms mappo comm_mat tarmac \
+  --scenarios signal_hunt energy_grid pipeline_assembly \
+  --updates 3 \
+  --rollout-steps 64 \
+  --epochs 2 \
+  --minibatch 32 \
+  --eval-every 3 \
+  --eval-episodes 2 \
+  --wandb \
+  --wandb-mode offline
+```
+
+This runner exercises the public MAPPO, Comm-MAT, and TarMAC training CLIs on
+the small core cases, saves one checkpoint per run, and writes a
+`suite_summary.json` under `logs/core_training_sweep/`.
+
 Small sanity run:
 
 ```bash
