@@ -46,6 +46,8 @@ class CommMATTrainConfig:
     signal_colocation_bonus: float = 0.0
     signal_colocation_radius: int = 2
     signal_comm_utility: float = 0.0
+    comm_send_target: float = 0.0
+    comm_send_target_coeff: float = 0.0
     # PPO hyperparameters
     updates: int = 20
     rollout_steps: int = 256
@@ -457,6 +459,11 @@ def train_comm_mat(cfg: CommMATTrainConfig):
                     + len_dist.entropy().mean()
                     + tok_dist.entropy().mean()
                 )
+                comm_target_loss = torch.tensor(0.0, device=device)
+                if not cfg.comm_disabled and cfg.comm_send_target_coeff > 0:
+                    target = torch.tensor(cfg.comm_send_target, dtype=torch.float32, device=device)
+                    send_prob = torch.sigmoid(out["send_logit"].squeeze(-1))
+                    comm_target_loss = (send_prob.mean() - target).pow(2)
 
                 # --- Policy loss (clipped surrogate) ---
                 ratio = (new_logp - logp_old[mb]).exp()
@@ -472,7 +479,12 @@ def train_comm_mat(cfg: CommMATTrainConfig):
                     (ret_b[mb] - v_clipped).pow(2),
                 ).mean()
 
-                loss = policy_loss + value_loss - cfg.entropy * entropy
+                loss = (
+                    policy_loss
+                    + value_loss
+                    - cfg.entropy * entropy
+                    + cfg.comm_send_target_coeff * comm_target_loss
+                )
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -503,6 +515,9 @@ def train_comm_mat(cfg: CommMATTrainConfig):
                 "rollout/mean_ep_len": mean_len,
                 "rollout/mean_ep_comm_tokens": float(np.mean(ep_comm)) if ep_comm else 0.0,
                 "rollout/comm_send_rate": comm_send_rate,
+                "comm/send_target": float(cfg.comm_send_target),
+                "comm/send_target_coeff": float(cfg.comm_send_target_coeff),
+                "comm/target_loss": float(comm_target_loss.item()) if not cfg.comm_disabled else 0.0,
             }
             for i in range(8):
                 log_payload[f"rollout/action_hist_{i}"] = int(action_hist[i])
@@ -603,6 +618,10 @@ def main():
     p.add_argument("--signal-colocation-bonus", type=float, default=0.0)
     p.add_argument("--signal-colocation-radius", type=int, default=2)
     p.add_argument("--signal-comm-utility", type=float, default=0.0)
+    p.add_argument("--comm-send-target", type=float, default=0.0,
+                   help="Optional target send probability for communication curriculum")
+    p.add_argument("--comm-send-target-coeff", type=float, default=0.0,
+                   help="Penalty coefficient for matching --comm-send-target")
     # PPO
     p.add_argument("--updates", type=int, default=20)
     p.add_argument("--rollout-steps", type=int, default=256)
@@ -664,6 +683,8 @@ def main():
         signal_colocation_bonus=args.signal_colocation_bonus,
         signal_colocation_radius=args.signal_colocation_radius,
         signal_comm_utility=args.signal_comm_utility,
+        comm_send_target=args.comm_send_target,
+        comm_send_target_coeff=args.comm_send_target_coeff,
         updates=args.updates,
         rollout_steps=args.rollout_steps,
         epochs=args.epochs,

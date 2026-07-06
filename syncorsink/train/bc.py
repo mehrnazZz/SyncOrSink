@@ -36,9 +36,11 @@ class BCConfig:
     fov_preset: str = "easy"
     max_steps: int = 300
     energy_preset: str = "easy"
+    obs_exploration_memory: bool = False
+    obs_exploration_age: bool = False
     # data collection
     demo_episodes: int = 100
-    oracle_type: str = "oracle_strong"  # "oracle" or "oracle_strong"
+    oracle_type: str = "oracle_strong"  # oracle, oracle_strong, or signal_hint_comm
     demo_path: str = "demos/signal_hunt_oracle.npz"
     # training
     epochs: int = 50
@@ -50,6 +52,7 @@ class BCConfig:
     comm_token_limit: int = 8
     comm_vocab_size: int = 32
     comm_loss_weight: float = 0.1  # low to avoid diluting action learning
+    comm_send_pos_weight: float = 0.0  # negative = auto-balance send positives
     # two-phase training
     two_phase: bool = False
     phase1_epochs: int = 30   # action-only epochs
@@ -80,6 +83,7 @@ def collect_demos(cfg: BCConfig):
         signal_hunt_oracle, signal_hunt_oracle_strong,
     )
     from syncorsink.policies.comm_wrapper import wrap_oracle_with_comm
+    from syncorsink.policies.local_oracle import local_signal_policy
 
     set_global_seeds(cfg.seed)
     env_cfg = SyncOrSinkConfig(
@@ -91,18 +95,27 @@ def collect_demos(cfg: BCConfig):
         energy_preset=cfg.energy_preset,
         comm_token_limit=cfg.comm_token_limit,
         token_vocab_size=cfg.comm_vocab_size,
+        obs_exploration_memory=cfg.obs_exploration_memory,
+        obs_exploration_age=cfg.obs_exploration_age,
     )
     env = SyncOrSinkEnv(env_cfg)
 
     oracle_map = {
-        "signal_hunt": {"oracle": signal_hunt_oracle, "oracle_strong": signal_hunt_oracle_strong},
+        "signal_hunt": {
+            "oracle": signal_hunt_oracle,
+            "oracle_strong": signal_hunt_oracle_strong,
+            "signal_hint": local_signal_policy,
+        },
         "energy_grid": {"oracle": energy_oracle, "oracle_strong": energy_oracle_strong},
         "pipeline_assembly": {"oracle": pipeline_oracle, "oracle_strong": pipeline_oracle_strong},
     }
-    base_type = cfg.oracle_type.replace("_comm", "")
-    oracle_fn = oracle_map[cfg.scenario][base_type](env)
-    if cfg.oracle_type.endswith("_comm"):
-        oracle_fn = wrap_oracle_with_comm(oracle_fn, env)
+    if cfg.oracle_type == "signal_hint_comm":
+        oracle_fn = local_signal_policy(env)
+    else:
+        base_type = cfg.oracle_type.replace("_comm", "")
+        oracle_fn = oracle_map[cfg.scenario][base_type](env)
+        if cfg.oracle_type.endswith("_comm"):
+            oracle_fn = wrap_oracle_with_comm(oracle_fn, env)
 
     all_obs = []
     all_actions = []
@@ -121,7 +134,11 @@ def collect_demos(cfg: BCConfig):
 
             # Store per-agent transitions
             for aid in range(env.num_agents):
-                flat = flatten_obs(obs[aid])
+                flat = flatten_obs(
+                    obs[aid],
+                    include_exploration_memory=cfg.obs_exploration_memory,
+                    include_exploration_age=cfg.obs_exploration_age,
+                )
                 act = int(actions[aid]["action"])
                 msg_tokens = actions[aid].get("message_tokens", [])
                 ep_obs.append(flat)
@@ -196,6 +213,8 @@ def collect_llm_demos(cfg: BCConfig, trace_path: str):
         max_steps=cfg.max_steps,
         energy_preset=cfg.energy_preset,
         comm_mode="text",
+        obs_exploration_memory=cfg.obs_exploration_memory,
+        obs_exploration_age=cfg.obs_exploration_age,
     )
     env = SyncOrSinkEnv(env_cfg)
 
@@ -250,7 +269,11 @@ def collect_llm_demos(cfg: BCConfig, trace_path: str):
                     words = msg_text.strip().split()[:cfg.comm_token_limit]
                     msg_tokens = [hash(w) % cfg.comm_vocab_size for w in words]
 
-                flat = flatten_obs(obs[aid])
+                flat = flatten_obs(
+                    obs[aid],
+                    include_exploration_memory=cfg.obs_exploration_memory,
+                    include_exploration_age=cfg.obs_exploration_age,
+                )
                 ep_obs.append(flat)
                 ep_actions.append(act)
                 ep_msgs.append(msg_tokens)
@@ -328,7 +351,7 @@ def _build_bc_model(obs_dim: int, cfg: BCConfig, device):
     ).to(device)
 
 
-def _compute_comm_loss(model, obs_b, msg_all, msg_lens, mb, cfg, device):
+def _compute_comm_loss(model, obs_b, msg_all, msg_lens, mb, cfg, device, send_pos_weight=None):
     """Compute communication loss (send + length + token content)."""
     _, send_logits, token_logits, len_logits = model(obs_b)
     msg_b = msg_all[mb].to(device)
@@ -336,7 +359,9 @@ def _compute_comm_loss(model, obs_b, msg_all, msg_lens, mb, cfg, device):
     send_target = (mlen_b > 0).float()
 
     send_loss = nn.functional.binary_cross_entropy_with_logits(
-        send_logits.squeeze(-1), send_target
+        send_logits.squeeze(-1),
+        send_target,
+        pos_weight=send_pos_weight,
     )
     len_loss = nn.functional.cross_entropy(len_logits, mlen_b)
 
@@ -353,6 +378,17 @@ def _compute_comm_loss(model, obs_b, msg_all, msg_lens, mb, cfg, device):
     return send_loss + len_loss + tok_loss
 
 
+def _resolve_send_pos_weight(msg_lens, cfg, device):
+    if cfg.comm_send_pos_weight > 0:
+        return torch.tensor(float(cfg.comm_send_pos_weight), dtype=torch.float32, device=device)
+    if cfg.comm_send_pos_weight < 0:
+        positives = int((msg_lens > 0).sum().item())
+        negatives = int((msg_lens <= 0).sum().item())
+        if positives > 0 and negatives > 0:
+            return torch.tensor(negatives / positives, dtype=torch.float32, device=device)
+    return None
+
+
 def _run_bc_epochs(model, optimizer, obs_all, act_all, msg_all, msg_lens,
                    cfg, device, epochs, phase_name, comm_weight,
                    wandb_run=None, epoch_offset=0):
@@ -360,6 +396,7 @@ def _run_bc_epochs(model, optimizer, obs_all, act_all, msg_all, msg_lens,
     action_loss_fn = nn.CrossEntropyLoss()
     N = obs_all.shape[0]
     idx = np.arange(N)
+    send_pos_weight = _resolve_send_pos_weight(msg_lens, cfg, device) if cfg.comm and comm_weight > 0 else None
 
     for epoch in range(epochs):
         np.random.shuffle(idx)
@@ -379,7 +416,16 @@ def _run_bc_epochs(model, optimizer, obs_all, act_all, msg_all, msg_lens,
                 a_loss = action_loss_fn(logits, act_b)
 
                 if comm_weight > 0:
-                    comm_loss = _compute_comm_loss(model, obs_b, msg_all, msg_lens, mb, cfg, device)
+                    comm_loss = _compute_comm_loss(
+                        model,
+                        obs_b,
+                        msg_all,
+                        msg_lens,
+                        mb,
+                        cfg,
+                        device,
+                        send_pos_weight=send_pos_weight,
+                    )
                     loss = a_loss + comm_weight * comm_loss
                     total_comm_loss += comm_loss.item()
                 else:
@@ -415,6 +461,8 @@ def _run_bc_epochs(model, optimizer, obs_all, act_all, msg_all, msg_lens,
                 "loss": avg_loss,
                 "action_loss": avg_a_loss,
                 "comm_loss": avg_c_loss,
+                "comm_send_pos_weight": float(send_pos_weight.item()) if send_pos_weight is not None else 0.0,
+                "lr": float(optimizer.param_groups[0]["lr"]),
                 "action_accuracy": acc,
             })
 
@@ -431,6 +479,8 @@ def _save_bc_model(model, obs_dim, cfg):
             "comm": cfg.comm,
             "comm_token_limit": cfg.comm_token_limit,
             "comm_vocab_size": cfg.comm_vocab_size,
+            "obs_exploration_memory": cfg.obs_exploration_memory,
+            "obs_exploration_age": cfg.obs_exploration_age,
         }, cfg.save)
         print(f"Saved model to {cfg.save}")
 
@@ -523,6 +573,7 @@ def train_bc_dagger(cfg: BCConfig):
         signal_hunt_oracle, signal_hunt_oracle_strong,
     )
     from syncorsink.policies.comm_wrapper import wrap_oracle_with_comm
+    from syncorsink.policies.local_oracle import local_signal_policy
 
     set_global_seeds(cfg.seed)
     device = resolve_device(cfg.device)
@@ -538,18 +589,27 @@ def train_bc_dagger(cfg: BCConfig):
         energy_preset=cfg.energy_preset,
         comm_token_limit=cfg.comm_token_limit,
         token_vocab_size=cfg.comm_vocab_size,
+        obs_exploration_memory=cfg.obs_exploration_memory,
+        obs_exploration_age=cfg.obs_exploration_age,
     )
     env = SyncOrSinkEnv(env_cfg)
 
     oracle_map = {
-        "signal_hunt": {"oracle": signal_hunt_oracle, "oracle_strong": signal_hunt_oracle_strong},
+        "signal_hunt": {
+            "oracle": signal_hunt_oracle,
+            "oracle_strong": signal_hunt_oracle_strong,
+            "signal_hint": local_signal_policy,
+        },
         "energy_grid": {"oracle": energy_oracle, "oracle_strong": energy_oracle_strong},
         "pipeline_assembly": {"oracle": pipeline_oracle, "oracle_strong": pipeline_oracle_strong},
     }
-    base_type = cfg.oracle_type.replace("_comm", "")
-    oracle_fn = oracle_map[cfg.scenario][base_type](env)
-    if cfg.oracle_type.endswith("_comm"):
-        oracle_fn = wrap_oracle_with_comm(oracle_fn, env)
+    if cfg.oracle_type == "signal_hint_comm":
+        oracle_fn = local_signal_policy(env)
+    else:
+        base_type = cfg.oracle_type.replace("_comm", "")
+        oracle_fn = oracle_map[cfg.scenario][base_type](env)
+        if cfg.oracle_type.endswith("_comm"):
+            oracle_fn = wrap_oracle_with_comm(oracle_fn, env)
 
     # Load initial demos
     data = np.load(cfg.demo_path)
@@ -604,7 +664,11 @@ def train_bc_dagger(cfg: BCConfig):
                     oracle_actions = oracle_fn(obs, info, {"step": step})
 
                     for aid in range(env.num_agents):
-                        flat = flatten_obs(obs[aid])
+                        flat = flatten_obs(
+                            obs[aid],
+                            include_exploration_memory=cfg.obs_exploration_memory,
+                            include_exploration_age=cfg.obs_exploration_age,
+                        )
                         act = int(oracle_actions[aid]["action"])
                         msg_tokens = oracle_actions[aid].get("message_tokens", [])
                         new_obs.append(flat)
@@ -615,7 +679,15 @@ def train_bc_dagger(cfg: BCConfig):
                     import torch as _torch
                     model_actions = {}
                     for aid in range(env.num_agents):
-                        flat_t = _torch.tensor(flatten_obs(obs[aid]), dtype=_torch.float32, device=device).unsqueeze(0)
+                        flat_t = _torch.tensor(
+                            flatten_obs(
+                                obs[aid],
+                                include_exploration_memory=cfg.obs_exploration_memory,
+                                include_exploration_age=cfg.obs_exploration_age,
+                            ),
+                            dtype=_torch.float32,
+                            device=device,
+                        ).unsqueeze(0)
                         with _torch.no_grad():
                             out = model(flat_t)
                         if cfg.comm:
@@ -702,6 +774,8 @@ def train_reward_model(cfg: BCConfig):
         env_kwargs["comm_token_limit"] = cfg.comm_token_limit
         env_kwargs["token_vocab_size"] = cfg.comm_vocab_size
         env_kwargs["max_messages"] = 8
+    env_kwargs["obs_exploration_memory"] = cfg.obs_exploration_memory
+    env_kwargs["obs_exploration_age"] = cfg.obs_exploration_age
     env_cfg = SyncOrSinkConfig(**env_kwargs)
     env = SyncOrSinkEnv(env_cfg)
 
@@ -722,7 +796,11 @@ def train_reward_model(cfg: BCConfig):
             actions = oracle_fn(obs, info, {"step": step})
             next_obs, rewards, done, truncated, info = env.step(actions)
             for aid in range(env.num_agents):
-                all_obs.append(flatten_obs(obs[aid]))
+                all_obs.append(flatten_obs(
+                    obs[aid],
+                    include_exploration_memory=cfg.obs_exploration_memory,
+                    include_exploration_age=cfg.obs_exploration_age,
+                ))
                 all_acts.append(int(actions[aid]["action"]))
                 all_rewards.append(float(rewards[aid]))
             obs = next_obs
@@ -788,9 +866,17 @@ def main():
     collect_p.add_argument("--fov-preset", default="easy")
     collect_p.add_argument("--max-steps", type=int, default=300)
     collect_p.add_argument("--energy-preset", default="easy")
+    collect_p.add_argument("--obs-exploration-memory", action=argparse.BooleanOptionalAction, default=False)
+    collect_p.add_argument("--obs-exploration-age", action=argparse.BooleanOptionalAction, default=False)
     collect_p.add_argument("--episodes", type=int, default=100)
     collect_p.add_argument("--oracle", default="oracle_strong",
-                           choices=["oracle", "oracle_strong", "oracle_comm", "oracle_strong_comm"])
+                           choices=[
+                               "oracle",
+                               "oracle_strong",
+                               "oracle_comm",
+                               "oracle_strong_comm",
+                               "signal_hint_comm",
+                           ])
     collect_p.add_argument("--comm-token-limit", type=int, default=8)
     collect_p.add_argument("--comm-vocab-size", type=int, default=32)
     collect_p.add_argument("--seed", type=int, default=0,
@@ -806,6 +892,8 @@ def main():
     collect_llm_p.add_argument("--fov-preset", default="easy")
     collect_llm_p.add_argument("--max-steps", type=int, default=300)
     collect_llm_p.add_argument("--energy-preset", default="easy")
+    collect_llm_p.add_argument("--obs-exploration-memory", action=argparse.BooleanOptionalAction, default=False)
+    collect_llm_p.add_argument("--obs-exploration-age", action=argparse.BooleanOptionalAction, default=False)
     collect_llm_p.add_argument("--comm-token-limit", type=int, default=8)
     collect_llm_p.add_argument("--comm-vocab-size", type=int, default=32)
     collect_llm_p.add_argument("--seed", type=int, default=0,
@@ -819,10 +907,14 @@ def main():
     train_p.add_argument("--batch-size", type=int, default=256)
     train_p.add_argument("--lr", type=float, default=1e-3)
     train_p.add_argument("--hidden-dim", type=int, default=128)
+    train_p.add_argument("--obs-exploration-memory", action=argparse.BooleanOptionalAction, default=False)
+    train_p.add_argument("--obs-exploration-age", action=argparse.BooleanOptionalAction, default=False)
     train_p.add_argument("--comm", action="store_true")
     train_p.add_argument("--comm-token-limit", type=int, default=8)
     train_p.add_argument("--comm-vocab-size", type=int, default=32)
     train_p.add_argument("--comm-loss-weight", type=float, default=0.1)
+    train_p.add_argument("--comm-send-pos-weight", type=float, default=0.0,
+                         help="Positive class weight for send BCE; negative auto-balances demos")
     train_p.add_argument("--two-phase", action="store_true", help="Two-phase training: action then comm")
     train_p.add_argument("--phase1-epochs", type=int, default=30)
     train_p.add_argument("--phase2-epochs", type=int, default=20)
@@ -844,8 +936,16 @@ def main():
     dagger_p.add_argument("--fov-preset", default="easy")
     dagger_p.add_argument("--max-steps", type=int, default=300)
     dagger_p.add_argument("--energy-preset", default="easy")
+    dagger_p.add_argument("--obs-exploration-memory", action=argparse.BooleanOptionalAction, default=False)
+    dagger_p.add_argument("--obs-exploration-age", action=argparse.BooleanOptionalAction, default=False)
     dagger_p.add_argument("--oracle", default="oracle_strong",
-                          choices=["oracle", "oracle_strong", "oracle_comm", "oracle_strong_comm"])
+                          choices=[
+                              "oracle",
+                              "oracle_strong",
+                              "oracle_comm",
+                              "oracle_strong_comm",
+                              "signal_hint_comm",
+                          ])
     dagger_p.add_argument("--rounds", type=int, default=3, help="Number of DAgger rounds")
     dagger_p.add_argument("--dagger-episodes", type=int, default=20, help="On-policy episodes per round")
     dagger_p.add_argument("--epochs", type=int, default=30)
@@ -856,6 +956,8 @@ def main():
     dagger_p.add_argument("--comm-token-limit", type=int, default=8)
     dagger_p.add_argument("--comm-vocab-size", type=int, default=32)
     dagger_p.add_argument("--comm-loss-weight", type=float, default=0.1)
+    dagger_p.add_argument("--comm-send-pos-weight", type=float, default=0.0,
+                          help="Positive class weight for send BCE; negative auto-balances demos")
     dagger_p.add_argument("--device", default="auto")
     dagger_p.add_argument("--seed", type=int, default=0,
                           help="Seed Python, NumPy, and Torch RNGs (default: 0)")
@@ -872,6 +974,8 @@ def main():
     reward_p.add_argument("--fov-preset", default="easy")
     reward_p.add_argument("--max-steps", type=int, default=300)
     reward_p.add_argument("--energy-preset", default="easy")
+    reward_p.add_argument("--obs-exploration-memory", action=argparse.BooleanOptionalAction, default=False)
+    reward_p.add_argument("--obs-exploration-age", action=argparse.BooleanOptionalAction, default=False)
     reward_p.add_argument("--episodes", type=int, default=100)
     reward_p.add_argument("--epochs", type=int, default=50)
     reward_p.add_argument("--batch-size", type=int, default=256)
@@ -895,6 +999,8 @@ def main():
             fov_preset=args.fov_preset,
             max_steps=args.max_steps,
             energy_preset=args.energy_preset,
+            obs_exploration_memory=args.obs_exploration_memory,
+            obs_exploration_age=args.obs_exploration_age,
             demo_episodes=args.episodes,
             oracle_type=args.oracle,
             comm_token_limit=args.comm_token_limit,
@@ -912,6 +1018,8 @@ def main():
             fov_preset=args.fov_preset,
             max_steps=args.max_steps,
             energy_preset=args.energy_preset,
+            obs_exploration_memory=args.obs_exploration_memory,
+            obs_exploration_age=args.obs_exploration_age,
             comm_token_limit=args.comm_token_limit,
             comm_vocab_size=args.comm_vocab_size,
             seed=args.seed,
@@ -925,10 +1033,13 @@ def main():
             batch_size=args.batch_size,
             lr=args.lr,
             hidden_dim=args.hidden_dim,
+            obs_exploration_memory=args.obs_exploration_memory,
+            obs_exploration_age=args.obs_exploration_age,
             comm=args.comm,
             comm_token_limit=args.comm_token_limit,
             comm_vocab_size=args.comm_vocab_size,
             comm_loss_weight=args.comm_loss_weight,
+            comm_send_pos_weight=args.comm_send_pos_weight,
             two_phase=args.two_phase,
             phase1_epochs=args.phase1_epochs,
             phase2_epochs=args.phase2_epochs,
@@ -951,6 +1062,8 @@ def main():
             fov_preset=args.fov_preset,
             max_steps=args.max_steps,
             energy_preset=args.energy_preset,
+            obs_exploration_memory=args.obs_exploration_memory,
+            obs_exploration_age=args.obs_exploration_age,
             oracle_type=args.oracle,
             demo_path=args.demo_path,
             dagger_rounds=args.rounds,
@@ -963,6 +1076,7 @@ def main():
             comm_token_limit=args.comm_token_limit,
             comm_vocab_size=args.comm_vocab_size,
             comm_loss_weight=args.comm_loss_weight,
+            comm_send_pos_weight=args.comm_send_pos_weight,
             device=args.device,
             seed=args.seed,
             save=args.save,
@@ -980,6 +1094,8 @@ def main():
             fov_preset=args.fov_preset,
             max_steps=args.max_steps,
             energy_preset=args.energy_preset,
+            obs_exploration_memory=args.obs_exploration_memory,
+            obs_exploration_age=args.obs_exploration_age,
             demo_episodes=args.episodes,
             epochs=args.epochs,
             batch_size=args.batch_size,

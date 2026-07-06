@@ -37,6 +37,99 @@ def test_run_episodes_uses_energy_success_flag():
     assert episodes[0].success is False
 
 
+def test_signal_trajectory_audit_failure_classifier():
+    from syncorsink.eval.trajectory_audit import signal_failure_type
+
+    assert signal_failure_type({"success": True, "signal": {}}) == "success"
+    assert signal_failure_type({
+        "success": False,
+        "signal": {"decoy_scans": 1, "clues_found": 0, "target_scans": 0},
+    }) == "decoy_scan"
+    assert signal_failure_type({
+        "success": False,
+        "signal": {"decoy_scans": 0, "clues_found": 1, "target_scans": 0},
+    }) == "no_target_scan"
+    assert signal_failure_type({
+        "success": False,
+        "signal": {"decoy_scans": 0, "clues_found": 1, "target_scans": 1, "unique_target_scanners": 1},
+    }) == "solo_target_scan"
+    assert signal_failure_type({
+        "success": False,
+        "signal": {"decoy_scans": 0, "clues_found": 1, "target_scans": 2, "unique_target_scanners": 2},
+    }) == "unsynchronized_target_scan"
+
+
+def test_signal_trajectory_audit_oracle_smoke():
+    from syncorsink.envs import SyncOrSinkConfig
+    from syncorsink.eval.trajectory_audit import (
+        AuditPolicySpec,
+        make_oracle_policy_factory,
+        run_trajectory_audit,
+    )
+
+    result = run_trajectory_audit(
+        SyncOrSinkConfig(
+            scenario="signal_hunt",
+            map_size=8,
+            num_agents=2,
+            fov_preset="easy",
+            max_steps=60,
+            comm_token_limit=8,
+            token_vocab_size=32,
+            max_messages=8,
+        ),
+        [
+            AuditPolicySpec(
+                label="oracle",
+                factory=make_oracle_policy_factory("signal_hunt", "oracle_strong_comm"),
+            )
+        ],
+        episodes=1,
+        seed=0,
+    )
+
+    policy = result["policies"][0]
+    assert policy["summary"]["success_rate"] == 1.0
+    assert policy["diagnostics"]["failure_type_counts"] == {"success": 1}
+    assert policy["episodes"][0]["signal"]["target_scans"] >= 1
+
+
+def test_signal_hint_comm_audit_avoids_decoy_loops():
+    from syncorsink.envs import SyncOrSinkConfig
+    from syncorsink.eval.trajectory_audit import (
+        AuditPolicySpec,
+        make_oracle_policy_factory,
+        run_trajectory_audit,
+    )
+
+    result = run_trajectory_audit(
+        SyncOrSinkConfig(
+            scenario="signal_hunt",
+            map_size=8,
+            num_agents=2,
+            fov_preset="easy",
+            max_steps=60,
+            comm_token_limit=8,
+            token_vocab_size=32,
+            max_messages=8,
+        ),
+        [
+            AuditPolicySpec(
+                label="signal_hint_comm",
+                factory=make_oracle_policy_factory("signal_hunt", "signal_hint_comm"),
+            )
+        ],
+        episodes=16,
+        seed=3000,
+    )
+
+    policy = result["policies"][0]
+    assert policy["summary"]["success_rate"] == 1.0
+    assert policy["diagnostics"]["failure_type_counts"] == {"success": 16}
+    assert policy["diagnostics"]["signal"]["avg_decoy_scans"] <= 1.0
+    assert policy["diagnostics"]["signal"]["avg_unique_target_scanners"] == 2.0
+
+
 def test_eval_spec_loads_extended_benchmark_fields(tmp_path):
     from syncorsink.eval.spec import load_spec
     from syncorsink.eval.spec_validate import validate_spec

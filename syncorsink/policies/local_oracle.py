@@ -12,7 +12,10 @@ from syncorsink.envs.maps import (
     TILE_NODE,
     TILE_CLUE,
     TILE_TARGET,
+    TILE_WATER,
+    TILE_BEACON,
 )
+from syncorsink.policies.pathing import shortest_path
 
 
 def _local_grid_as_ids(local_grid: np.ndarray) -> np.ndarray:
@@ -542,46 +545,202 @@ def local_signal_policy(env):
     """
     Scenario-specific local policy for signal hunt using shared map + hints.
     """
-    passable = {0, TILE_CLUE, TILE_TARGET}
+    passable = {0, TILE_CLUE, TILE_TARGET, TILE_WATER, TILE_BEACON}
     shared_mem: dict[tuple[int, int], int] = {}
-    constraints = {"water": set(), "beacon": set(), "parity": None, "quadrant": None}
+    claimed_clues: set[tuple[int, int]] = set()
+    rejected_targets: set[tuple[int, int]] = set()
+    def _new_constraints():
+        return {
+            "exact_targets": set(),
+            "near": [],
+            "parity": None,
+            "quadrant": None,
+            "quadrant_size": env.map_size,
+            "x_parity": None,
+            "y_parity": None,
+        }
 
-    def _parse_goal_hint_tokens(raw):
+    constraints = _new_constraints()
+    last_sent: dict[int, list[int]] = {}
+    sent_messages: dict[int, set[tuple[int, ...]]] = {}
+    last_target_interact_pos: dict[int, tuple[int, int]] = {}
+    last_step = -1
+
+    def _clip_msg(tokens: list[int]) -> list[int]:
+        return [max(0, min(env.token_vocab_size - 1, int(t))) for t in tokens][: env.comm_token_limit]
+
+    def _add_exact_target(x: int, y: int):
+        if 0 <= x < env.map_size and 0 <= y < env.map_size:
+            constraints["exact_targets"].add((x, y))
+
+    def _signal_segments(raw) -> list[list[int]]:
         if raw is None:
-            return
+            return []
         try:
             tokens = [int(v) for v in raw.tolist()]
         except AttributeError:
             tokens = [int(v) for v in raw]
+        segments: list[list[int]] = []
         i = 0
         while i < len(tokens):
             code = tokens[i]
             if code < 0:
                 break
-            if code == 21 and i + 4 < len(tokens):
-                constraints["water"].add("near")
-                i += 5
-            elif code == 22 and i + 5 < len(tokens):
-                constraints["beacon"].add("east2")
-                i += 6
-            elif code == 23 and i + 3 < len(tokens):
-                constraints["parity"] = int(tokens[i + 1])
+            length = {21: 5, 22: 6, 23: 4, 24: 2, 25: 2, 26: 3}.get(code)
+            if length is None or i + length > len(tokens):
+                break
+            segment = tokens[i: i + length]
+            segments.append(segment)
+            i += length
+        return segments
+
+    def _parse_signal_tokens(raw):
+        for segment in _signal_segments(raw):
+            code = segment[0]
+            if code == 21:
+                obj = int(segment[1])
+                ox, oy = int(segment[2]), int(segment[3])
+                dist = int(segment[4])
+                if 0 <= ox < env.map_size and 0 <= oy < env.map_size:
+                    item = (obj, (ox, oy), dist)
+                    if item not in constraints["near"]:
+                        constraints["near"].append(item)
+            elif code == 22:
+                ox, oy = int(segment[2]), int(segment[3])
+                dx, dy = int(segment[4]), int(segment[5])
+                _add_exact_target(ox + dx, oy + dy)
+            elif code == 23:
+                constraints["parity"] = int(segment[1])
                 for name, value in {"NW": 0, "NE": 1, "SW": 2, "SE": 3}.items():
-                    if int(tokens[i + 2]) == value:
+                    if int(segment[2]) == value:
                         constraints["quadrant"] = name
                         break
-                i += 4
-            elif code == 24 and i + 1 < len(tokens):
-                i += 2
-            elif code == 25 and i + 1 < len(tokens):
-                i += 2
+                constraints["quadrant_size"] = int(segment[3])
+            elif code == 24:
+                constraints["x_parity"] = int(segment[1])
+            elif code == 25:
+                constraints["y_parity"] = int(segment[1])
+            elif code == 26:
+                _add_exact_target(int(segment[1]), int(segment[2]))
             else:
                 break
 
+    def _parse_inbox(ob: dict):
+        tokens = ob.get("messages_tokens")
+        if tokens is None:
+            return
+        for msg in tokens:
+            _parse_signal_tokens(msg)
+
+    def _record_feedback(info: dict):
+        events = (info or {}).get("events", {})
+        if not isinstance(events, dict):
+            return
+        for aid_raw, agent_events in events.items():
+            try:
+                aid = int(aid_raw)
+            except (TypeError, ValueError):
+                aid = aid_raw
+            if not isinstance(agent_events, list):
+                continue
+            for event in agent_events:
+                if not isinstance(event, dict):
+                    continue
+                if event.get("event") == "decoy_scan" and aid in last_target_interact_pos:
+                    rejected_targets.add(last_target_interact_pos[aid])
+
+    def _in_quadrant(pos: tuple[int, int]) -> bool:
+        q = constraints["quadrant"]
+        if q is None:
+            return True
+        x, y = pos
+        half = float(constraints.get("quadrant_size") or env.map_size) / 2.0
+        if q == "NW":
+            return x < half and y < half
+        if q == "NE":
+            return x >= half and y < half
+        if q == "SW":
+            return x < half and y >= half
+        return x >= half and y >= half
+
+    def _matches_constraints(pos: tuple[int, int]) -> bool:
+        exact_targets = constraints["exact_targets"]
+        if exact_targets and pos not in exact_targets:
+            return False
+        if constraints["parity"] is not None and (pos[0] + pos[1]) % 2 != constraints["parity"]:
+            return False
+        if constraints["x_parity"] is not None and pos[0] % 2 != constraints["x_parity"]:
+            return False
+        if constraints["y_parity"] is not None and pos[1] % 2 != constraints["y_parity"]:
+            return False
+        if not _in_quadrant(pos):
+            return False
+        for _obj, near_pos, dist in constraints["near"]:
+            if abs(pos[0] - near_pos[0]) + abs(pos[1] - near_pos[1]) > dist:
+                return False
+        return True
+
+    def _candidate_targets() -> set[tuple[int, int]]:
+        exact_targets = set(constraints["exact_targets"]) - rejected_targets
+        observed = {
+            pos for pos, tile in shared_mem.items()
+            if tile == TILE_TARGET and pos not in rejected_targets
+        }
+        if exact_targets:
+            return exact_targets
+        return {pos for pos in observed if _matches_constraints(pos)}
+
+    def _team_candidate(candidates: set[tuple[int, int]]) -> tuple[int, int] | None:
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda pos: (
+                sum(abs(pos[0] - ax) + abs(pos[1] - ay) for ax, ay in env.agent_positions),
+                pos[1],
+                pos[0],
+            ),
+        )
+
+    def _message_for_agent(aid: int, ob: dict) -> list[int]:
+        exact_targets = sorted(constraints["exact_targets"])
+        if exact_targets:
+            tx, ty = exact_targets[0]
+            return _clip_msg([26, tx, ty])
+        seen = sent_messages.setdefault(aid, set())
+        for segment in reversed(_signal_segments(ob.get("goal_hint"))):
+            key = tuple(segment)
+            if key not in seen:
+                seen.add(key)
+                return _clip_msg(segment)
+        return []
+
+    def _move_toward(agent_id: int, pos: tuple[int, int], goals: set[tuple[int, int]], mem: dict):
+        if not goals:
+            return None
+        blocked_positions = {p for idx, p in enumerate(env.agent_positions) if idx != agent_id and p not in goals}
+        dx, dy, reached = shortest_path(env.grid, pos, goals, blocked_positions=blocked_positions)
+        if reached is not None:
+            return dx, dy
+        return _bfs_next_step(pos, goals, passable, mem)
+
     def _policy(obs: Dict[int, dict], info: dict, state: dict):
+        nonlocal constraints, last_step
+        step = int(state.get("step", 0))
+        if step == 0 and last_step != 0:
+            shared_mem.clear()
+            claimed_clues.clear()
+            rejected_targets.clear()
+            constraints = _new_constraints()
+            last_sent.clear()
+            sent_messages.clear()
+            last_target_interact_pos.clear()
+        last_step = step
+        _record_feedback(info)
         actions = {}
         for aid, ob in obs.items():
-            _parse_goal_hint_tokens(ob.get("goal_hint"))
+            _parse_signal_tokens(ob.get("goal_hint"))
+            _parse_inbox(ob)
             local_ids = _local_grid_as_ids(ob["local_grid"])
             px, py = int(ob["self_pos"][0]), int(ob["self_pos"][1])
 
@@ -595,41 +754,60 @@ def local_signal_policy(env):
                     shared_mem[(gx, gy)] = tile
 
             center = local_ids[cy, cx]
-            if center in (TILE_CLUE, TILE_TARGET):
-                actions[aid] = {"action": env.ACTION_INTERACT, "message_tokens": []}
+            message = _message_for_agent(aid, ob)
+            send = message and message != last_sent.get(aid)
+            if send:
+                last_sent[aid] = message
+            else:
+                message = []
+
+            exact_targets = set(constraints["exact_targets"])
+            candidate_targets = _candidate_targets()
+            unclaimed_clues = {
+                pos for pos, tile in shared_mem.items()
+                if tile == TILE_CLUE and pos not in claimed_clues
+            }
+            frontier = _frontier_goals(shared_mem, passable)
+            safe_targets = exact_targets or (candidate_targets if len(candidate_targets) == 1 else set())
+            commit_targets: set[tuple[int, int]] = set()
+            if not safe_targets and not unclaimed_clues and not frontier:
+                candidate = _team_candidate(candidate_targets)
+                if candidate is not None:
+                    commit_targets = {candidate}
+            scan_targets = safe_targets | commit_targets
+
+            if center == TILE_CLUE and (px, py) not in claimed_clues:
+                claimed_clues.add((px, py))
+                actions[aid] = {"action": env.ACTION_INTERACT, "message_tokens": message}
+                last_target_interact_pos.pop(aid, None)
+                continue
+            if center == TILE_TARGET and (px, py) in scan_targets:
+                actions[aid] = {"action": env.ACTION_INTERACT, "message_tokens": message}
+                last_target_interact_pos[aid] = (px, py)
                 continue
 
-            # if target known from shared map, go there
-            goals = {pos for pos, t in shared_mem.items() if t == TILE_TARGET}
-            if not goals:
-                goals = {pos for pos, t in shared_mem.items() if t == TILE_CLUE}
-            # apply weak constraints when target unknown
-            if not goals and constraints["quadrant"] is not None:
-                q = constraints["quadrant"]
-                def in_quad(p):
-                    x, y = p
-                    half = env.map_size / 2
-                    if q == "NW":
-                        return x < half and y < half
-                    if q == "NE":
-                        return x >= half and y < half
-                    if q == "SW":
-                        return x < half and y >= half
-                    return x >= half and y >= half
-                goals = {pos for pos, t in shared_mem.items() if t in (TILE_CLUE, TILE_TARGET) and in_quad(pos)}
+            if safe_targets:
+                goals = safe_targets
+            elif unclaimed_clues:
+                goals = unclaimed_clues
+            elif commit_targets:
+                goals = commit_targets
+            else:
+                goals = set()
 
             step_delta = None
             if goals:
-                step_delta = _bfs_next_step((px, py), goals, passable, shared_mem)
+                step_delta = _move_toward(aid, (px, py), goals, shared_mem)
             if step_delta is None:
-                frontier = _frontier_goals(shared_mem, passable)
                 if frontier:
                     step_delta = _bfs_next_step((px, py), frontier, passable, shared_mem)
             if step_delta is None:
-                actions[aid] = {"action": env.ACTION_STAY, "message_tokens": []}
+                actions[aid] = {"action": env.ACTION_STAY, "message_tokens": message}
+                last_target_interact_pos.pop(aid, None)
             else:
                 dx, dy = step_delta
-                actions[aid] = {"action": _move_from_delta(dx, dy), "message_tokens": []}
+                actions[aid] = {"action": _move_from_delta(dx, dy), "message_tokens": message}
+                last_target_interact_pos.pop(aid, None)
         return actions
 
     return _policy

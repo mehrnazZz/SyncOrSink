@@ -76,6 +76,32 @@ TRAIN_SCRIPTS = {
     "tarmac": "examples/tarmac_train.py",
 }
 
+SCENARIO_SHAPING_ARGS = {
+    "signal_hunt": [
+        "--signal-shaping",
+        "--signal-shaping-scale",
+        "0.05",
+        "--signal-scan-bonus",
+        "0.05",
+        "--signal-joint-scan-bonus",
+        "1.0",
+        "--signal-colocation-bonus",
+        "0.25",
+        "--signal-comm-utility",
+        "0.05",
+    ],
+    "energy_grid": [
+        "--energy-shaping",
+        "--energy-shaping-scale",
+        "0.05",
+    ],
+    "pipeline_assembly": [
+        "--pipeline-shaping",
+        "--pipeline-shaping-scale",
+        "0.05",
+    ],
+}
+
 
 def build_command(
     *,
@@ -134,8 +160,33 @@ def build_command(
         cmd.extend(["--comm", "--critic-mode", args.mappo_critic_mode])
         if args.mappo_shared_actor:
             cmd.append("--shared-actor")
+    cmd.extend(_learning_profile_args(args.learning_profile, algorithm, case))
     if args.wandb:
         cmd.append("--wandb")
+    return cmd
+
+
+def _learning_profile_args(profile: str, algorithm: str, case: ScenarioCase) -> list[str]:
+    if profile == "bare":
+        return []
+
+    cmd = list(SCENARIO_SHAPING_ARGS.get(case.scenario, []))
+    if profile == "shaped":
+        return cmd
+    if profile != "comm_curriculum":
+        raise ValueError(f"Unknown learning profile: {profile}")
+
+    if algorithm in {"mappo", "comm_mat"}:
+        cmd.extend([
+            "--comm-cost",
+            "0.0",
+            "--comm-send-target",
+            "0.25",
+            "--comm-send-target-coeff",
+            "0.05",
+        ])
+    elif algorithm == "tarmac":
+        cmd.extend(["--attn-entropy-coeff", "0.01"])
     return cmd
 
 
@@ -202,6 +253,7 @@ def run_suite(args) -> dict:
             "eval_episodes": args.eval_episodes,
             "device": args.device,
             "seeds": args.seeds,
+            "learning_profile": args.learning_profile,
             "wandb": args.wandb,
             "wandb_mode": args.wandb_mode,
             "wandb_project": args.wandb_project,
@@ -440,6 +492,12 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--device", default="cpu", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument("--seed", type=int, default=None, help="Single-seed alias for --seeds")
     parser.add_argument("--seeds", nargs="+", type=int, default=None)
+    parser.add_argument(
+        "--learning-profile",
+        default="bare",
+        choices=["bare", "shaped", "comm_curriculum"],
+        help="Training aids to apply before benchmark evaluation; bare leaves trainers unchanged",
+    )
     parser.add_argument("--mappo-critic-mode", default="central", choices=["local", "central"])
     parser.add_argument("--mappo-shared-actor", action="store_true")
     parser.add_argument("--wandb", action="store_true")

@@ -68,6 +68,58 @@ def test_core_training_sweep_seed_alias_merges_with_seeds():
     assert args.seeds == [0, 1, 2]
 
 
+def test_core_training_sweep_comm_curriculum_profile_adds_training_aids(tmp_path):
+    from examples.core_training_sweep import parse_args, run_suite
+
+    args = parse_args([
+        "--algorithms",
+        "mappo",
+        "comm_mat",
+        "tarmac",
+        "--scenarios",
+        "signal_hunt",
+        "energy_grid",
+        "pipeline_assembly",
+        "--updates",
+        "1",
+        "--rollout-steps",
+        "8",
+        "--epochs",
+        "1",
+        "--minibatch",
+        "8",
+        "--eval-every",
+        "1",
+        "--eval-episodes",
+        "1",
+        "--seeds",
+        "0",
+        "--learning-profile",
+        "comm_curriculum",
+        "--output-dir",
+        str(tmp_path / "runs"),
+        "--run-name",
+        "curriculum",
+        "--dry-run",
+    ])
+
+    payload = run_suite(args)
+    commands = {
+        (run["algorithm"], run["scenario"]): run["command"]
+        for run in payload["runs"]
+    }
+
+    assert payload["config"]["learning_profile"] == "comm_curriculum"
+    assert "--signal-shaping" in commands[("mappo", "signal_hunt")]
+    assert "--energy-shaping" in commands[("comm_mat", "energy_grid")]
+    assert "--pipeline-shaping" in commands[("tarmac", "pipeline_assembly")]
+    assert "--comm-send-target" in commands[("mappo", "signal_hunt")]
+    assert "--comm-send-target" in commands[("comm_mat", "pipeline_assembly")]
+    assert "--comm-send-target" not in commands[("tarmac", "signal_hunt")]
+    assert "--attn-entropy-coeff" in commands[("tarmac", "signal_hunt")]
+    assert commands[("mappo", "signal_hunt")].count("--comm-cost") == 1
+
+
 def test_core_training_sweep_parses_wandb_failures(tmp_path):
     from examples.core_training_sweep import _parse_wandb_record
 

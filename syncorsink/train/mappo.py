@@ -47,6 +47,8 @@ class MAPPOConfig:
     signal_colocation_bonus: float = 0.0
     signal_colocation_radius: int = 2
     signal_comm_utility: float = 0.0
+    comm_send_target: float = 0.0
+    comm_send_target_coeff: float = 0.0
     # PPO hyperparameters
     updates: int = 20
     rollout_steps: int = 256
@@ -78,10 +80,22 @@ class MAPPOConfig:
     wandb_run: Optional[str] = None
     # checkpointing
     save: Optional[str] = None
+    save_best: Optional[str] = None
     load: Optional[str] = None
     save_every: int = 5
     eval_every: int = 10
     eval_episodes: int = 5
+    eval_action_mode: str = "argmax"
+    eval_action_temperature: float = 1.0
+    eval_send_mode: str = "threshold"
+    eval_send_threshold: float = 0.5
+    eval_token_mode: str = "argmax"
+    eval_token_temperature: float = 1.0
+    eval_length_mode: str = "argmax"
+    eval_length_temperature: float = 1.0
+    # observation memory
+    obs_exploration_memory: bool = False
+    obs_exploration_age: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +106,17 @@ def _flatten_array(arr) -> np.ndarray:
     return np.asarray(arr, dtype=np.float32).reshape(-1)
 
 
-def flatten_obs(obs_agent: dict) -> np.ndarray:
+def flatten_obs(
+    obs_agent: dict,
+    *,
+    include_exploration_memory: bool = False,
+    include_exploration_age: bool = False,
+) -> np.ndarray:
+    memory_parts: list[np.ndarray] = []
+    if include_exploration_memory:
+        memory_parts.append(_flatten_array(obs_agent.get("explored_mask", np.zeros((1,), dtype=np.float32))))
+    if include_exploration_age:
+        memory_parts.append(_flatten_array(obs_agent.get("explored_age", np.zeros((1,), dtype=np.float32))))
     parts = [
         _flatten_array(obs_agent.get("local_grid")),
         _flatten_array(obs_agent.get("inventory", np.array([0], dtype=np.float32))),
@@ -103,14 +127,28 @@ def flatten_obs(obs_agent: dict) -> np.ndarray:
         _flatten_array(obs_agent.get("messages_tokens", np.zeros((1, 1), dtype=np.float32))),
         _flatten_array(obs_agent.get("message_from", np.zeros((1,), dtype=np.float32))),
         _flatten_array(obs_agent.get("goal_hint", np.zeros((1,), dtype=np.float32))),
+        *memory_parts,
         _flatten_array(obs_agent.get("action_mask", np.ones((8,), dtype=np.float32))),
     ]
     return np.concatenate(parts, axis=0)
 
 
-def build_batch_obs(obs: dict, num_agents: int) -> np.ndarray:
+def build_batch_obs(
+    obs: dict,
+    num_agents: int,
+    *,
+    include_exploration_memory: bool = False,
+    include_exploration_age: bool = False,
+) -> np.ndarray:
     """Return (num_agents, obs_dim) array of flattened per-agent observations."""
-    return np.stack([flatten_obs(obs[aid]) for aid in range(num_agents)])
+    return np.stack([
+        flatten_obs(
+            obs[aid],
+            include_exploration_memory=include_exploration_memory,
+            include_exploration_age=include_exploration_age,
+        )
+        for aid in range(num_agents)
+    ])
 
 
 def action_mask_from_flat_obs(obs_tensor: torch.Tensor, action_dim: int = 8) -> torch.Tensor:
@@ -200,29 +238,60 @@ class MAPPOCheckpointPolicy:
         device: torch.device,
         deterministic: bool = True,
         send_threshold: float = 0.5,
+        action_mode: str | None = None,
+        action_temperature: float = 1.0,
+        send_mode: str | None = None,
+        token_mode: str | None = None,
+        token_temperature: float = 1.0,
+        length_mode: str | None = None,
+        length_temperature: float = 1.0,
+        sample_seed: int = 0,
     ):
         self.actors = actors
         self.cfg = cfg
         self.device = device
         self.deterministic = deterministic
         self.send_threshold = send_threshold
+        self.action_mode = action_mode or ("argmax" if deterministic else "sample")
+        self.action_temperature = action_temperature
+        self.send_mode = send_mode or ("threshold" if deterministic else "sample")
+        self.token_mode = token_mode or ("argmax" if deterministic else "sample")
+        self.token_temperature = token_temperature
+        self.length_mode = length_mode or ("argmax" if deterministic else "sample")
+        self.length_temperature = length_temperature
+        self.sample_seed = int(sample_seed)
+        self._rng = torch.Generator(device="cpu")
+        self.reset(seed=self.sample_seed)
         for actor in self.actors:
             actor.eval()
 
     def reset(self, *args, **kwargs):
+        seed = kwargs.get("seed")
+        episode = kwargs.get("episode")
+        if seed is None:
+            seed = self.sample_seed + int(episode or 0)
+        self._rng.manual_seed(int(seed))
         return None
 
     def metadata(self) -> dict:
         return {
             "algorithm": "mappo",
             "deterministic": self.deterministic,
+            "action_mode": self.action_mode,
+            "action_temperature": self.action_temperature,
+            "send_mode": self.send_mode,
+            "send_threshold": self.send_threshold,
+            "token_mode": self.token_mode,
+            "token_temperature": self.token_temperature,
+            "length_mode": self.length_mode,
+            "length_temperature": self.length_temperature,
             "comm": self.cfg.comm,
             "shared_actor": self.cfg.shared_actor or len(self.actors) == 1,
         }
 
     def __call__(self, obs: dict, info: dict, state: dict) -> dict[int, dict]:
         num_agents = len(obs)
-        obs_batch = build_batch_obs(obs, num_agents)
+        obs_batch = build_batch_obs(obs, num_agents, **_obs_flatten_kwargs(self.cfg))
         obs_tensor = torch.tensor(obs_batch, dtype=torch.float32, device=self.device)
         action_mask = action_mask_from_flat_obs(obs_tensor)
         with torch.no_grad():
@@ -237,20 +306,30 @@ class MAPPOCheckpointPolicy:
         if self.cfg.comm:
             logits, send_logits, token_logits, len_logits = actor_out
             logits = mask_action_logits(logits, action_mask)
-            if self.deterministic:
-                acts = torch.argmax(logits, dim=-1)
+            acts = _select_categorical(
+                logits,
+                mode=self.action_mode,
+                temperature=self.action_temperature,
+                generator=self._rng,
+            )
+            if self.send_mode == "threshold":
                 send = (torch.sigmoid(send_logits.squeeze(-1)) > self.send_threshold).long()
-                token_samples = torch.argmax(token_logits, dim=-1)
-                len_samples = torch.argmax(len_logits, dim=-1)
+            elif self.send_mode == "sample":
+                send = _sample_bernoulli(send_logits.squeeze(-1), generator=self._rng).long()
             else:
-                action_dist = torch.distributions.Categorical(logits=logits)
-                send_dist = torch.distributions.Bernoulli(logits=send_logits.squeeze(-1))
-                token_dist = torch.distributions.Categorical(logits=token_logits)
-                len_dist = torch.distributions.Categorical(logits=len_logits)
-                acts = action_dist.sample()
-                send = send_dist.sample().long()
-                token_samples = token_dist.sample()
-                len_samples = len_dist.sample()
+                raise ValueError(f"Unknown send_mode: {self.send_mode}")
+            token_samples = _select_categorical(
+                token_logits,
+                mode=self.token_mode,
+                temperature=self.token_temperature,
+                generator=self._rng,
+            )
+            len_samples = _select_categorical(
+                len_logits,
+                mode=self.length_mode,
+                temperature=self.length_temperature,
+                generator=self._rng,
+            )
             actions = {}
             for aid in range(num_agents):
                 if int(send[aid].item()) == 1 and int(len_samples[aid].item()) > 0:
@@ -261,11 +340,12 @@ class MAPPOCheckpointPolicy:
             return actions
 
         logits = mask_action_logits(actor_out, action_mask)
-        if self.deterministic:
-            acts = torch.argmax(logits, dim=-1)
-        else:
-            dist = torch.distributions.Categorical(logits=logits)
-            acts = dist.sample()
+        acts = _select_categorical(
+            logits,
+            mode=self.action_mode,
+            temperature=self.action_temperature,
+            generator=self._rng,
+        )
         return {
             aid: {"action": int(acts[aid].item()), "message_tokens": []}
             for aid in range(num_agents)
@@ -280,6 +360,14 @@ def load_mappo_checkpoint_policy(
     deterministic: bool = True,
     device: str | torch.device | None = None,
     sample_seed: int = 0,
+    send_threshold: float = 0.5,
+    action_mode: str | None = None,
+    action_temperature: float = 1.0,
+    send_mode: str | None = None,
+    token_mode: str | None = None,
+    token_temperature: float = 1.0,
+    length_mode: str | None = None,
+    length_temperature: float = 1.0,
 ) -> MAPPOCheckpointPolicy:
     ckpt = torch.load(path, map_location="cpu")
     if cfg is None:
@@ -289,7 +377,7 @@ def load_mappo_checkpoint_policy(
 
     device_obj = resolve_device(str(device or cfg.device))
     sample_obs, _ = env.reset(seed=sample_seed)
-    sample_obs_dim = int(flatten_obs(sample_obs[0]).shape[0])
+    sample_obs_dim = int(flatten_obs(sample_obs[0], **_obs_flatten_kwargs(cfg)).shape[0])
     obs_dim = int(ckpt.get("obs_dim", sample_obs_dim))
     if obs_dim != sample_obs_dim:
         raise ValueError(
@@ -328,7 +416,47 @@ def load_mappo_checkpoint_policy(
         policy_cfg,
         device=device_obj,
         deterministic=deterministic,
+        send_threshold=send_threshold,
+        action_mode=action_mode,
+        action_temperature=action_temperature,
+        send_mode=send_mode,
+        token_mode=token_mode,
+        token_temperature=token_temperature,
+        length_mode=length_mode,
+        length_temperature=length_temperature,
+        sample_seed=sample_seed,
     )
+
+
+def _select_categorical(
+    logits: torch.Tensor,
+    *,
+    mode: str,
+    temperature: float = 1.0,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    if mode == "argmax":
+        return torch.argmax(logits, dim=-1)
+    if mode == "sample":
+        temp = max(float(temperature), 1e-6)
+        probs = torch.softmax(logits / temp, dim=-1)
+        flat = probs.reshape(-1, probs.shape[-1]).detach().cpu()
+        samples = torch.multinomial(flat, num_samples=1, generator=generator).squeeze(-1)
+        return samples.reshape(probs.shape[:-1]).to(logits.device)
+    raise ValueError(f"Unknown categorical decode mode: {mode}")
+
+
+def _sample_bernoulli(logits: torch.Tensor, *, generator: torch.Generator | None = None) -> torch.Tensor:
+    probs = torch.sigmoid(logits).detach().cpu()
+    samples = torch.bernoulli(probs, generator=generator)
+    return samples.to(logits.device)
+
+
+def _obs_flatten_kwargs(cfg: MAPPOConfig) -> dict[str, bool]:
+    return {
+        "include_exploration_memory": bool(cfg.obs_exploration_memory),
+        "include_exploration_age": bool(cfg.obs_exploration_age),
+    }
 
 
 def _safe_wandb_log(wandb_run, payload: dict):
@@ -457,6 +585,8 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
         signal_colocation_radius=cfg.signal_colocation_radius,
         signal_comm_utility=cfg.signal_comm_utility,
         max_steps=cfg.max_steps,
+        obs_exploration_memory=cfg.obs_exploration_memory,
+        obs_exploration_age=cfg.obs_exploration_age,
     )
     env = SyncOrSinkEnv(env_config)
     N = env.num_agents
@@ -467,7 +597,7 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
 
     # Determine observation dimensions
     sample_obs, _ = env.reset(seed=0)
-    obs_dim = flatten_obs(sample_obs[0]).shape[0]
+    obs_dim = flatten_obs(sample_obs[0], **_obs_flatten_kwargs(cfg)).shape[0]
     action_dim = 8
     checkpoint_metadata = _checkpoint_metadata(cfg, obs_dim=obs_dim, action_dim=action_dim, num_agents=N)
 
@@ -562,6 +692,8 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
     # Main training loop
     # -----------------------------------------------------------------------
     global_step = 0
+    best_eval_score: tuple[float, float, float] | None = None
+    best_eval_payload: dict | None = None
     for update in range(start_update, cfg.updates):
         # LR annealing
         if cfg.anneal_lr:
@@ -600,7 +732,7 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
         ep_comm_tokens = 0
 
         for t in range(cfg.rollout_steps):
-            obs_batch = build_batch_obs(obs, N)                 # (N, obs_dim)
+            obs_batch = build_batch_obs(obs, N, **_obs_flatten_kwargs(cfg))  # (N, obs_dim)
             obs_tensor = torch.tensor(obs_batch, dtype=torch.float32, device=device)
             action_mask = action_mask_from_flat_obs(obs_tensor, action_dim)
 
@@ -687,7 +819,9 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
                 with torch.no_grad():
                     # Rebuild obs without comm-dependent fields to match reward model's obs_dim
                     reward_obs = torch.tensor(
-                        build_batch_obs(obs, N), dtype=torch.float32, device=device
+                        build_batch_obs(obs, N, **_obs_flatten_kwargs(cfg)),
+                        dtype=torch.float32,
+                        device=device,
                     )
                     # Truncate or pad to match reward model's expected input dim
                     rm_dim = reward_model.net[0].in_features - 16  # subtract action embed dim
@@ -737,7 +871,7 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
 
         # Bootstrap value for last step
         with torch.no_grad():
-            last_obs_batch = build_batch_obs(obs, N)
+            last_obs_batch = build_batch_obs(obs, N, **_obs_flatten_kwargs(cfg))
             last_obs_tensor = torch.tensor(last_obs_batch, dtype=torch.float32, device=device)
             if cfg.critic_mode == "central":
                 last_v = critic(last_obs_tensor.reshape(1, -1)).expand(N).cpu()
@@ -862,8 +996,20 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
                     current_logprobs = torch.log_softmax(logits, dim=-1)
                     kl_loss = (bc_probs * (bc_logprobs - current_logprobs)).sum(dim=-1).mean()
 
+                comm_target_loss = torch.tensor(0.0, device=device)
+                if cfg.comm and cfg.comm_send_target_coeff > 0:
+                    target = torch.tensor(cfg.comm_send_target, dtype=torch.float32, device=device)
+                    send_prob = torch.sigmoid(send_logits.squeeze(-1))
+                    comm_target_loss = (send_prob.mean() - target).pow(2)
+
                 # --- Total loss ---
-                loss = policy_loss + value_loss - cfg.entropy * entropy + cfg.bc_kl_coeff * kl_loss
+                loss = (
+                    policy_loss
+                    + value_loss
+                    - cfg.entropy * entropy
+                    + cfg.bc_kl_coeff * kl_loss
+                    + cfg.comm_send_target_coeff * comm_target_loss
+                )
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -901,6 +1047,9 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
                 "rollout/comm_send_rate": comm_send_rate,
                 "rollout/comm_mean_len": comm_mean_len,
                 "rollout/comm_token_entropy": comm_token_ent,
+                "comm/send_target": float(cfg.comm_send_target),
+                "comm/send_target_coeff": float(cfg.comm_send_target_coeff),
+                "comm/target_loss": float(comm_target_loss.item()) if cfg.comm else 0.0,
             }
             for i in range(8):
                 log_payload[f"rollout/action_hist_{i}"] = int(action_hist[i])
@@ -915,6 +1064,8 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
         # ---- Periodic evaluation ----
         if cfg.eval_every > 0 and (update + 1) % cfg.eval_every == 0:
             eval_returns, eval_steps_list, eval_success = [], [], []
+            eval_rng = torch.Generator(device="cpu")
+            eval_rng.manual_seed(10000 + update)
             eval_obs, _ = env.reset(seed=10000 + update)
             for ep in range(cfg.eval_episodes):
                 ep_done = False
@@ -923,7 +1074,7 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
                 total_reward = 0.0
                 info = {}
                 while not (ep_done or ep_trunc):
-                    obs_batch = build_batch_obs(eval_obs, N)
+                    obs_batch = build_batch_obs(eval_obs, N, **_obs_flatten_kwargs(cfg))
                     obs_tensor = torch.tensor(obs_batch, dtype=torch.float32, device=device)
                     action_mask = action_mask_from_flat_obs(obs_tensor, action_dim)
                     with torch.no_grad():
@@ -933,10 +1084,33 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
                     if cfg.comm:
                         logits, send_logits, token_logits, len_logits = actor_out
                         logits = mask_action_logits(logits, action_mask)
-                        acts = torch.argmax(logits, dim=-1)
-                        send = (torch.sigmoid(send_logits.squeeze(-1)) > 0.5).long()
-                        token_samples = torch.argmax(token_logits, dim=-1)
-                        len_samples = torch.argmax(len_logits, dim=-1)
+                        acts = _select_categorical(
+                            logits,
+                            mode=cfg.eval_action_mode,
+                            temperature=cfg.eval_action_temperature,
+                            generator=eval_rng,
+                        )
+                        if cfg.eval_send_mode == "threshold":
+                            send = (torch.sigmoid(send_logits.squeeze(-1)) > cfg.eval_send_threshold).long()
+                        elif cfg.eval_send_mode == "sample":
+                            send = _sample_bernoulli(
+                                send_logits.squeeze(-1),
+                                generator=eval_rng,
+                            ).long()
+                        else:
+                            raise ValueError(f"Unknown eval_send_mode: {cfg.eval_send_mode}")
+                        token_samples = _select_categorical(
+                            token_logits,
+                            mode=cfg.eval_token_mode,
+                            temperature=cfg.eval_token_temperature,
+                            generator=eval_rng,
+                        )
+                        len_samples = _select_categorical(
+                            len_logits,
+                            mode=cfg.eval_length_mode,
+                            temperature=cfg.eval_length_temperature,
+                            generator=eval_rng,
+                        )
                         actions = {}
                         for aid in range(N):
                             if int(send[aid].item()) == 1 and int(len_samples[aid].item()) > 0:
@@ -947,7 +1121,12 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
                     else:
                         logits = actor_out
                         logits = mask_action_logits(logits, action_mask)
-                        acts = torch.argmax(logits, dim=-1)
+                        acts = _select_categorical(
+                            logits,
+                            mode=cfg.eval_action_mode,
+                            temperature=cfg.eval_action_temperature,
+                            generator=eval_rng,
+                        )
                         actions = {
                             aid: {"action": int(acts[aid].item()), "message_tokens": []}
                             for aid in range(N)
@@ -966,12 +1145,40 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
                 f"steps {np.mean(eval_steps_list):.1f} | "
                 f"success {np.mean(eval_success):.2f}"
             )
+            eval_payload = {
+                "update": int(update),
+                "mean_return": float(np.mean(eval_returns)),
+                "mean_steps": float(np.mean(eval_steps_list)),
+                "success_rate": float(np.mean(eval_success)),
+            }
+            eval_score = (
+                eval_payload["success_rate"],
+                eval_payload["mean_return"],
+                -eval_payload["mean_steps"],
+            )
+            if cfg.save_best and (best_eval_score is None or eval_score > best_eval_score):
+                best_eval_score = eval_score
+                best_eval_payload = eval_payload
+                save_checkpoint(
+                    cfg.save_best,
+                    actors,
+                    critic,
+                    optimizer,
+                    update + 1,
+                    metadata={
+                        **checkpoint_metadata,
+                        "best_eval": best_eval_payload,
+                        "checkpoint_role": "best_eval",
+                    },
+                )
             if wandb_run is not None:
                 wandb_run = _safe_wandb_log(wandb_run, {
-                    "eval/mean_return": float(np.mean(eval_returns)),
-                    "eval/mean_steps": float(np.mean(eval_steps_list)),
-                    "eval/success_rate": float(np.mean(eval_success)),
+                    "eval/mean_return": eval_payload["mean_return"],
+                    "eval/mean_steps": eval_payload["mean_steps"],
+                    "eval/success_rate": eval_payload["success_rate"],
                     "eval/update": update,
+                    "eval/best_success_rate": best_eval_payload["success_rate"] if best_eval_payload else 0.0,
+                    "eval/best_mean_return": best_eval_payload["mean_return"] if best_eval_payload else 0.0,
                 })
 
         # ---- Checkpointing ----
@@ -1004,6 +1211,8 @@ def main():
     parser.add_argument("--max-steps", type=int, default=300)
     parser.add_argument("--energy-preset", default="hard")
     parser.add_argument("--energy-private-monitor", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--obs-exploration-memory", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--obs-exploration-age", action=argparse.BooleanOptionalAction, default=False)
     # reward shaping
     parser.add_argument("--pipeline-shaping", action="store_true")
     parser.add_argument("--pipeline-shaping-scale", type=float, default=0.01)
@@ -1020,6 +1229,10 @@ def main():
     parser.add_argument("--signal-colocation-radius", type=int, default=2)
     parser.add_argument("--signal-comm-utility", type=float, default=0.0,
                         help="Bonus for sending message that precedes teammate's useful action")
+    parser.add_argument("--comm-send-target", type=float, default=0.0,
+                        help="Optional target send probability for communication curriculum")
+    parser.add_argument("--comm-send-target-coeff", type=float, default=0.0,
+                        help="Penalty coefficient for matching --comm-send-target")
     # PPO
     parser.add_argument("--updates", type=int, default=20)
     parser.add_argument("--rollout-steps", type=int, default=256)
@@ -1059,10 +1272,19 @@ def main():
     parser.add_argument("--wandb-run", default=None)
     # checkpointing
     parser.add_argument("--save", default=None, help="Checkpoint path")
+    parser.add_argument("--save-best", default=None, help="Best eval checkpoint path")
     parser.add_argument("--load", default=None, help="Checkpoint path")
     parser.add_argument("--save-every", type=int, default=5)
     parser.add_argument("--eval-every", type=int, default=10)
     parser.add_argument("--eval-episodes", type=int, default=5)
+    parser.add_argument("--eval-action-mode", default="argmax", choices=["argmax", "sample"])
+    parser.add_argument("--eval-action-temperature", type=float, default=1.0)
+    parser.add_argument("--eval-send-mode", default="threshold", choices=["threshold", "sample"])
+    parser.add_argument("--eval-send-threshold", type=float, default=0.5)
+    parser.add_argument("--eval-token-mode", default="argmax", choices=["argmax", "sample"])
+    parser.add_argument("--eval-token-temperature", type=float, default=1.0)
+    parser.add_argument("--eval-length-mode", default="argmax", choices=["argmax", "sample"])
+    parser.add_argument("--eval-length-temperature", type=float, default=1.0)
     args = parser.parse_args()
 
     cfg = MAPPOConfig(
@@ -1089,6 +1311,8 @@ def main():
         signal_colocation_bonus=args.signal_colocation_bonus,
         signal_colocation_radius=args.signal_colocation_radius,
         signal_comm_utility=args.signal_comm_utility,
+        comm_send_target=args.comm_send_target,
+        comm_send_target_coeff=args.comm_send_target_coeff,
         max_steps=args.max_steps,
         updates=args.updates,
         rollout_steps=args.rollout_steps,
@@ -1117,10 +1341,21 @@ def main():
         wandb_project=args.wandb_project,
         wandb_run=args.wandb_run,
         save=args.save,
+        save_best=args.save_best,
         load=args.load,
         save_every=args.save_every,
         eval_every=args.eval_every,
         eval_episodes=args.eval_episodes,
+        eval_action_mode=args.eval_action_mode,
+        eval_action_temperature=args.eval_action_temperature,
+        eval_send_mode=args.eval_send_mode,
+        eval_send_threshold=args.eval_send_threshold,
+        eval_token_mode=args.eval_token_mode,
+        eval_token_temperature=args.eval_token_temperature,
+        eval_length_mode=args.eval_length_mode,
+        eval_length_temperature=args.eval_length_temperature,
+        obs_exploration_memory=args.obs_exploration_memory,
+        obs_exploration_age=args.obs_exploration_age,
     )
     train_mappo(cfg)
 
