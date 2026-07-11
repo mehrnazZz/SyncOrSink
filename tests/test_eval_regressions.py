@@ -340,6 +340,22 @@ def test_leaderboard_builder_collects_ranks_and_validates_manifest(tmp_path):
     stronger.unlink()
 
 
+def test_committed_v0_1_leaderboard_results_match_manifest():
+    from syncorsink.eval.benchmark_spec import load_benchmark
+    from syncorsink.eval.leaderboard import collect_leaderboard_entries
+
+    bench = load_benchmark("benchmarks/syncorsink_v0_1.json")
+    collection = collect_leaderboard_entries(["results/syncorsink_v0_1"], benchmark=bench)
+
+    assert not collection.warnings
+    assert {entry.submission_name for entry in collection.entries} == {
+        "oracle-comm-v0.1",
+        "oracle-strong-v0.1",
+        "random-v0.1",
+        "scripted-v0.1",
+    }
+
+
 def test_benchmark_policy_dispatch_no_random_fallback_and_pipeline_follower_runs():
     from examples.benchmark_run import build_policy
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
