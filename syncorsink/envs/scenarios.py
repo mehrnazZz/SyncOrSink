@@ -649,9 +649,12 @@ class SignalHunt(ScenarioBase):
                     events[agent_id].append({"event": "clue_found"})
 
         # scans on target
+        scanners_this_step = set()
         for agent_id, action in actions.items():
             if action.get("action") == env.ACTION_INTERACT and env.agent_positions[agent_id] == target:
                 env.scenario_state.data["scan_log"][agent_id] = env.steps
+                scanners_this_step.add(agent_id)
+                events[agent_id].append({"event": "target_scan"})
             elif action.get("action") == env.ACTION_INTERACT and env.agent_positions[agent_id] in env.scenario_state.data.get("decoys", []):
                 rewards[agent_id] -= env.reward_stage * env.config.decoy_penalty
                 events[agent_id].append({"event": "decoy_scan"})
@@ -659,6 +662,8 @@ class SignalHunt(ScenarioBase):
         window = env.scenario_state.data["scan_window"]
         recent = [a for a, t in env.scenario_state.data["scan_log"].items() if env.steps - t <= window]
         if len(recent) >= 2:
+            for aid in recent:
+                events[aid].append({"event": "joint_target_scan"})
             for i in rewards:
                 rewards[i] += env.reward_complete
             return rewards, True, {"events": events}
@@ -704,11 +709,6 @@ class SignalHunt(ScenarioBase):
             # The joint bonus is the key gradient toward synchronized behavior.
             scan_log = env.scenario_state.data["scan_log"]
             window = env.scenario_state.data["scan_window"]
-            scanners_this_step = set()
-            for agent_id, action in actions.items():
-                if action.get("action") == env.ACTION_INTERACT and env.agent_positions[agent_id] == target:
-                    scanners_this_step.add(agent_id)
-
             if scanners_this_step:
                 # Check how many agents have scanned recently (including this step)
                 recent_scanners = {a for a, t in scan_log.items() if env.steps - t <= window}
