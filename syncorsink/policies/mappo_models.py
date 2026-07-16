@@ -80,6 +80,10 @@ class MAPPORecurrentActor(nn.Module):
         self.encoder = MLPEncoder(obs_dim, hidden_dim=hidden_dim, depth=2)
         self.lstm = nn.LSTMCell(hidden_dim, hidden_dim)
         self.policy = PolicyHead(hidden_dim, action_dim)
+        self.signal_scan_gate = nn.Linear(hidden_dim, 1)
+        self.signal_target_validity = nn.Linear(hidden_dim, 1)
+        self.signal_target_decision = nn.Linear(hidden_dim, 1)
+        self.signal_target_aux = nn.Linear(hidden_dim, 3)
         if comm_enabled:
             self.comm_send = nn.Linear(hidden_dim, 1)
             self.comm_tokens = nn.Linear(hidden_dim, comm_token_limit * comm_vocab_size)

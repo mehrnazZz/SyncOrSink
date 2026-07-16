@@ -299,6 +299,51 @@ def test_signal_hint_comm_expert_acceptance_and_demo_collection(tmp_path):
     assert np.count_nonzero(data["msg_lens"]) > 0
 
 
+def test_signal_hint_comm_oracle_does_not_share_private_hints_without_message():
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.policies.local_oracle import local_signal_policy
+
+    env = SyncOrSinkEnv(SyncOrSinkConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        num_agents=2,
+        fov_preset="easy",
+        max_steps=60,
+        comm_token_limit=8,
+        token_vocab_size=32,
+        max_messages=8,
+    ))
+    env.reset(seed=0)
+    target = tuple(env.scenario_state.data["target"])
+    anchor = (target[0] - 1, target[1]) if target[0] > 0 else (target[0] + 1, target[1])
+    env.scenario_state.data["agent_hint_specs"][0] = {
+        "type": "x_parity",
+        "value": target[0] % 2,
+    }
+    env.scenario_state.data["agent_hint_specs"][1] = {
+        "type": "offset",
+        "object": "beacon",
+        "pos": anchor,
+        "dx": target[0] - anchor[0],
+        "dy": target[1] - anchor[1],
+    }
+
+    policy = local_signal_policy(env)
+    obs = env._build_observations()
+    first_actions = policy(obs, {}, {"step": 0})
+    exact_message = [26, target[0], target[1]]
+
+    assert first_actions[1]["message_tokens"] == exact_message
+
+    obs_without_message = env._build_observations()
+    no_inbox_actions = policy(obs_without_message, {}, {"step": 1})
+    assert no_inbox_actions[0]["message_tokens"] != exact_message
+
+    obs_with_message, _rewards, _done, _truncated, info = env.step(first_actions)
+    inbox_actions = policy(obs_with_message, info, {"step": env.steps})
+    assert inbox_actions[0]["message_tokens"] == exact_message
+
+
 def test_bc_dagger(tmp_path):
     from syncorsink.train.bc import collect_demos, train_bc_dagger, BCConfig
     demo_path = str(tmp_path / "demos.npz")
@@ -336,6 +381,198 @@ def test_bc_rl_curriculum_dry_run(tmp_path):
     assert result["stages"][0]["name"] == "collect_demos"
     assert result["stages"][1]["name"] == "dagger"
     assert (tmp_path / "dry" / "summary.json").exists()
+
+
+def test_recurrent_curriculum_dry_run(tmp_path):
+    from syncorsink.train.recurrent_curriculum import (
+        RecurrentCurriculumConfig,
+        _checkpoint_eval_send_threshold,
+        _resolve_initial_eval_send_threshold,
+        _stage_recurrent_config,
+        run_recurrent_curriculum,
+    )
+
+    cfg = RecurrentCurriculumConfig(
+        stage_map_suites="8;8,16",
+        max_steps_by_map="8:60,16:120",
+        train_map_sampling_weights="8:1,16:3",
+        promotion_success_threshold=0.75,
+        obs_exploration_age=True,
+        obs_signal_negative_memory=True,
+        obs_signal_negative_memory_window=12,
+        obs_signal_inferred_target_features=True,
+        bc_signal_redundant_target_interact_weight=1.5,
+        hidden_dim=96,
+        bc_eval_every_epochs=2,
+        bc_eval_episodes=3,
+        bc_eval_seed_count=2,
+        bc_restore_best_eval_epoch=True,
+        bc_signal_target_pursuit_weight=2.0,
+        bc_signal_target_pursuit_action_weight=0.9,
+        bc_signal_sync_response_weight=2.5,
+        bc_signal_sync_response_action_loss_weight=1.25,
+        bc_signal_target_match_action_weight=1.75,
+        bc_signal_target_opportunity_action_weight=0.8,
+        bc_signal_redundant_target_wait_action_loss_weight=1.4,
+        bc_signal_rejected_target_interact_action_loss_weight=0.7,
+        bc_signal_target_validity_loss_weight=0.6,
+        bc_signal_target_validity_pos_weight=2.0,
+        bc_signal_target_validity_neg_weight=1.5,
+        bc_signal_target_decision_loss_weight=0.4,
+        bc_signal_target_decision_pos_weight=2.5,
+        bc_signal_target_decision_neg_weight=1.75,
+        eval_signal_target_validity_threshold=0.55,
+        eval_signal_target_decision_threshold=0.6,
+        eval_signal_target_decision_suppress=False,
+        eval_signal_scan_broadcast_assist=True,
+        eval_signal_exact_target_message_guard=True,
+        eval_signal_exact_target_navigation_assist=True,
+        eval_signal_exact_target_memory_steps=24,
+        eval_signal_scan_refresh_assist=True,
+        eval_signal_scan_refresh_threshold=0.5,
+        dagger_focus_error_weight=4.0,
+        dagger_focus_recovery_weight=2.5,
+        dagger_focus_window=3,
+        dagger_target_discovery_min_map_size=8,
+        dagger_target_discovery_focus_weight=4.25,
+        dagger_movement_stall_min_map_size=8,
+        dagger_movement_stall_window=4,
+        dagger_movement_stall_focus_weight=5.5,
+        dagger_solo_target_team_weight=2.25,
+        dagger_solo_target_team_success_only=True,
+        dagger_positive_target_pursuit_min_map_size=8,
+        dagger_replay_priority_events="movement_stall_miss",
+        dagger_replay_balance_positive_events="first_target_scan,joint_target_scan",
+        dagger_replay_balance_negative_events="decoy_scan,rejected_target_scan",
+        dagger_replay_max_negative_per_positive=0.5,
+        dagger_expert_max_replay_snippets_per_episode=3,
+        output_dir=str(tmp_path),
+        run_name="recurrent_dry",
+        initial_recurrent_checkpoint="logs/recurrent_curriculum/example.pt",
+        dry_run=True,
+    )
+    result = run_recurrent_curriculum(cfg)
+
+    assert result["status"] == "dry_run"
+    assert result["config"]["bc_signal_target_match_action_weight"] == pytest.approx(1.75)
+    assert result["config"]["bc_signal_target_opportunity_action_weight"] == pytest.approx(0.8)
+    assert result["config"]["bc_signal_target_pursuit_action_weight"] == pytest.approx(0.9)
+    assert result["config"]["bc_signal_sync_response_action_loss_weight"] == pytest.approx(1.25)
+    assert result["config"]["bc_signal_redundant_target_wait_action_loss_weight"] == pytest.approx(1.4)
+    assert result["config"]["bc_signal_rejected_target_interact_action_loss_weight"] == pytest.approx(0.7)
+    assert result["config"]["bc_signal_target_validity_loss_weight"] == pytest.approx(0.6)
+    assert result["config"]["bc_signal_target_decision_loss_weight"] == pytest.approx(0.4)
+    assert result["config"]["eval_signal_target_validity_threshold"] == pytest.approx(0.55)
+    assert result["config"]["eval_signal_target_decision_threshold"] == pytest.approx(0.6)
+    assert result["config"]["eval_signal_target_decision_suppress"] is False
+    assert result["config"]["eval_signal_scan_broadcast_assist"] is True
+    assert result["config"]["eval_signal_exact_target_message_guard"] is True
+    assert result["config"]["eval_signal_exact_target_navigation_assist"] is True
+    assert result["config"]["eval_signal_exact_target_memory_steps"] == 24
+    assert result["config"]["eval_signal_scan_refresh_assist"] is True
+    assert result["config"]["eval_signal_scan_refresh_threshold"] == pytest.approx(0.5)
+    assert result["config"]["initial_recurrent_checkpoint"] == "logs/recurrent_curriculum/example.pt"
+    assert result["config"]["hidden_dim"] == 96
+    assert result["config"]["bc_eval_every_epochs"] == 2
+    assert result["config"]["bc_eval_episodes"] == 3
+    assert result["config"]["bc_eval_seed_count"] == 2
+    assert result["config"]["bc_restore_best_eval_epoch"] is True
+    assert result["config"]["train_map_sampling_weights"] == "8:1,16:3"
+    assert result["config"]["obs_exploration_age"] is True
+    assert result["config"]["obs_signal_negative_memory"] is True
+    assert result["config"]["dagger_solo_target_team_weight"] == pytest.approx(2.25)
+    assert result["config"]["dagger_focus_error_weight"] == pytest.approx(4.0)
+    assert result["config"]["dagger_focus_recovery_weight"] == pytest.approx(2.5)
+    assert result["config"]["dagger_focus_window"] == 3
+    assert result["config"]["dagger_movement_stall_min_map_size"] == 8
+    assert result["config"]["dagger_movement_stall_window"] == 4
+    assert result["config"]["dagger_movement_stall_focus_weight"] == pytest.approx(5.5)
+    assert result["config"]["dagger_positive_target_pursuit_min_map_size"] == 8
+    assert result["config"]["dagger_replay_priority_events"] == "movement_stall_miss"
+    assert result["config"]["dagger_replay_balance_positive_events"] == (
+        "first_target_scan,joint_target_scan"
+    )
+    assert result["config"]["dagger_replay_balance_negative_events"] == (
+        "decoy_scan,rejected_target_scan"
+    )
+    assert result["config"]["dagger_replay_max_negative_per_positive"] == pytest.approx(0.5)
+    assert result["config"]["dagger_expert_max_replay_snippets_per_episode"] == 3
+    assert result["planned_stages"][0]["train_map_sizes"] == [8]
+    assert result["planned_stages"][1]["train_map_sizes"] == [8, 16]
+    assert result["planned_stages"][1]["max_steps"] == {"8": 60, "16": 120}
+    assert result["planned_stages"][0]["promotion_success_threshold"] == pytest.approx(0.75)
+    assert result["planned_stages"][0]["checkpoint"].endswith("stage0_maps_8.pt")
+    assert (tmp_path / "recurrent_dry" / "summary.json").exists()
+    stage_cfg = _stage_recurrent_config(
+        cfg,
+        stage_idx=0,
+        suite=(8,),
+        max_steps={8: 60, 16: 120},
+        checkpoint_path=tmp_path / "stage0_maps_8.pt",
+        eval_send_threshold=0.25,
+        has_initial_model=False,
+    )
+    assert stage_cfg.obs_signal_negative_memory is True
+    assert stage_cfg.train_map_sampling_weights == "8:1,16:3"
+    assert stage_cfg.obs_exploration_age is True
+    assert stage_cfg.obs_signal_negative_memory_window == 12
+    assert stage_cfg.obs_signal_inferred_target_features is True
+    assert stage_cfg.hidden_dim == 96
+    assert stage_cfg.bc_eval_every_epochs == 2
+    assert stage_cfg.bc_eval_episodes == 3
+    assert stage_cfg.bc_eval_seed_count == 2
+    assert stage_cfg.bc_restore_best_eval_epoch is True
+    assert stage_cfg.bc_signal_redundant_target_interact_weight == pytest.approx(1.5)
+    assert stage_cfg.bc_signal_target_pursuit_weight == pytest.approx(2.0)
+    assert stage_cfg.bc_signal_target_pursuit_action_weight == pytest.approx(0.9)
+    assert stage_cfg.bc_signal_sync_response_weight == pytest.approx(2.5)
+    assert stage_cfg.bc_signal_sync_response_action_loss_weight == pytest.approx(1.25)
+    assert stage_cfg.bc_signal_target_match_action_weight == pytest.approx(1.75)
+    assert stage_cfg.bc_signal_target_opportunity_action_weight == pytest.approx(0.8)
+    assert stage_cfg.bc_signal_redundant_target_wait_action_loss_weight == pytest.approx(1.4)
+    assert stage_cfg.bc_signal_rejected_target_interact_action_loss_weight == pytest.approx(0.7)
+    assert stage_cfg.bc_signal_target_validity_loss_weight == pytest.approx(0.6)
+    assert stage_cfg.bc_signal_target_validity_pos_weight == pytest.approx(2.0)
+    assert stage_cfg.bc_signal_target_validity_neg_weight == pytest.approx(1.5)
+    assert stage_cfg.bc_signal_target_decision_loss_weight == pytest.approx(0.4)
+    assert stage_cfg.bc_signal_target_decision_pos_weight == pytest.approx(2.5)
+    assert stage_cfg.bc_signal_target_decision_neg_weight == pytest.approx(1.75)
+    assert stage_cfg.eval_signal_target_validity_threshold == pytest.approx(0.55)
+    assert stage_cfg.eval_signal_target_decision_threshold == pytest.approx(0.6)
+    assert stage_cfg.eval_signal_target_decision_suppress is False
+    assert stage_cfg.eval_signal_scan_broadcast_assist is True
+    assert stage_cfg.eval_signal_exact_target_message_guard is True
+    assert stage_cfg.eval_signal_exact_target_navigation_assist is True
+    assert stage_cfg.eval_signal_exact_target_memory_steps == 24
+    assert stage_cfg.eval_signal_scan_refresh_assist is True
+    assert stage_cfg.eval_signal_scan_refresh_threshold == pytest.approx(0.5)
+    assert stage_cfg.dagger_focus_error_weight == pytest.approx(4.0)
+    assert stage_cfg.dagger_focus_recovery_weight == pytest.approx(2.5)
+    assert stage_cfg.dagger_focus_window == 3
+    assert stage_cfg.dagger_target_discovery_min_map_size == 8
+    assert stage_cfg.dagger_target_discovery_focus_weight == pytest.approx(4.25)
+    assert stage_cfg.dagger_movement_stall_min_map_size == 8
+    assert stage_cfg.dagger_movement_stall_window == 4
+    assert stage_cfg.dagger_movement_stall_focus_weight == pytest.approx(5.5)
+    assert stage_cfg.dagger_solo_target_team_weight == pytest.approx(2.25)
+    assert stage_cfg.dagger_solo_target_team_success_only is True
+    assert stage_cfg.dagger_positive_target_pursuit_min_map_size == 8
+    assert stage_cfg.dagger_replay_priority_events == "movement_stall_miss"
+    assert stage_cfg.dagger_replay_balance_positive_events == "first_target_scan,joint_target_scan"
+    assert stage_cfg.dagger_replay_balance_negative_events == "decoy_scan,rejected_target_scan"
+    assert stage_cfg.dagger_replay_max_negative_per_positive == pytest.approx(0.5)
+    assert stage_cfg.dagger_expert_max_replay_snippets_per_episode == 3
+
+    threshold_checkpoint = tmp_path / "threshold.pt"
+    torch.save({"config": {"eval_send_threshold": 0.73}}, threshold_checkpoint)
+    inherit_cfg = RecurrentCurriculumConfig(initial_recurrent_checkpoint=str(threshold_checkpoint))
+    assert _checkpoint_eval_send_threshold(threshold_checkpoint) == pytest.approx(0.73)
+    assert _resolve_initial_eval_send_threshold(inherit_cfg) == pytest.approx(0.73)
+    override_cfg = RecurrentCurriculumConfig(
+        initial_recurrent_checkpoint=str(threshold_checkpoint),
+        eval_send_threshold=0.41,
+    )
+    assert _resolve_initial_eval_send_threshold(override_cfg) == pytest.approx(0.41)
 
 
 def test_recurrent_dagger_caps_and_weights_failed_rollouts():
@@ -388,6 +625,10 @@ def test_recurrent_dagger_caps_and_weights_failed_rollouts():
     assert summary["avg_stored_steps"] <= 2
     assert summary["transitions"] <= 4
     assert summary["effective_transitions"] <= summary["transitions"]
+    assert summary["oracle_message_rollin_rate"] == 0.0
+    assert summary["oracle_message_rollin_steps"] == 0
+    assert summary["oracle_message_rollin_agents"] == 0
+    assert summary["oracle_message_rollin_tokens"] == 0
     assert dagger_episodes[0]["source"] == "dagger"
     assert dagger_episodes[0]["obs"].shape[0] <= 2
     if not dagger_episodes[0]["success"]:
@@ -480,12 +721,22 @@ def test_recurrent_dagger_focus_step_weight_helpers():
         np.array([[1.0, 2.0], [3.0, 1.0], [4.0, 1.0]], dtype=np.float32),
     )
     assert _episode_count_effective_transitions([episode]) == 6.0
+    target_xy = np.asarray(env.scenario_state.data["target"], dtype=np.float32) / float(env.map_size - 1)
+    np.testing.assert_allclose(
+        episode["signal_target_aux_mask"],
+        np.ones((3, 2), dtype=np.float32),
+    )
+    np.testing.assert_allclose(
+        episode["signal_target_aux_xy"],
+        np.broadcast_to(target_xy, (3, 2, 2)).astype(np.float32),
+    )
     assert len(replay) == 1
     assert replay[0]["source"] == "dagger_focus_replay"
     assert replay[0]["map_size"] == 8
     assert replay[0]["trigger_event"] == "decoy_scan"
     assert replay[0]["trigger_agents"] == [0]
     assert replay[0]["obs"].shape[0] == 3
+    np.testing.assert_allclose(replay[0]["signal_target_aux_xy"], episode["signal_target_aux_xy"])
     assert _episode_count_effective_transitions(replay) == 24.0
     diagnostics = _episode_map_size_diagnostics([episode, *replay])
     assert diagnostics["8"]["episodes"] == 2
@@ -524,6 +775,116 @@ def test_recurrent_dagger_focus_step_weight_helpers():
     assert [snippet["trigger_kind"] for snippet in controlled_replay] == ["focus", "positive"]
     assert [snippet["weight"] for snippet in controlled_replay] == [0.5, 3.0]
     assert [snippet["obs"].shape[0] for snippet in controlled_replay] == [1, 1]
+    balanced_cfg = RecurrentConfig(
+        **{
+            **vars(controlled_cfg),
+            "dagger_replay_event_weights": "",
+            "dagger_replay_event_caps": "",
+            "dagger_max_replay_snippets_per_episode": 3,
+            "dagger_replay_balance_positive_events": "first_target_scan,joint_target_scan",
+            "dagger_replay_balance_negative_events": "decoy_scan,rejected_target_scan",
+            "dagger_replay_max_negative_per_positive": 0.5,
+        }
+    )
+    balanced_replay = _focus_replay_episodes(
+        episode,
+        [
+            {"event": "decoy_scan", "step": 0, "agents": [0], "kind": "focus"},
+            {"event": "rejected_target_scan", "step": 1, "agents": [1], "kind": "focus"},
+            {"event": "first_target_scan", "step": 1, "agents": [0], "kind": "positive"},
+            {"event": "joint_target_scan", "step": 2, "agents": [0, 1], "kind": "positive"},
+            {"event": "target_pursuit", "step": 2, "agents": [1], "kind": "positive"},
+        ],
+        balanced_cfg,
+    )
+    assert [snippet["trigger_event"] for snippet in balanced_replay] == [
+        "first_target_scan",
+        "joint_target_scan",
+        "target_pursuit",
+    ]
+    priority_balanced_cfg = RecurrentConfig(
+        **{
+            **vars(balanced_cfg),
+            "dagger_replay_priority_events": "movement_stall_miss",
+        }
+    )
+    priority_balanced_replay = _focus_replay_episodes(
+        episode,
+        [
+            {"event": "first_target_scan", "step": 0, "agents": [0], "kind": "positive"},
+            {"event": "joint_target_scan", "step": 1, "agents": [0, 1], "kind": "positive"},
+            {"event": "target_pursuit", "step": 1, "agents": [1], "kind": "positive"},
+            {"event": "movement_stall_miss", "step": 2, "agents": [1], "kind": "focus"},
+        ],
+        priority_balanced_cfg,
+    )
+    assert [snippet["trigger_event"] for snippet in priority_balanced_replay] == [
+        "movement_stall_miss",
+        "first_target_scan",
+        "joint_target_scan",
+    ]
+    roomy_balanced_cfg = RecurrentConfig(
+        **{
+            **vars(balanced_cfg),
+            "dagger_max_replay_snippets_per_episode": 4,
+        }
+    )
+    roomy_balanced_replay = _focus_replay_episodes(
+        episode,
+        [
+            {"event": "decoy_scan", "step": 0, "agents": [0], "kind": "focus"},
+            {"event": "rejected_target_scan", "step": 1, "agents": [1], "kind": "focus"},
+            {"event": "first_target_scan", "step": 1, "agents": [0], "kind": "positive"},
+            {"event": "joint_target_scan", "step": 2, "agents": [0, 1], "kind": "positive"},
+            {"event": "target_pursuit", "step": 2, "agents": [1], "kind": "positive"},
+        ],
+        roomy_balanced_cfg,
+    )
+    assert [snippet["trigger_event"] for snippet in roomy_balanced_replay] == [
+        "first_target_scan",
+        "joint_target_scan",
+        "target_pursuit",
+        "decoy_scan",
+    ]
+    expert_capped_cfg = RecurrentConfig(
+        **{
+            **vars(roomy_balanced_cfg),
+            "dagger_expert_max_replay_snippets_per_episode": 2,
+        }
+    )
+    expert_capped_replay = _focus_replay_episodes(
+        episode,
+        [
+            {"event": "decoy_scan", "step": 0, "agents": [0], "kind": "focus"},
+            {"event": "rejected_target_scan", "step": 1, "agents": [1], "kind": "focus"},
+            {"event": "first_target_scan", "step": 1, "agents": [0], "kind": "positive"},
+            {"event": "joint_target_scan", "step": 2, "agents": [0, 1], "kind": "positive"},
+            {"event": "target_pursuit", "step": 2, "agents": [1], "kind": "positive"},
+        ],
+        expert_capped_cfg,
+        source="expert_positive_replay",
+    )
+    assert [snippet["trigger_event"] for snippet in expert_capped_replay] == [
+        "decoy_scan",
+        "first_target_scan",
+    ]
+    expert_balanced_replay = _focus_replay_episodes(
+        episode,
+        [
+            {"event": "decoy_scan", "step": 0, "agents": [0], "kind": "focus"},
+            {"event": "rejected_target_scan", "step": 1, "agents": [1], "kind": "focus"},
+            {"event": "first_target_scan", "step": 1, "agents": [0], "kind": "positive"},
+            {"event": "joint_target_scan", "step": 2, "agents": [0, 1], "kind": "positive"},
+            {"event": "target_pursuit", "step": 2, "agents": [1], "kind": "positive"},
+        ],
+        balanced_cfg,
+        source="expert_positive_replay",
+    )
+    assert [snippet["trigger_event"] for snippet in expert_balanced_replay] == [
+        "decoy_scan",
+        "first_target_scan",
+        "rejected_target_scan",
+    ]
     success_only_cfg = RecurrentConfig(
         **{
             **vars(controlled_cfg),
@@ -570,20 +931,48 @@ def test_recurrent_dagger_focus_step_weight_helpers():
 
 def test_recurrent_signal_target_interact_label_weighting():
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_TARGET
     from syncorsink.train.recurrent_bc_rl import (
         RecurrentConfig,
+        _SIGNAL_TARGET_SCAN_KIND_FIRST,
+        _SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION,
+        _SIGNAL_TARGET_SCAN_KIND_REDUNDANT_ACTIVE,
+        _SIGNAL_TARGET_SCAN_KIND_REFRESH,
         _apply_deferred_solo_target_team_weights,
         _apply_redundant_target_scan_penalty,
+        _apply_signal_exact_target_message_guard,
+        _apply_signal_scan_broadcast_assist,
+        _apply_signal_scan_gate_decoding,
+        _apply_signal_scan_refresh_decoding,
+        _apply_signal_scan_sync_decoding,
+        _apply_signal_target_decision_decoding,
+        _apply_signal_target_validity_decoding,
+        _apply_signal_target_scan_decoding,
+        _apply_signal_redundant_target_wait_overrides,
+        _apply_wrong_target_scan_penalty,
         _append_labeled_step,
+        _feedback_dim,
         _new_episode_sequence,
         _redundant_target_scan_agents,
+        _signal_center_target_scan_decoding_candidate,
         _signal_bad_redundant_target_interact_agents,
         _signal_bad_redundant_target_interact_loss,
         _signal_bad_redundant_target_mask,
         _signal_target_interact_agents,
         _scale_solo_target_team_weights,
         _split_solo_target_scan_agents,
+        _signal_scan_decision_loss,
+        _signal_scan_gate_loss,
+        _signal_redundant_target_wait_action_label_mask,
+        _signal_target_decision_label_mask,
+        _signal_target_decision_loss,
         _signal_target_interact_miss_agents,
+        _signal_target_scan_action_loss,
+        _signal_target_scan_kind,
+        _signal_target_scan_opportunity_label_mask,
+        _signal_target_validity_label,
+        _signal_target_validity_loss,
+        _wrong_target_scan_agents,
     )
 
     env = SyncOrSinkEnv(SyncOrSinkConfig(
@@ -595,6 +984,9 @@ def test_recurrent_signal_target_interact_label_weighting():
     ))
     obs, _ = env.reset(seed=0)
     env.scenario_state.data["target"] = tuple(env.agent_positions[0])
+    env.grid[env.agent_positions[0][1], env.agent_positions[0][0]] = TILE_TARGET
+    obs[0]["local_grid"][obs[0]["local_grid"].shape[0] // 2, obs[0]["local_grid"].shape[1] // 2] = TILE_TARGET
+    obs[0]["action_mask"] = np.ones((8,), dtype=np.float32)
     cfg = RecurrentConfig(
         scenario="signal_hunt",
         map_size=8,
@@ -628,6 +1020,10 @@ def test_recurrent_signal_target_interact_label_weighting():
     )
 
     assert ep_data["step_weights"] == [4.0, 2.0]
+    assert ep_data["signal_target_scan_action_mask"] == [1.0, 0.0]
+    assert ep_data["signal_target_scan_kind_id"] == [_SIGNAL_TARGET_SCAN_KIND_FIRST, -1]
+    assert ep_data["signal_target_decision_mask"] == [1.0, 0.0]
+    assert ep_data["signal_target_decision_label"] == [1.0, 0.0]
 
     valid_hold, bad_loop = _split_solo_target_scan_agents(env, obs, actions)
     assert valid_hold == [0]
@@ -676,6 +1072,12 @@ def test_recurrent_signal_target_interact_label_weighting():
         step_weight=np.array([1.0, 2.0], dtype=np.float32),
     )
     assert ep_data["step_weights"] == [4.0, 2.0, 1.5, 2.0]
+    assert ep_data["signal_target_scan_kind_id"][-2:] == [
+        _SIGNAL_TARGET_SCAN_KIND_REDUNDANT_ACTIVE,
+        -1,
+    ]
+    assert ep_data["signal_target_decision_mask"][-2:] == [1.0, 0.0]
+    assert ep_data["signal_target_decision_label"][-2:] == [0.0, 0.0]
 
     env.scenario_state.data["scan_window"] = 1
     env.agent_positions[1] = (
@@ -692,11 +1094,51 @@ def test_recurrent_signal_target_interact_label_weighting():
     assert count == 0
     assert penalty_sum == 0.0
     assert rewards == {0: 0.75, 1: 2.0}
+    assert _wrong_target_scan_agents(
+        {"events": {0: [{"event": "decoy_scan"}], "1": [{"event": "target_scan"}]}},
+        num_agents=2,
+    ) == [0]
+    count, penalty_sum = _apply_wrong_target_scan_penalty(rewards, [0], 0.5)
+    assert count == 1
+    assert penalty_sum == pytest.approx(0.5)
+    assert rewards == {0: 0.25, 1: 2.0}
+    count, penalty_sum = _apply_wrong_target_scan_penalty(rewards, [1], 0.0)
+    assert count == 0
+    assert penalty_sum == 0.0
+    assert rewards == {0: 0.25, 1: 2.0}
     valid_hold, bad_loop = _split_solo_target_scan_agents(env, obs, actions)
     assert valid_hold == []
     assert bad_loop == [0]
     assert _signal_bad_redundant_target_interact_agents(env, obs, actions) == [0]
     np.testing.assert_allclose(_signal_bad_redundant_target_mask(env, obs), np.array([1.0, 0.0]))
+    env.scenario_state.data["scan_window"] = 3
+    corrected, corrected_agents = _apply_signal_redundant_target_wait_overrides(
+        env,
+        {
+            0: {"action": env.ACTION_INTERACT, "message_tokens": [3]},
+            1: {"action": env.ACTION_STAY, "message_tokens": [4]},
+        },
+    )
+    assert corrected_agents == [0]
+    assert corrected[0]["action"] == env.ACTION_STAY
+    assert corrected[0]["message_tokens"] == [3]
+    wait_mask, wait_action_id = _signal_redundant_target_wait_action_label_mask(env, obs, corrected)
+    np.testing.assert_allclose(wait_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(wait_action_id, np.array([env.ACTION_STAY, -1], dtype=np.int64))
+    wait_ep_data = _new_episode_sequence()
+    _append_labeled_step(wait_ep_data, obs, corrected, env, cfg)
+    assert wait_ep_data["signal_redundant_target_wait_action_mask"] == [1.0, 0.0]
+    assert wait_ep_data["signal_redundant_target_wait_action_id"] == [env.ACTION_STAY, -1]
+    env.scenario_state.data["scan_window"] = 1
+    edge_corrected, edge_agents = _apply_signal_redundant_target_wait_overrides(
+        env,
+        {
+            0: {"action": env.ACTION_INTERACT, "message_tokens": [3]},
+            1: {"action": env.ACTION_STAY, "message_tokens": [4]},
+        },
+    )
+    assert edge_agents == []
+    assert edge_corrected[0]["action"] == env.ACTION_INTERACT
     _append_labeled_step(
         ep_data,
         obs,
@@ -706,18 +1148,571 @@ def test_recurrent_signal_target_interact_label_weighting():
         step_weight=np.array([1.0, 2.0], dtype=np.float32),
     )
     assert ep_data["signal_bad_redundant_target_mask"] == [0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    assert ep_data["signal_target_scan_action_mask"] == [1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+    assert ep_data["signal_target_scan_kind_id"] == [
+        _SIGNAL_TARGET_SCAN_KIND_FIRST,
+        -1,
+        _SIGNAL_TARGET_SCAN_KIND_REDUNDANT_ACTIVE,
+        -1,
+        _SIGNAL_TARGET_SCAN_KIND_REFRESH,
+        -1,
+    ]
+    env.scenario_state.data["scan_window"] = 3
+    env.scenario_state.data["scan_log"] = {1: 2}
+    assert _signal_target_scan_kind(env, 0) == _SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION
 
-    logits = torch.zeros((2, 8), dtype=torch.float32)
-    logits[0, env.ACTION_INTERACT] = 1.5
-    logits[1, env.ACTION_INTERACT] = 5.0
-    loss = _signal_bad_redundant_target_interact_loss(
-        logits,
+    good_scan_logits = torch.zeros((4, 8), dtype=torch.float32)
+    bad_scan_logits = torch.zeros((4, 8), dtype=torch.float32)
+    good_scan_logits[0, env.ACTION_INTERACT] = 4.0
+    good_scan_logits[1, env.ACTION_INTERACT] = 4.0
+    bad_scan_logits[0, env.ACTION_INTERACT] = -4.0
+    bad_scan_logits[1, env.ACTION_INTERACT] = -4.0
+    kind_ids = torch.tensor([
+        _SIGNAL_TARGET_SCAN_KIND_FIRST,
+        _SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION,
+        _SIGNAL_TARGET_SCAN_KIND_REDUNDANT_ACTIVE,
+        _SIGNAL_TARGET_SCAN_KIND_REFRESH,
+    ], dtype=torch.long)
+    scan_mask = torch.ones((4,), dtype=torch.float32)
+    assert _signal_target_scan_action_loss(
+        good_scan_logits,
+        scan_mask,
+        kind_ids,
+        first_weight=1.0,
+        joint_weight=2.0,
+    ).item() < _signal_target_scan_action_loss(
+        bad_scan_logits,
+        scan_mask,
+        kind_ids,
+        first_weight=1.0,
+        joint_weight=2.0,
+    ).item()
+    redundant_changed = good_scan_logits.clone()
+    redundant_changed[2, env.ACTION_INTERACT] = -9.0
+    redundant_changed[3, env.ACTION_INTERACT] = 9.0
+    assert _signal_target_scan_action_loss(
+        good_scan_logits,
+        scan_mask,
+        kind_ids,
+        first_weight=1.0,
+        joint_weight=2.0,
+    ).item() == pytest.approx(_signal_target_scan_action_loss(
+        redundant_changed,
+        scan_mask,
+        kind_ids,
+        first_weight=1.0,
+        joint_weight=2.0,
+    ).item())
+    bad_refresh_changed = good_scan_logits.clone()
+    bad_refresh_changed[3, env.ACTION_INTERACT] = -9.0
+    assert _signal_target_scan_action_loss(
+        good_scan_logits,
+        scan_mask,
+        kind_ids,
+        first_weight=1.0,
+        refresh_weight=3.0,
+        joint_weight=2.0,
+    ).item() < _signal_target_scan_action_loss(
+        bad_refresh_changed,
+        scan_mask,
+        kind_ids,
+        first_weight=1.0,
+        refresh_weight=3.0,
+        joint_weight=2.0,
+    ).item()
+    scan_decision_good = torch.zeros((4, 8), dtype=torch.float32)
+    scan_decision_bad = torch.zeros((4, 8), dtype=torch.float32)
+    scan_decision_good[:2, env.ACTION_INTERACT] = 4.0
+    scan_decision_good[2:, env.ACTION_INTERACT] = -4.0
+    scan_decision_bad[:2, env.ACTION_INTERACT] = -4.0
+    scan_decision_bad[2:, env.ACTION_INTERACT] = 4.0
+    assert _signal_scan_decision_loss(
+        scan_decision_good,
+        torch.tensor([1.0, 1.0, 0.0, 0.0], dtype=torch.float32),
+        torch.tensor([0.0, 0.0, 1.0, 1.0], dtype=torch.float32),
+        positive_weight=2.0,
+        negative_weight=1.0,
+    ).item() < _signal_scan_decision_loss(
+        scan_decision_bad,
+        torch.tensor([1.0, 1.0, 0.0, 0.0], dtype=torch.float32),
+        torch.tensor([0.0, 0.0, 1.0, 1.0], dtype=torch.float32),
+        positive_weight=2.0,
+        negative_weight=1.0,
+    ).item()
+    assert _signal_scan_gate_loss(
+        torch.tensor([4.0, 4.0, -4.0, -4.0], dtype=torch.float32),
+        torch.tensor([1.0, 1.0, 0.0, 0.0], dtype=torch.float32),
+        torch.tensor([0.0, 0.0, 1.0, 1.0], dtype=torch.float32),
+        positive_weight=2.0,
+        negative_weight=1.0,
+    ).item() < _signal_scan_gate_loss(
+        torch.tensor([-4.0, -4.0, 4.0, 4.0], dtype=torch.float32),
+        torch.tensor([1.0, 1.0, 0.0, 0.0], dtype=torch.float32),
+        torch.tensor([0.0, 0.0, 1.0, 1.0], dtype=torch.float32),
+        positive_weight=2.0,
+        negative_weight=1.0,
+    ).item()
+    assert _signal_target_validity_loss(
+        torch.tensor([4.0, -4.0], dtype=torch.float32),
+        torch.tensor([1.0, 1.0], dtype=torch.float32),
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+        positive_weight=2.0,
+        negative_weight=1.0,
+    ).item() < _signal_target_validity_loss(
+        torch.tensor([-4.0, 4.0], dtype=torch.float32),
+        torch.tensor([1.0, 1.0], dtype=torch.float32),
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+        positive_weight=2.0,
+        negative_weight=1.0,
+    ).item()
+    assert _signal_target_decision_loss(
+        torch.tensor([4.0, -4.0], dtype=torch.float32),
+        torch.tensor([1.0, 1.0], dtype=torch.float32),
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+        positive_weight=2.0,
+        negative_weight=1.0,
+    ).item() < _signal_target_decision_loss(
+        torch.tensor([-4.0, 4.0], dtype=torch.float32),
+        torch.tensor([1.0, 1.0], dtype=torch.float32),
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+        positive_weight=2.0,
+        negative_weight=1.0,
+    ).item()
+
+    high_bad_logits = torch.zeros((2, 8), dtype=torch.float32)
+    low_bad_logits = torch.zeros((2, 8), dtype=torch.float32)
+    high_bad_logits[0, env.ACTION_INTERACT] = 4.0
+    high_bad_logits[1, env.ACTION_INTERACT] = 8.0
+    low_bad_logits[0, env.ACTION_INTERACT] = -4.0
+    low_bad_logits[1, env.ACTION_INTERACT] = 8.0
+    high_bad_loss = _signal_bad_redundant_target_interact_loss(
+        high_bad_logits,
         torch.tensor([1.0, 0.0], dtype=torch.float32),
     )
-    assert loss.item() == pytest.approx(torch.nn.functional.softplus(torch.tensor(1.5)).item())
+    low_bad_loss = _signal_bad_redundant_target_interact_loss(
+        low_bad_logits,
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+    )
+    assert high_bad_loss.item() > low_bad_loss.item()
+    assert high_bad_loss.item() == pytest.approx(
+        torch.nn.functional.softplus(torch.tensor(4.0)).item()
+    )
 
     env.steps = 5
     assert _redundant_target_scan_agents(env, actions) == []
+
+    scan_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        eval_signal_target_scan_threshold=0.25,
+    )
+    decode_obs, _ = env.reset(seed=1)
+    target_pos = tuple(int(v) for v in decode_obs[0]["self_pos"])
+    rejected_pos = tuple(int(v) for v in decode_obs[1]["self_pos"])
+    allowed_pos = ((rejected_pos[0] + 1) % env.map_size, rejected_pos[1])
+    if allowed_pos == rejected_pos:
+        allowed_pos = ((rejected_pos[0] - 1) % env.map_size, rejected_pos[1])
+    for aid, center_pos in ((0, target_pos), (1, rejected_pos)):
+        local_grid = np.zeros_like(decode_obs[aid]["local_grid"])
+        local_grid[local_grid.shape[0] // 2, local_grid.shape[1] // 2] = TILE_TARGET
+        decode_obs[aid]["local_grid"] = local_grid
+        decode_obs[aid]["self_pos"] = np.array(center_pos, dtype=np.int16)
+        decode_obs[aid]["action_mask"] = np.ones((8,), dtype=np.float32)
+    decode_obs[0]["goal_hint"] = np.array(
+        [26, target_pos[0], target_pos[1], -1, -1, -1, -1, -1],
+        dtype=np.int16,
+    )
+    decode_obs[1]["goal_hint"] = np.array(
+        [26, allowed_pos[0], allowed_pos[1], -1, -1, -1, -1, -1],
+        dtype=np.int16,
+    )
+    env.scenario_state.data["target"] = target_pos
+    env.agent_positions[0] = target_pos
+    env.agent_positions[1] = rejected_pos
+    env.steps = 0
+    env.scenario_state.data["scan_log"] = {}
+    env.scenario_state.data["scan_window"] = 3
+    validity_mask, validity_label = _signal_target_validity_label(env, decode_obs)
+    np.testing.assert_allclose(validity_mask, np.array([1.0, 1.0], dtype=np.float32))
+    np.testing.assert_allclose(validity_label, np.array([1.0, 0.0], dtype=np.float32))
+    opportunity_mask, opportunity_kind = _signal_target_scan_opportunity_label_mask(
+        env,
+        decode_obs,
+        scan_cfg,
+    )
+    np.testing.assert_allclose(opportunity_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(
+        opportunity_kind,
+        np.array([_SIGNAL_TARGET_SCAN_KIND_FIRST, -1], dtype=np.int64),
+    )
+    decision_mask, decision_label = _signal_target_decision_label_mask(
+        env,
+        decode_obs,
+        scan_cfg,
+        actions,
+        target_opportunity_mask=opportunity_mask,
+        target_opportunity_kind_id=opportunity_kind,
+    )
+    np.testing.assert_allclose(decision_mask, np.array([1.0, 1.0], dtype=np.float32))
+    np.testing.assert_allclose(decision_label, np.array([1.0, 0.0], dtype=np.float32))
+    env.steps = 2
+    env.scenario_state.data["scan_log"] = {1: 2}
+    opportunity_mask, opportunity_kind = _signal_target_scan_opportunity_label_mask(
+        env,
+        decode_obs,
+        scan_cfg,
+    )
+    np.testing.assert_allclose(opportunity_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(
+        opportunity_kind,
+        np.array([_SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION, -1], dtype=np.int64),
+    )
+    uncertain_joint_obs = {
+        key: value.copy() if hasattr(value, "copy") else value
+        for key, value in decode_obs[0].items()
+    }
+    uncertain_joint_obs["goal_hint"] = np.full((8,), -1, dtype=np.int16)
+    uncertain_joint_obs["messages_tokens"] = np.full_like(
+        uncertain_joint_obs.get("messages_tokens", np.full((2, 8), -1, dtype=np.int16)),
+        -1,
+    )
+    assert not _signal_center_target_scan_decoding_candidate(uncertain_joint_obs, scan_cfg)
+    uncertain_obs = {0: uncertain_joint_obs, 1: decode_obs[1]}
+    opportunity_mask, opportunity_kind = _signal_target_scan_opportunity_label_mask(
+        env,
+        uncertain_obs,
+        scan_cfg,
+    )
+    np.testing.assert_allclose(opportunity_mask, np.array([0.0, 0.0], dtype=np.float32))
+    feedback_label_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        obs_feedback=True,
+        obs_signal_scan_state=True,
+    )
+    scan_state_feedback = np.zeros((2, _feedback_dim(feedback_label_cfg)), dtype=np.float32)
+    scan_state_feedback[0, 12 + 1] = 1.0
+    opportunity_mask, opportunity_kind = _signal_target_scan_opportunity_label_mask(
+        env,
+        uncertain_obs,
+        feedback_label_cfg,
+        feedback=scan_state_feedback,
+    )
+    np.testing.assert_allclose(opportunity_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(
+        opportunity_kind,
+        np.array([_SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION, -1], dtype=np.int64),
+    )
+    env.scenario_state.data["scan_log"] = {0: 2}
+    opportunity_mask, opportunity_kind = _signal_target_scan_opportunity_label_mask(
+        env,
+        decode_obs,
+        scan_cfg,
+    )
+    np.testing.assert_allclose(opportunity_mask, np.array([0.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(opportunity_kind, np.array([-1, -1], dtype=np.int64))
+    env.steps = 0
+    env.scenario_state.data["scan_log"] = {}
+    logits = torch.full((2, 8), -3.0, dtype=torch.float32)
+    logits[:, env.ACTION_STAY] = 1.0
+    logits[:, env.ACTION_INTERACT] = 0.2
+    stay_actions = torch.full((2,), env.ACTION_STAY, dtype=torch.long)
+
+    assert _signal_center_target_scan_decoding_candidate(decode_obs[0], scan_cfg)
+    assert not _signal_center_target_scan_decoding_candidate(decode_obs[1], scan_cfg)
+    decoded_actions = _apply_signal_target_scan_decoding(scan_cfg, decode_obs, logits, stay_actions)
+    assert decoded_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_STAY]
+    scan_cfg.eval_signal_target_scan_threshold = -1.0
+    disabled_actions = _apply_signal_target_scan_decoding(scan_cfg, decode_obs, logits, stay_actions)
+    assert disabled_actions.tolist() == [env.ACTION_STAY, env.ACTION_STAY]
+    scan_cfg.eval_signal_scan_gate_threshold = 0.5
+    gated_actions = _apply_signal_scan_gate_decoding(
+        scan_cfg,
+        decode_obs,
+        stay_actions,
+        torch.tensor([2.0, 2.0], dtype=torch.float32),
+    )
+    assert gated_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_STAY]
+    interact_actions = torch.full((2,), env.ACTION_INTERACT, dtype=torch.long)
+    scan_cfg.eval_signal_scan_gate_suppress = True
+    rejected_actions = _apply_signal_scan_gate_decoding(
+        scan_cfg,
+        decode_obs,
+        interact_actions,
+        torch.tensor([2.0, 2.0], dtype=torch.float32),
+    )
+    assert rejected_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_STAY]
+    suppressed_actions = _apply_signal_scan_gate_decoding(
+        scan_cfg,
+        decode_obs,
+        interact_actions,
+        torch.tensor([-2.0, -2.0], dtype=torch.float32),
+    )
+    assert suppressed_actions.tolist() == [env.ACTION_STAY, env.ACTION_STAY]
+    scan_cfg.eval_signal_target_validity_threshold = 0.5
+    validity_actions = _apply_signal_target_validity_decoding(
+        scan_cfg,
+        decode_obs,
+        interact_actions,
+        torch.tensor([2.0, -2.0], dtype=torch.float32),
+    )
+    assert validity_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_STAY]
+    scan_cfg.eval_signal_target_validity_threshold = -1.0
+    validity_disabled_actions = _apply_signal_target_validity_decoding(
+        scan_cfg,
+        decode_obs,
+        interact_actions,
+        torch.tensor([-2.0, -2.0], dtype=torch.float32),
+    )
+    assert validity_disabled_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_INTERACT]
+    scan_cfg.eval_signal_target_decision_threshold = 0.5
+    decision_actions = _apply_signal_target_decision_decoding(
+        scan_cfg,
+        decode_obs,
+        interact_actions,
+        torch.tensor([2.0, -2.0], dtype=torch.float32),
+    )
+    assert decision_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_STAY]
+    scan_cfg.eval_signal_target_decision_suppress = False
+    decision_force_actions = _apply_signal_target_decision_decoding(
+        scan_cfg,
+        decode_obs,
+        torch.full((2,), env.ACTION_STAY, dtype=torch.long),
+        torch.tensor([2.0, -2.0], dtype=torch.float32),
+    )
+    assert decision_force_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_STAY]
+    scan_cfg.eval_signal_target_decision_threshold = -1.0
+
+    sync_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        obs_feedback=True,
+        obs_signal_scan_state=True,
+        eval_signal_scan_sync_assist=True,
+    )
+    sync_feedback = np.zeros((2, _feedback_dim(sync_cfg)), dtype=np.float32)
+    sync_offset = 12
+    sync_feedback[0, sync_offset + 1] = 1.0  # teammate target scan is active: join it
+    sync_feedback[1, sync_offset] = 1.0  # own scan is active: wait for teammate
+    sync_obs = {}
+    for aid, center_pos in ((0, target_pos), (1, rejected_pos)):
+        obs_agent = {
+            key: value.copy() if hasattr(value, "copy") else value
+            for key, value in decode_obs[aid].items()
+        }
+        obs_agent["self_pos"] = np.array(center_pos, dtype=np.int16)
+        obs_agent["goal_hint"] = np.array(
+            [26, center_pos[0], center_pos[1], -1, -1, -1, -1, -1],
+            dtype=np.int16,
+        )
+        sync_obs[aid] = obs_agent
+    sync_actions = _apply_signal_scan_sync_decoding(
+        sync_cfg,
+        sync_obs,
+        torch.tensor([env.ACTION_STAY, env.ACTION_INTERACT], dtype=torch.long),
+        sync_feedback,
+    )
+    assert sync_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_STAY]
+    relaxed_sync_obs = {
+        0: uncertain_joint_obs,
+        1: sync_obs[1],
+    }
+    relaxed_sync_actions = _apply_signal_scan_sync_decoding(
+        sync_cfg,
+        relaxed_sync_obs,
+        torch.full((2,), env.ACTION_STAY, dtype=torch.long),
+        sync_feedback,
+    )
+    assert relaxed_sync_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_STAY]
+    rejected_inactive_actions = _apply_signal_scan_sync_decoding(
+        sync_cfg,
+        decode_obs,
+        torch.full((2,), env.ACTION_STAY, dtype=torch.long),
+        np.zeros_like(sync_feedback),
+    )
+    assert rejected_inactive_actions.tolist() == [env.ACTION_STAY, env.ACTION_STAY]
+    rejected_sync_feedback = np.zeros_like(sync_feedback)
+    rejected_sync_feedback[1, sync_offset + 1] = 1.0
+    rejected_sync_actions = _apply_signal_scan_sync_decoding(
+        sync_cfg,
+        decode_obs,
+        torch.full((2,), env.ACTION_STAY, dtype=torch.long),
+        rejected_sync_feedback,
+    )
+    assert rejected_sync_actions.tolist() == [env.ACTION_STAY, env.ACTION_STAY]
+    mismatched_scan_state = {
+        "scan_log": {0: 2},
+        "scan_pos": {0: target_pos},
+        "scan_window": 3,
+        "step": 2,
+    }
+    mismatched_rejected_actions = _apply_signal_scan_sync_decoding(
+        sync_cfg,
+        decode_obs,
+        torch.full((2,), env.ACTION_STAY, dtype=torch.long),
+        rejected_sync_feedback,
+        scan_state=mismatched_scan_state,
+    )
+    assert mismatched_rejected_actions.tolist() == [env.ACTION_STAY, env.ACTION_STAY]
+    matched_scan_state = {
+        "scan_log": {0: 2},
+        "scan_pos": {0: rejected_pos},
+        "scan_window": 3,
+        "step": 2,
+    }
+    matched_rejected_actions = _apply_signal_scan_sync_decoding(
+        sync_cfg,
+        decode_obs,
+        torch.full((2,), env.ACTION_STAY, dtype=torch.long),
+        rejected_sync_feedback,
+        scan_state=matched_scan_state,
+    )
+    assert matched_rejected_actions.tolist() == [env.ACTION_STAY, env.ACTION_INTERACT]
+    broadcast_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        comm=True,
+        comm_token_limit=8,
+        comm_vocab_size=32,
+        obs_signal_scan_state=True,
+        eval_signal_scan_broadcast_assist=True,
+    )
+    broadcast_state = {
+        "scan_log": {0: 2},
+        "scan_pos": {0: (4, 1)},
+        "scan_window": 3,
+        "step": 2,
+    }
+    broadcast_actions = _apply_signal_scan_broadcast_assist(
+        broadcast_cfg,
+        {
+            0: {"action": env.ACTION_STAY, "message_tokens": [26, 7, 3]},
+            1: {"action": env.ACTION_STAY, "message_tokens": [9]},
+        },
+        broadcast_state,
+    )
+    assert broadcast_actions[0]["message_tokens"] == [26, 4, 1]
+    assert broadcast_actions[1]["message_tokens"] == [9]
+    repeat_broadcast_actions = _apply_signal_scan_broadcast_assist(
+        broadcast_cfg,
+        {
+            0: {"action": env.ACTION_STAY, "message_tokens": [26, 7, 3]},
+            1: {"action": env.ACTION_STAY, "message_tokens": [9]},
+        },
+        broadcast_state,
+    )
+    assert repeat_broadcast_actions[0]["message_tokens"] == [26, 7, 3]
+    broadcast_state["scan_log"][0] = 3
+    broadcast_state["step"] = 3
+    refreshed_broadcast_actions = _apply_signal_scan_broadcast_assist(
+        broadcast_cfg,
+        {
+            0: {"action": env.ACTION_STAY, "message_tokens": [26, 7, 3]},
+            1: {"action": env.ACTION_STAY, "message_tokens": [9]},
+        },
+        broadcast_state,
+    )
+    assert refreshed_broadcast_actions[0]["message_tokens"] == [26, 4, 1]
+    expired_broadcast_actions = _apply_signal_scan_broadcast_assist(
+        broadcast_cfg,
+        {
+            0: {"action": env.ACTION_STAY, "message_tokens": [26, 7, 3]},
+            1: {"action": env.ACTION_STAY, "message_tokens": []},
+        },
+        {
+            "scan_log": {0: 2},
+            "scan_pos": {0: (4, 1)},
+            "scan_window": 3,
+            "step": 9,
+        },
+    )
+    assert expired_broadcast_actions[0]["message_tokens"] == [26, 7, 3]
+    guard_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        comm=True,
+        comm_token_limit=8,
+        comm_vocab_size=32,
+        eval_signal_exact_target_message_guard=True,
+    )
+    guard_obs = {
+        0: {
+            "self_pos": np.array([0, 0], dtype=np.int16),
+            "goal_hint": np.full((8,), -1, dtype=np.int16),
+            "messages_tokens": np.full((2, 8), -1, dtype=np.int16),
+        },
+        1: {
+            "self_pos": np.array([1, 0], dtype=np.int16),
+            "goal_hint": np.array([26, 4, 3, -1, -1, -1, -1, -1], dtype=np.int16),
+            "messages_tokens": np.full((2, 8), -1, dtype=np.int16),
+        },
+    }
+    guarded_actions = _apply_signal_exact_target_message_guard(
+        guard_cfg,
+        guard_obs,
+        {
+            0: {"action": env.ACTION_STAY, "message_tokens": [26, 4, 3]},
+            1: {"action": env.ACTION_STAY, "message_tokens": [26, 4, 3]},
+        },
+        None,
+    )
+    assert guarded_actions[0]["message_tokens"] == []
+    assert guarded_actions[1]["message_tokens"] == [26, 4, 3]
+    scan_trusted_actions = _apply_signal_exact_target_message_guard(
+        guard_cfg,
+        guard_obs,
+        {0: {"action": env.ACTION_STAY, "message_tokens": [26, 4, 3]}},
+        {"scan_log": {1: 2}, "scan_pos": {1: (4, 3)}, "scan_window": 3, "step": 2},
+    )
+    assert scan_trusted_actions[0]["message_tokens"] == [26, 4, 3]
+    sync_cfg.eval_signal_scan_sync_force_first = True
+    first_actions = _apply_signal_scan_sync_decoding(
+        sync_cfg,
+        sync_obs,
+        torch.full((2,), env.ACTION_STAY, dtype=torch.long),
+        np.zeros_like(sync_feedback),
+    )
+    assert first_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_INTERACT]
+    refresh_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        obs_feedback=True,
+        obs_signal_scan_state=True,
+        eval_signal_scan_refresh_assist=True,
+        eval_signal_scan_refresh_threshold=0.5,
+    )
+    refresh_feedback = np.zeros((2, _feedback_dim(refresh_cfg)), dtype=np.float32)
+    refresh_feedback[0, sync_offset] = 1.0
+    refresh_feedback[0, sync_offset + 2] = 0.5
+    refresh_feedback[1, sync_offset] = 1.0
+    refresh_feedback[1, sync_offset + 1] = 1.0
+    refresh_feedback[1, sync_offset + 2] = 0.5
+    refresh_actions = _apply_signal_scan_refresh_decoding(
+        refresh_cfg,
+        sync_obs,
+        torch.full((2,), env.ACTION_STAY, dtype=torch.long),
+        refresh_feedback,
+    )
+    assert refresh_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_STAY]
+    refresh_memory_obs = {
+        key: value.copy() if hasattr(value, "copy") else value
+        for key, value in sync_obs[0].items()
+    }
+    refresh_memory_obs["goal_hint"] = np.full((8,), -1, dtype=np.int16)
+    assert not _signal_center_target_scan_decoding_candidate(refresh_memory_obs, refresh_cfg)
+    memory_refresh_actions = _apply_signal_scan_refresh_decoding(
+        refresh_cfg,
+        {0: refresh_memory_obs, 1: sync_obs[1]},
+        torch.full((2,), env.ACTION_STAY, dtype=torch.long),
+        refresh_feedback,
+    )
+    assert memory_refresh_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_STAY]
 
 
 def test_recurrent_signal_target_pursuit_label_weighting():
@@ -726,16 +1721,30 @@ def test_recurrent_signal_target_pursuit_label_weighting():
     from syncorsink.train.recurrent_bc_rl import (
         RecurrentConfig,
         _append_labeled_step,
+        _apply_signal_exact_target_navigation_assist,
+        _apply_signal_target_handoff_overrides,
+        _apply_signal_target_scan_broadcast_overrides,
+        _feedback_matrix,
         _finalize_episode_sequence,
         _label_latest_signal_decoy_drift_actions,
+        _label_latest_signal_decoy_scan_actions,
+        _label_latest_signal_rejected_target_drift_actions,
         _new_episode_sequence,
         _signal_decoy_pursuit_agents,
         _signal_decoy_drift_action_loss,
+        _signal_movement_stall_miss_agents,
         _signal_observation_allows_target,
+        _signal_positive_target_pursuit_agents,
+        _signal_rejected_target_drift_agents,
         _signal_target_decoy_drift_miss_agents,
         _signal_target_discovery_miss_agents,
+        _signal_target_handoff_miss_agents,
+        _signal_target_match_action_label_mask,
+        _signal_target_match_action_loss,
+        _signal_target_pursuit_action_label_mask,
         _signal_target_pursuit_miss_agents,
         _signal_target_pursuit_agents,
+        _signal_target_scan_broadcaster_agents,
         _signal_visible_target_match_features,
         _slice_recurrent_episode,
     )
@@ -772,6 +1781,7 @@ def test_recurrent_signal_target_pursuit_label_weighting():
     ep_data = _new_episode_sequence()
 
     assert _signal_target_pursuit_agents(env, obs, actions) == [0]
+    assert _signal_positive_target_pursuit_agents(env, obs, actions, min_map_size=16) == []
     assert _signal_observation_allows_target(obs[0], target, observed_map_size=8)
     assert _signal_target_pursuit_miss_agents(
         env,
@@ -801,6 +1811,9 @@ def test_recurrent_signal_target_pursuit_label_weighting():
     large_decoy = (7, 8)
     large_env.scenario_state.data["target"] = large_target
     large_env.scenario_state.data["decoys"] = [large_decoy]
+    large_env.grid[large_target[1], large_target[0]] = TILE_TARGET
+    large_env.grid[large_decoy[1], large_decoy[0]] = TILE_TARGET
+    large_obs = large_env._build_observations()
     large_obs[0]["goal_hint"] = np.array([
         26,
         large_target[0],
@@ -816,11 +1829,56 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         0: {"action": large_env.ACTION_LEFT, "message_tokens": []},
         1: {"action": large_env.ACTION_STAY, "message_tokens": []},
     }
+    large_model_decoy_scan = {
+        0: {"action": large_env.ACTION_INTERACT, "message_tokens": []},
+        1: {"action": large_env.ACTION_STAY, "message_tokens": []},
+    }
     large_model_stay = {
         0: {"action": large_env.ACTION_STAY, "message_tokens": []},
         1: {"action": large_env.ACTION_STAY, "message_tokens": []},
     }
     assert _signal_decoy_pursuit_agents(large_env, large_model_decoy) == [0]
+    assert _signal_rejected_target_drift_agents(large_env, large_obs, large_model_decoy) == [0]
+    assert _signal_rejected_target_drift_agents(large_env, large_obs, large_oracle) == []
+    target_match_mask, target_match_action_id = _signal_target_match_action_label_mask(
+        large_env,
+        large_obs,
+        large_oracle,
+    )
+    np.testing.assert_allclose(target_match_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(
+        target_match_action_id,
+        np.array([large_env.ACTION_RIGHT, -1], dtype=np.int64),
+    )
+    pursuit_action_mask, pursuit_action_id = _signal_target_pursuit_action_label_mask(
+        large_env,
+        large_obs,
+        RecurrentConfig(scenario="signal_hunt", map_size=16, agents=2),
+    )
+    np.testing.assert_allclose(pursuit_action_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(
+        pursuit_action_id,
+        np.array([large_env.ACTION_RIGHT, -1], dtype=np.int64),
+    )
+    decoy_match_mask, decoy_match_action_id = _signal_target_match_action_label_mask(
+        large_env,
+        large_obs,
+        large_model_decoy,
+    )
+    np.testing.assert_allclose(decoy_match_mask, np.array([0.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(decoy_match_action_id, np.array([-1, -1], dtype=np.int64))
+    assert _signal_positive_target_pursuit_agents(
+        large_env,
+        large_obs,
+        large_oracle,
+        min_map_size=16,
+    ) == [0]
+    assert _signal_positive_target_pursuit_agents(
+        large_env,
+        large_obs,
+        large_oracle,
+        min_map_size=32,
+    ) == []
     assert _signal_target_decoy_drift_miss_agents(
         large_env,
         large_obs,
@@ -842,6 +1900,37 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         large_model_stay,
         min_map_size=16,
     ) == [0]
+    stall_history = {
+        0: [(8, 8), (7, 8), (8, 8)],
+        1: [(0, 0), (1, 0), (2, 0)],
+    }
+    assert _signal_movement_stall_miss_agents(
+        large_env,
+        large_obs,
+        large_oracle,
+        large_model_decoy,
+        stall_history,
+        min_map_size=16,
+        window=4,
+    ) == [0]
+    assert _signal_movement_stall_miss_agents(
+        large_env,
+        large_obs,
+        large_oracle,
+        large_oracle,
+        stall_history,
+        min_map_size=16,
+        window=4,
+    ) == []
+    assert _signal_movement_stall_miss_agents(
+        large_env,
+        large_obs,
+        large_oracle,
+        large_model_decoy,
+        stall_history,
+        min_map_size=32,
+        window=4,
+    ) == []
     assert _signal_target_discovery_miss_agents(
         large_env,
         large_obs,
@@ -864,10 +1953,225 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         min_map_size=32,
     ) == []
 
+    large_env.agent_positions[0] = large_target
+    large_env.agent_positions[1] = (large_target[0] - 1, large_target[1])
+    handoff_obs = {
+        0: dict(large_obs[0]),
+        1: dict(large_obs[1]),
+    }
+    handoff_obs[0]["goal_hint"] = np.array([
+        26,
+        large_target[0],
+        large_target[1],
+        -1, -1, -1, -1, -1,
+    ], dtype=np.int16)
+    handoff_obs[1]["goal_hint"] = handoff_obs[0]["goal_hint"].copy()
+    handoff_oracle = {
+        0: {"action": large_env.ACTION_INTERACT, "message_tokens": []},
+        1: {"action": large_env.ACTION_RIGHT, "message_tokens": []},
+    }
+    handoff_model_idle = {
+        0: {"action": large_env.ACTION_INTERACT, "message_tokens": []},
+        1: {"action": large_env.ACTION_STAY, "message_tokens": []},
+    }
+    handoff_model_join = {
+        0: {"action": large_env.ACTION_INTERACT, "message_tokens": []},
+        1: {"action": large_env.ACTION_RIGHT, "message_tokens": []},
+    }
+    assert _signal_target_handoff_miss_agents(
+        large_env,
+        handoff_obs,
+        handoff_oracle,
+        handoff_model_idle,
+        feedback=None,
+    ) == [1]
+    assert _signal_target_handoff_miss_agents(
+        large_env,
+        handoff_obs,
+        handoff_oracle,
+        handoff_model_join,
+        feedback=None,
+    ) == []
+    handoff_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=16,
+        agents=2,
+        obs_feedback=True,
+        obs_signal_sync_feedback=True,
+        obs_signal_scan_state=True,
+        comm=True,
+        comm_token_limit=8,
+        comm_vocab_size=32,
+        dagger_target_scan_broadcast_labels=True,
+    )
+    large_env.steps = 6
+    large_env.scenario_state.data["scan_log"] = {0: 5}
+    feedback = _feedback_matrix(handoff_cfg, 2, info={}, env=large_env)
+    corrected, handoff_agents = _apply_signal_target_handoff_overrides(
+        handoff_cfg,
+        large_env,
+        {
+            0: {"action": large_env.ACTION_STAY, "message_tokens": [1]},
+            1: {"action": large_env.ACTION_STAY, "message_tokens": [2]},
+        },
+        feedback,
+    )
+    assert handoff_agents == [1]
+    assert corrected[1]["action"] == large_env.ACTION_RIGHT
+    assert corrected[1]["message_tokens"] == [2]
+    no_target_info_obs = {
+        0: dict(handoff_obs[0]),
+        1: dict(handoff_obs[1]),
+    }
+    no_target_info_obs[1]["goal_hint"] = np.full_like(handoff_obs[1]["goal_hint"], -1)
+    no_target_info_obs[1]["messages_tokens"] = np.full_like(
+        handoff_obs[1].get("messages_tokens", np.zeros((1, 8), dtype=np.int16)),
+        -1,
+    )
+    gated_corrected, gated_handoff_agents = _apply_signal_target_handoff_overrides(
+        handoff_cfg,
+        large_env,
+        {
+            0: {"action": large_env.ACTION_STAY, "message_tokens": [1]},
+            1: {"action": large_env.ACTION_STAY, "message_tokens": [2]},
+        },
+        feedback,
+        obs=no_target_info_obs,
+    )
+    assert gated_handoff_agents == []
+    assert gated_corrected[1]["action"] == large_env.ACTION_STAY
+    informed_corrected, informed_handoff_agents = _apply_signal_target_handoff_overrides(
+        handoff_cfg,
+        large_env,
+        {
+            0: {"action": large_env.ACTION_STAY, "message_tokens": [1]},
+            1: {"action": large_env.ACTION_STAY, "message_tokens": [2]},
+        },
+        feedback,
+        obs=handoff_obs,
+    )
+    assert informed_handoff_agents == [1]
+    assert informed_corrected[1]["action"] == large_env.ACTION_RIGHT
+    assert _signal_target_scan_broadcaster_agents(handoff_cfg, large_env, feedback, info={}) == []
+    broadcast_feedback = _feedback_matrix(
+        handoff_cfg,
+        2,
+        info={"events": {0: [{"event": "target_scan"}, {"event": "first_target_scan"}], 1: []}},
+        env=large_env,
+    )
+    broadcast_info = {"events": {0: [{"event": "target_scan"}, {"event": "first_target_scan"}], 1: []}}
+    assert _signal_target_scan_broadcaster_agents(
+        handoff_cfg,
+        large_env,
+        broadcast_feedback,
+        info=broadcast_info,
+    ) == [0]
+    broadcasted, broadcast_agents = _apply_signal_target_scan_broadcast_overrides(
+        handoff_cfg,
+        large_env,
+        {
+            0: {"action": large_env.ACTION_INTERACT, "message_tokens": [1]},
+            1: {"action": large_env.ACTION_STAY, "message_tokens": [2]},
+        },
+        broadcast_feedback,
+        info=broadcast_info,
+    )
+    assert broadcast_agents == [0]
+    assert broadcasted[0]["message_tokens"] == [26, large_target[0], large_target[1]]
+    assert broadcasted[1]["message_tokens"] == [2]
+
+    nav_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=16,
+        agents=2,
+        comm=True,
+        comm_token_limit=8,
+        comm_vocab_size=32,
+        eval_signal_exact_target_navigation_assist=True,
+        eval_signal_exact_target_memory_steps=10,
+    )
+    nav_obs = {
+        0: dict(handoff_obs[0]),
+        1: dict(handoff_obs[1]),
+    }
+    nav_obs[0]["goal_hint"] = np.full_like(handoff_obs[0]["goal_hint"], -1)
+    nav_obs[1]["goal_hint"] = np.full_like(handoff_obs[1]["goal_hint"], -1)
+    nav_obs[1]["self_pos"] = np.array([large_target[0] - 1, large_target[1]], dtype=np.int16)
+    nav_obs[1]["messages_tokens"] = np.array(
+        [[26, large_target[0], large_target[1], -1, -1, -1, -1, -1]],
+        dtype=np.int16,
+    )
+    idle_acts = torch.tensor([large_env.ACTION_STAY, large_env.ACTION_STAY], dtype=torch.long)
+    untrusted_nav = _apply_signal_exact_target_navigation_assist(
+        nav_cfg,
+        nav_obs,
+        idle_acts,
+        scan_state=None,
+    )
+    assert untrusted_nav.tolist() == [large_env.ACTION_STAY, large_env.ACTION_STAY]
+    trusted_scan_state = {
+        "step": 6,
+        "scan_window": 3,
+        "scan_log": {0: 5},
+        "scan_pos": {0: [large_target[0], large_target[1]]},
+    }
+    trusted_nav = _apply_signal_exact_target_navigation_assist(
+        nav_cfg,
+        nav_obs,
+        idle_acts,
+        scan_state=trusted_scan_state,
+    )
+    assert trusted_nav.tolist() == [large_env.ACTION_STAY, large_env.ACTION_RIGHT]
+    remembered_obs = {
+        0: dict(nav_obs[0]),
+        1: dict(nav_obs[1]),
+    }
+    remembered_obs[1]["messages_tokens"] = np.full_like(nav_obs[1]["messages_tokens"], -1)
+    remembered_scan_state = {
+        "step": 12,
+        "scan_window": 3,
+        "scan_log": {0: 5},
+        "scan_pos": {0: [large_target[0], large_target[1]]},
+        "exact_target_memory": trusted_scan_state["exact_target_memory"],
+    }
+    remembered_nav = _apply_signal_exact_target_navigation_assist(
+        nav_cfg,
+        remembered_obs,
+        idle_acts,
+        scan_state=remembered_scan_state,
+    )
+    assert remembered_nav.tolist() == [large_env.ACTION_STAY, large_env.ACTION_RIGHT]
+    nav_obs[1]["self_pos"] = np.array([large_target[0], large_target[1]], dtype=np.int16)
+    nav_obs[1]["action_mask"] = np.asarray(nav_obs[1]["action_mask"], dtype=np.float32).copy()
+    nav_obs[1]["action_mask"][large_env.ACTION_INTERACT] = 1.0
+    trusted_interact = _apply_signal_exact_target_navigation_assist(
+        nav_cfg,
+        nav_obs,
+        idle_acts,
+        scan_state=trusted_scan_state,
+    )
+    assert trusted_interact.tolist() == [large_env.ACTION_STAY, large_env.ACTION_INTERACT]
+
+    large_env.agent_positions[0] = (8, 8)
+    large_env.agent_positions[1] = tuple(int(v) for v in large_env.agent_positions[1])
+    large_env.steps = 0
+    large_env.scenario_state.data["scan_log"] = {}
     large_cfg = RecurrentConfig(scenario="signal_hunt", map_size=16, agents=2)
     large_ep_data = _new_episode_sequence()
     _append_labeled_step(large_ep_data, large_obs, large_oracle, large_env, large_cfg)
     assert _label_latest_signal_decoy_drift_actions(
+        large_ep_data,
+        num_agents=2,
+        agent_ids=[0],
+        model_actions=large_model_decoy,
+    ) == 1
+    assert _label_latest_signal_decoy_scan_actions(
+        large_ep_data,
+        num_agents=2,
+        agent_ids=[0],
+        model_actions=large_model_decoy_scan,
+    ) == 1
+    assert _label_latest_signal_rejected_target_drift_actions(
         large_ep_data,
         num_agents=2,
         agent_ids=[0],
@@ -882,6 +2186,46 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         large_episode["signal_decoy_drift_action_id"],
         np.array([[large_env.ACTION_LEFT, -1]], dtype=np.int64),
     )
+    np.testing.assert_allclose(
+        large_episode["signal_decoy_scan_action_mask"],
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        large_episode["signal_decoy_scan_action_id"],
+        np.array([[large_env.ACTION_INTERACT, -1]], dtype=np.int64),
+    )
+    np.testing.assert_allclose(
+        large_episode["signal_target_match_action_mask"],
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        large_episode["signal_target_match_action_id"],
+        np.array([[large_env.ACTION_RIGHT, -1]], dtype=np.int64),
+    )
+    np.testing.assert_allclose(
+        large_episode["signal_target_opportunity_action_mask"],
+        np.array([[0.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        large_episode["signal_target_opportunity_kind_id"],
+        np.array([[-1, -1]], dtype=np.int64),
+    )
+    np.testing.assert_allclose(
+        large_episode["signal_target_pursuit_action_mask"],
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        large_episode["signal_target_pursuit_action_id"],
+        np.array([[large_env.ACTION_RIGHT, -1]], dtype=np.int64),
+    )
+    np.testing.assert_allclose(
+        large_episode["signal_rejected_target_drift_action_mask"],
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        large_episode["signal_rejected_target_drift_action_id"],
+        np.array([[large_env.ACTION_LEFT, -1]], dtype=np.int64),
+    )
     large_replay = _slice_recurrent_episode(large_episode, 0, 1)
     np.testing.assert_allclose(
         large_replay["signal_decoy_drift_action_mask"],
@@ -890,6 +2234,46 @@ def test_recurrent_signal_target_pursuit_label_weighting():
     np.testing.assert_array_equal(
         large_replay["signal_decoy_drift_action_id"],
         large_episode["signal_decoy_drift_action_id"],
+    )
+    np.testing.assert_allclose(
+        large_replay["signal_decoy_scan_action_mask"],
+        large_episode["signal_decoy_scan_action_mask"],
+    )
+    np.testing.assert_array_equal(
+        large_replay["signal_decoy_scan_action_id"],
+        large_episode["signal_decoy_scan_action_id"],
+    )
+    np.testing.assert_allclose(
+        large_replay["signal_target_match_action_mask"],
+        large_episode["signal_target_match_action_mask"],
+    )
+    np.testing.assert_array_equal(
+        large_replay["signal_target_match_action_id"],
+        large_episode["signal_target_match_action_id"],
+    )
+    np.testing.assert_allclose(
+        large_replay["signal_target_opportunity_action_mask"],
+        large_episode["signal_target_opportunity_action_mask"],
+    )
+    np.testing.assert_array_equal(
+        large_replay["signal_target_opportunity_kind_id"],
+        large_episode["signal_target_opportunity_kind_id"],
+    )
+    np.testing.assert_allclose(
+        large_replay["signal_target_pursuit_action_mask"],
+        large_episode["signal_target_pursuit_action_mask"],
+    )
+    np.testing.assert_array_equal(
+        large_replay["signal_target_pursuit_action_id"],
+        large_episode["signal_target_pursuit_action_id"],
+    )
+    np.testing.assert_allclose(
+        large_replay["signal_rejected_target_drift_action_mask"],
+        large_episode["signal_rejected_target_drift_action_mask"],
+    )
+    np.testing.assert_array_equal(
+        large_replay["signal_rejected_target_drift_action_id"],
+        large_episode["signal_rejected_target_drift_action_id"],
     )
     bad_high_logits = torch.zeros((2, 8), dtype=torch.float32)
     bad_low_logits = torch.zeros((2, 8), dtype=torch.float32)
@@ -902,6 +2286,32 @@ def test_recurrent_signal_target_pursuit_label_weighting():
     ).item() > _signal_decoy_drift_action_loss(
         bad_low_logits,
         torch.tensor([large_env.ACTION_LEFT, -1], dtype=torch.long),
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+    ).item()
+    bad_scan_high_logits = torch.zeros((2, 8), dtype=torch.float32)
+    bad_scan_low_logits = torch.zeros((2, 8), dtype=torch.float32)
+    bad_scan_high_logits[0, large_env.ACTION_INTERACT] = 4.0
+    bad_scan_low_logits[0, large_env.ACTION_INTERACT] = -4.0
+    assert _signal_decoy_drift_action_loss(
+        bad_scan_high_logits,
+        torch.tensor([large_env.ACTION_INTERACT, -1], dtype=torch.long),
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+    ).item() > _signal_decoy_drift_action_loss(
+        bad_scan_low_logits,
+        torch.tensor([large_env.ACTION_INTERACT, -1], dtype=torch.long),
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+    ).item()
+    target_match_high_logits = torch.zeros((2, 8), dtype=torch.float32)
+    target_match_low_logits = torch.zeros((2, 8), dtype=torch.float32)
+    target_match_high_logits[0, large_env.ACTION_RIGHT] = 4.0
+    target_match_low_logits[0, large_env.ACTION_RIGHT] = -4.0
+    assert _signal_target_match_action_loss(
+        target_match_high_logits,
+        torch.tensor([large_env.ACTION_RIGHT, -1], dtype=torch.long),
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+    ).item() < _signal_target_match_action_loss(
+        target_match_low_logits,
+        torch.tensor([large_env.ACTION_RIGHT, -1], dtype=torch.long),
         torch.tensor([1.0, 0.0], dtype=torch.float32),
     ).item()
 
@@ -952,9 +2362,11 @@ def test_recurrent_signal_rejected_target_interact_auxiliary_labels():
     from syncorsink.train.recurrent_bc_rl import (
         RecurrentConfig,
         _append_labeled_step,
+        _clear_true_target_rejected_mask,
         _finalize_episode_sequence,
         _new_episode_sequence,
         _signal_center_rejected_target,
+        _signal_rejected_target_interact_action_loss,
         _signal_rejected_target_interact_agents,
         _signal_rejected_target_interact_loss,
         _slice_recurrent_episode,
@@ -1014,6 +2426,39 @@ def test_recurrent_signal_rejected_target_interact_auxiliary_labels():
 
     assert loss.item() == pytest.approx(torch.nn.functional.softplus(torch.tensor(2.0)).item())
 
+    high_bad_action_logits = torch.zeros((2, 8), dtype=torch.float32)
+    low_bad_action_logits = torch.zeros((2, 8), dtype=torch.float32)
+    high_bad_action_logits[0, env.ACTION_INTERACT] = 4.0
+    low_bad_action_logits[0, env.ACTION_INTERACT] = -4.0
+    high_bad_action_logits[0, env.ACTION_STAY] = 0.5
+    low_bad_action_logits[0, env.ACTION_STAY] = 0.5
+    assert _signal_rejected_target_interact_action_loss(
+        high_bad_action_logits,
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+    ).item() > _signal_rejected_target_interact_action_loss(
+        low_bad_action_logits,
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+    ).item()
+
+    env.scenario_state.data["target"] = rejected_pos
+    env.agent_positions[0] = rejected_pos
+    assert _signal_center_rejected_target(obs[0], observed_map_size=8)
+    assert _signal_rejected_target_interact_agents(env, obs, actions) == []
+    np.testing.assert_allclose(
+        _clear_true_target_rejected_mask(
+            env,
+            np.array([1.0, 0.0], dtype=np.float32),
+        ),
+        np.array([0.0, 0.0], dtype=np.float32),
+    )
+    true_target_ep = _new_episode_sequence()
+    _append_labeled_step(true_target_ep, obs, actions, env, cfg)
+    true_target_episode = _finalize_episode_sequence(true_target_ep, env, cfg)
+    np.testing.assert_allclose(
+        true_target_episode["signal_rejected_target_mask"],
+        np.array([[0.0, 0.0]], dtype=np.float32),
+    )
+
 
 def test_recurrent_signal_sync_feedback_from_target_scan_event():
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
@@ -1043,7 +2488,7 @@ def test_recurrent_signal_sync_feedback_from_target_scan_event():
     feedback = _feedback_matrix(cfg, 2, info=info)
 
     assert done is False
-    assert {event["event"] for event in info["events"][0]} == {"target_scan"}
+    assert {event["event"] for event in info["events"][0]} == {"target_scan", "first_target_scan"}
     assert feedback.shape == (2, 16)
     np.testing.assert_allclose(feedback[0, 12:16], np.array([1.0, 0.0, 0.5, 0.0], dtype=np.float32))
     np.testing.assert_allclose(feedback[1, 12:16], np.array([0.0, 1.0, 0.5, 0.0], dtype=np.float32))
@@ -1126,6 +2571,73 @@ def test_recurrent_signal_scan_state_feedback_persists_until_window_expires():
     )
 
 
+def test_recurrent_signal_negative_memory_feedback_tracks_decoy_scans():
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_TARGET
+    from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _feedback_matrix
+
+    env = SyncOrSinkEnv(SyncOrSinkConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        num_agents=2,
+        fov_preset="easy",
+        max_steps=20,
+    ))
+    obs, _ = env.reset(seed=0)
+    decoy_pos = tuple(env.agent_positions[0])
+    true_target = tuple(env.agent_positions[1])
+    env.grid[decoy_pos[1], decoy_pos[0]] = TILE_TARGET
+    env.scenario_state.data["target"] = true_target
+    env.scenario_state.data["decoys"] = [decoy_pos]
+
+    obs, _rewards, done, _truncated, info = env.step({
+        0: {"action": env.ACTION_INTERACT, "message_tokens": []},
+        1: {"action": env.ACTION_STAY, "message_tokens": []},
+    })
+    cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        obs_feedback=True,
+        obs_signal_sync_feedback=True,
+        obs_signal_scan_state=True,
+        obs_signal_negative_memory=True,
+        obs_signal_negative_memory_window=4,
+    )
+    feedback = _feedback_matrix(cfg, 2, info=info, env=env, obs=obs)
+
+    assert done is False
+    assert env.scenario_state.data["negative_target_log"] == [
+        {"agent_id": 0, "pos": decoy_pos, "step": 1}
+    ]
+    assert feedback.shape == (2, 28)
+    np.testing.assert_allclose(
+        feedback[0, 20:28],
+        np.array([1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0], dtype=np.float32),
+    )
+    assert feedback[1, 21] == 1.0
+    assert feedback[1, 27] == pytest.approx(1.0)
+
+    tracked_feedback = _feedback_matrix(
+        cfg,
+        2,
+        scan_state={"negative_target_log": [{"agent_id": 0, "pos": decoy_pos, "step": 1}], "step": 3},
+        obs=obs,
+    )
+    np.testing.assert_allclose(
+        tracked_feedback[0, 20:28],
+        np.array([1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 3.0 / 5.0], dtype=np.float32),
+    )
+
+    expired_feedback = _feedback_matrix(
+        cfg,
+        2,
+        scan_state={"negative_target_log": [{"agent_id": 0, "pos": decoy_pos, "step": 1}], "step": 6},
+        obs=obs,
+    )
+    np.testing.assert_allclose(expired_feedback[:, 20:28], np.zeros((2, 8), dtype=np.float32))
+
+
 def test_recurrent_signal_sync_response_label_weighting():
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
     from syncorsink.train.recurrent_bc_rl import (
@@ -1134,6 +2646,7 @@ def test_recurrent_signal_sync_response_label_weighting():
         _feedback_matrix,
         _new_episode_sequence,
         _signal_sync_response_agents,
+        _signal_sync_response_action_label_mask,
         _signal_target_handoff_miss_agents,
     )
 
@@ -1153,12 +2666,14 @@ def test_recurrent_signal_sync_response_label_weighting():
         env.agent_positions[1][1],
         -1, -1, -1, -1, -1,
     ], dtype=np.int16)
+    obs[1]["action_mask"] = np.ones((8,), dtype=np.float32)
     cfg = RecurrentConfig(
         scenario="signal_hunt",
         map_size=8,
         agents=2,
         obs_feedback=True,
         obs_signal_sync_feedback=True,
+        obs_signal_scan_state=True,
         bc_signal_sync_response_weight=5.0,
     )
     feedback = _feedback_matrix(
@@ -1173,6 +2688,16 @@ def test_recurrent_signal_sync_response_label_weighting():
     ep_data = _new_episode_sequence()
 
     assert _signal_sync_response_agents(env, obs, actions, feedback) == [1]
+    assert _signal_sync_response_agents(env, obs, actions, feedback, cfg=cfg) == [1]
+    sync_mask, sync_action_id = _signal_sync_response_action_label_mask(
+        env,
+        obs,
+        actions,
+        feedback,
+        cfg=cfg,
+    )
+    np.testing.assert_allclose(sync_mask, np.array([0.0, 1.0], dtype=np.float32))
+    np.testing.assert_array_equal(sync_action_id, np.array([-1, env.ACTION_INTERACT], dtype=np.int64))
     model_actions = {
         0: {"action": env.ACTION_STAY, "message_tokens": []},
         1: {"action": env.ACTION_STAY, "message_tokens": []},
@@ -1183,10 +2708,13 @@ def test_recurrent_signal_sync_response_label_weighting():
         actions,
         model_actions,
         feedback,
+        cfg=cfg,
     ) == [1]
     assert _signal_target_handoff_miss_agents(env, obs, actions, actions, feedback) == []
     _append_labeled_step(ep_data, obs, actions, env, cfg, feedback=feedback)
     assert ep_data["step_weights"] == [1.0, 5.0]
+    assert ep_data["signal_sync_response_action_mask"] == [0.0, 1.0]
+    assert ep_data["signal_sync_response_action_id"] == [-1, env.ACTION_INTERACT]
 
     x, y = env.agent_positions[1]
     if x < env.map_size - 1:
@@ -1201,8 +2729,55 @@ def test_recurrent_signal_sync_response_label_weighting():
     ep_data = _new_episode_sequence()
 
     assert _signal_sync_response_agents(env, obs, actions, feedback) == [1]
+    sync_move_mask, sync_move_action_id = _signal_sync_response_action_label_mask(
+        env,
+        obs,
+        actions,
+        feedback,
+        cfg=cfg,
+    )
+    np.testing.assert_allclose(sync_move_mask, np.array([0.0, 1.0], dtype=np.float32))
+    np.testing.assert_array_equal(sync_move_action_id, np.array([-1, action], dtype=np.int64))
     _append_labeled_step(ep_data, obs, actions, env, cfg, feedback=feedback)
     assert ep_data["step_weights"] == [1.0, 5.0]
+    assert ep_data["signal_sync_response_action_mask"] == [0.0, 1.0]
+    assert ep_data["signal_sync_response_action_id"] == [-1, action]
+
+    env.steps = 4
+    env.scenario_state.data["scan_log"] = {0: 4}
+    env.scenario_state.data["scan_window"] = 3
+    active_scan_feedback = _feedback_matrix(
+        cfg,
+        2,
+        info={},
+        env=env,
+        obs=obs,
+    )
+    active_scan_ep_data = _new_episode_sequence()
+
+    assert _signal_sync_response_agents(env, obs, actions, active_scan_feedback) == []
+    assert _signal_sync_response_agents(env, obs, actions, active_scan_feedback, cfg=cfg) == [1]
+    active_sync_mask, active_sync_action_id = _signal_sync_response_action_label_mask(
+        env,
+        obs,
+        actions,
+        active_scan_feedback,
+        cfg=cfg,
+    )
+    np.testing.assert_allclose(active_sync_mask, np.array([0.0, 1.0], dtype=np.float32))
+    np.testing.assert_array_equal(active_sync_action_id, np.array([-1, action], dtype=np.int64))
+    assert _signal_target_handoff_miss_agents(
+        env,
+        obs,
+        actions,
+        model_actions,
+        active_scan_feedback,
+        cfg=cfg,
+    ) == [1]
+    _append_labeled_step(active_scan_ep_data, obs, actions, env, cfg, feedback=active_scan_feedback)
+    assert active_scan_ep_data["step_weights"] == [1.0, 5.0]
+    assert active_scan_ep_data["signal_sync_response_action_mask"] == [0.0, 1.0]
+    assert active_scan_ep_data["signal_sync_response_action_id"] == [-1, action]
 
 
 def test_recurrent_build_env_passes_signal_shaping_config():
@@ -1222,6 +2797,9 @@ def test_recurrent_build_env_passes_signal_shaping_config():
         signal_colocation_bonus=0.3,
         signal_colocation_radius=3,
         signal_comm_utility=0.2,
+        signal_target_visit_bonus=0.4,
+        signal_decoy_visit_penalty=0.5,
+        signal_unique_target_scan_bonus=0.6,
         comm_token_limit=4,
         comm_vocab_size=8,
         comm_max_messages=5,
@@ -1241,6 +2819,9 @@ def test_recurrent_build_env_passes_signal_shaping_config():
     assert env.config.signal_colocation_bonus == 0.3
     assert env.config.signal_colocation_radius == 3
     assert env.config.signal_comm_utility == 0.2
+    assert env.config.signal_target_visit_bonus == 0.4
+    assert env.config.signal_decoy_visit_penalty == 0.5
+    assert env.config.signal_unique_target_scan_bonus == 0.6
     assert env.config.max_messages == 5
     assert env.config.comm_len_cost == 0.02
     assert env.config.comm_cost == 0.03
@@ -1327,6 +2908,7 @@ def test_recurrent_dagger_best_round_uses_eval_score(monkeypatch):
     seen_seed_counts = []
 
     def fake_train_recurrent_bc(cfg, episodes, device, model=None):
+        cfg.eval_send_threshold = 0.25 + float(train_calls["count"])
         round_model = torch.nn.Linear(1, 1, bias=False)
         with torch.no_grad():
             round_model.weight.fill_(float(train_calls["count"]))
@@ -1372,14 +2954,17 @@ def test_recurrent_dagger_best_round_uses_eval_score(monkeypatch):
         "obs": np.zeros((1, 1, 1), dtype=np.float32),
         "source": "expert",
     }
+    cfg = RecurrentConfig(dagger_rounds=1, eval_seed_count=3)
     model, history, all_episodes, best_round = recurrent.train_recurrent_bc_dagger(
-        RecurrentConfig(dagger_rounds=1, eval_seed_count=3),
+        cfg,
         [initial_episode],
         torch.device("cpu"),
     )
 
     assert seen_seed_counts == [3, 3]
     assert best_round["round"] == 1
+    assert best_round["eval_send_threshold"] == pytest.approx(1.25)
+    assert cfg.eval_send_threshold == pytest.approx(1.25)
     assert history[1]["eval_score"] > history[0]["eval_score"]
     assert len(all_episodes) == 2
     assert float(next(model.parameters()).item()) == pytest.approx(1.0)
@@ -1446,6 +3031,7 @@ def test_recurrent_dagger_early_stop_skips_extra_collection(monkeypatch):
     seen_seed_counts = []
 
     def fake_train_recurrent_bc(cfg, episodes, device, model=None):
+        cfg.eval_send_threshold = 0.25 + float(train_calls["count"])
         round_model = torch.nn.Linear(1, 1, bias=False)
         with torch.no_grad():
             round_model.weight.fill_(float(train_calls["count"]))
@@ -1499,8 +3085,9 @@ def test_recurrent_dagger_early_stop_skips_extra_collection(monkeypatch):
         "obs": np.zeros((1, 1, 1), dtype=np.float32),
         "source": "expert",
     }
+    cfg = RecurrentConfig(dagger_rounds=3, dagger_early_stop_patience=1, eval_seed_count=4)
     model, history, all_episodes, best_round = recurrent.train_recurrent_bc_dagger(
-        RecurrentConfig(dagger_rounds=3, dagger_early_stop_patience=1, eval_seed_count=4),
+        cfg,
         [initial_episode],
         torch.device("cpu"),
     )
@@ -1513,6 +3100,8 @@ def test_recurrent_dagger_early_stop_skips_extra_collection(monkeypatch):
     assert history[1]["early_stop"] is True
     assert history[1]["non_improving_rounds"] == 1
     assert best_round["round"] == 0
+    assert best_round["eval_send_threshold"] == pytest.approx(0.25)
+    assert cfg.eval_send_threshold == pytest.approx(0.25)
     assert len(all_episodes) == 2
     assert float(next(model.parameters()).item()) == pytest.approx(0.0)
 
@@ -1865,6 +3454,47 @@ def test_recurrent_signal_features_decode_constraint_grammar():
     assert constraint[19] == 1.0
     assert constraint[20] == 1.0
     assert constraint[21] == 1.0
+
+
+def test_recurrent_signal_features_include_inferred_target_candidates():
+    from syncorsink.envs.maps import TILE_WATER
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _signal_coordination_features,
+        _signal_inferred_constraint_targets,
+    )
+
+    obs_agent = {
+        "local_grid": np.zeros((5, 5), dtype=np.int16),
+        "self_pos": np.array([0, 0], dtype=np.int16),
+        "goal_hint": np.array([21, TILE_WATER, 2, 2, 0, -1, -1, -1], dtype=np.int16),
+        "messages_tokens": np.array([
+            [23, 0, 0, 8, -1, -1, -1, -1],
+            [-1, -1, -1, -1, -1, -1, -1, -1],
+        ], dtype=np.int16),
+        "message_from": np.array([1, -1], dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        obs_signal_features=True,
+        obs_signal_inferred_target_features=True,
+        comm=True,
+        comm_token_limit=8,
+        comm_vocab_size=32,
+    )
+
+    assert _signal_inferred_constraint_targets(obs_agent, observed_map_size=8) == [(2, 2)]
+    features = _signal_coordination_features(obs_agent, cfg, observed_map_size=8)
+    inferred = features[38:44]
+
+    assert features.shape == (44,)
+    np.testing.assert_allclose(
+        inferred,
+        np.array([1.0, 2 / 7, 2 / 7, 4 / 7, 1 / 32, 0.0], dtype=np.float32),
+    )
 
 
 def test_recurrent_checkpoint_policy_egocentric_memory_cross_map_size(tmp_path):
@@ -2329,10 +3959,41 @@ def test_recurrent_comm_reference_kl_tracks_all_comm_heads():
 
 def test_recurrent_comm_length_loss_ignores_no_message_examples():
     from syncorsink.train.recurrent_bc_rl import (
+        _mix_oracle_rollin_messages,
         _recurrent_comm_loss,
         _recurrent_comm_loss_components,
         _send_threshold_for_target_rate,
     )
+
+    model_actions = {
+        0: {"action": 1, "message_tokens": [1, 2]},
+        1: {"action": 2, "message_tokens": []},
+    }
+    oracle_actions = {
+        0: {"action": 3, "message_tokens": [7]},
+        1: {"action": 4, "message_tokens": [8, 9]},
+    }
+    mixed, replaced_agents, replaced_tokens = _mix_oracle_rollin_messages(
+        model_actions,
+        oracle_actions,
+        1.0,
+        np.random.default_rng(0),
+    )
+    assert {aid: action["action"] for aid, action in mixed.items()} == {0: 1, 1: 2}
+    assert mixed[0]["message_tokens"] == [7]
+    assert mixed[1]["message_tokens"] == [8, 9]
+    assert replaced_agents == 2
+    assert replaced_tokens == 3
+    unchanged, replaced_agents, replaced_tokens = _mix_oracle_rollin_messages(
+        model_actions,
+        oracle_actions,
+        0.0,
+        np.random.default_rng(0),
+    )
+    assert unchanged[0]["message_tokens"] == [1, 2]
+    assert unchanged[1]["message_tokens"] == []
+    assert replaced_agents == 0
+    assert replaced_tokens == 0
 
     send_logits = torch.zeros((2, 1), requires_grad=True)
     token_logits = torch.zeros((2, 4, 8), requires_grad=True)
@@ -2449,6 +4110,7 @@ def test_recurrent_signal_hint_comm_bc_smoke(tmp_path):
     from syncorsink.eval.trajectory_audit import (
         AuditPolicySpec,
         make_recurrent_checkpoint_policy_factory,
+        recurrent_checkpoint_env_config,
         run_trajectory_audit,
     )
     from syncorsink.train.mappo import resolve_device
@@ -2476,11 +4138,18 @@ def test_recurrent_signal_hint_comm_bc_smoke(tmp_path):
         comm_vocab_size=32,
         demo_episodes=4,
         bc_epochs=1,
+        bc_eval_every_epochs=1,
+        bc_eval_episodes=1,
+        bc_eval_seed_count=1,
+        bc_restore_best_eval_epoch=True,
         bc_seq_len=16,
         bc_comm_loss_weight=0.1,
         bc_comm_send_pos_weight=-1,
         bc_signal_rejected_target_interact_loss_weight=0.05,
         bc_signal_bad_redundant_target_interact_loss_weight=0.05,
+        bc_signal_first_target_scan_action_weight=0.1,
+        bc_signal_joint_target_scan_action_weight=0.1,
+        bc_signal_target_aux_weight=0.1,
         dagger_rounds=1,
         dagger_episodes=1,
         dagger_retrain_from_scratch=False,
@@ -2516,28 +4185,48 @@ def test_recurrent_signal_hint_comm_bc_smoke(tmp_path):
 
     checkpoint = tmp_path / "recurrent_signal.pt"
     torch.save({"model": model.state_dict(), "config": vars(cfg)}, checkpoint)
+    larger_audit_env = SyncOrSinkConfig(
+        scenario="signal_hunt",
+        map_size=16,
+        num_agents=2,
+        fov_preset="easy",
+        max_steps=120,
+        obs_exploration_memory=False,
+        comm_token_limit=8,
+        token_vocab_size=32,
+        max_messages=8,
+    )
+    larger_recurrent_audit_env = recurrent_checkpoint_env_config(checkpoint, larger_audit_env)
+    assert larger_recurrent_audit_env.map_size == 16
+    assert larger_recurrent_audit_env.max_steps == 120
+    assert larger_recurrent_audit_env.obs_exploration_memory is True
+    base_audit_env = SyncOrSinkConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        num_agents=2,
+        fov_preset="easy",
+        max_steps=60,
+        obs_exploration_memory=False,
+        comm_token_limit=8,
+        token_vocab_size=32,
+        max_messages=8,
+    )
+    recurrent_audit_env = recurrent_checkpoint_env_config(checkpoint, base_audit_env)
+    assert recurrent_audit_env.obs_exploration_memory is True
     audit = run_trajectory_audit(
-        SyncOrSinkConfig(
-            scenario="signal_hunt",
-            map_size=8,
-            num_agents=2,
-            fov_preset="easy",
-            max_steps=60,
-            obs_exploration_memory=True,
-            comm_token_limit=8,
-            token_vocab_size=32,
-            max_messages=8,
-        ),
+        base_audit_env,
         [
             AuditPolicySpec(
                 label="recurrent",
                 factory=make_recurrent_checkpoint_policy_factory(checkpoint, device="cpu"),
+                env_config=recurrent_audit_env,
             )
         ],
         episodes=1,
         seed=3000,
     )
     assert audit["policies"][0]["summary"]["episodes"] == 1
+    assert audit["policies"][0]["env_config"]["obs_exploration_memory"] is True
 
 
 def test_recurrent_actor_checkpoint_init_for_rl_smoke(tmp_path):
@@ -2595,11 +4284,40 @@ def test_recurrent_actor_checkpoint_init_for_rl_smoke(tmp_path):
 
     device = resolve_device(cfg.device)
     loaded = load_recurrent_actor_checkpoint(checkpoint, cfg, device)
+    legacy_checkpoint = tmp_path / "recurrent_init_legacy_no_scan_gate.pt"
+    legacy_state = {
+        key: value
+        for key, value in model.state_dict().items()
+        if not key.startswith((
+            "signal_scan_gate.",
+            "signal_target_validity.",
+            "signal_target_decision.",
+            "signal_target_aux.",
+        ))
+    }
+    torch.save({"model": legacy_state, "config": vars(cfg)}, legacy_checkpoint)
+    legacy_loaded = load_recurrent_actor_checkpoint(legacy_checkpoint, cfg, device)
+    assert hasattr(legacy_loaded, "signal_scan_gate")
+    assert hasattr(legacy_loaded, "signal_target_validity")
+    assert hasattr(legacy_loaded, "signal_target_decision")
+    assert hasattr(legacy_loaded, "signal_target_aux")
     train_recurrent_rl(cfg, loaded, device)
 
     saved = torch.load(tmp_path / "rl_from_init.pt", map_location="cpu")
     assert saved["algorithm"] == "recurrent_bc_rl"
     assert saved["best_eval"]["episodes"] == 1
+    expanded_cfg = RecurrentConfig(**{
+        **vars(cfg),
+        "obs_signal_negative_memory": True,
+        "recurrent_init_allow_obs_dim_mismatch": True,
+    })
+    expanded = load_recurrent_actor_checkpoint(checkpoint, expanded_cfg, device)
+    old_weight = model.state_dict()["encoder.net.0.weight"]
+    expanded_weight = expanded.state_dict()["encoder.net.0.weight"]
+    assert expanded_weight.shape[1] == obs_dim + 8
+    torch.testing.assert_close(expanded_weight[:, :obs_dim - 8], old_weight[:, :obs_dim - 8])
+    torch.testing.assert_close(expanded_weight[:, obs_dim - 8:obs_dim], torch.zeros_like(old_weight[:, -8:]))
+    torch.testing.assert_close(expanded_weight[:, obs_dim:], old_weight[:, -8:])
     with pytest.raises(ValueError, match="hidden_dim"):
         load_recurrent_actor_checkpoint(checkpoint, RecurrentConfig(**{**vars(cfg), "hidden_dim": 32}), device)
 
@@ -2744,6 +4462,55 @@ def test_signal_hunt_shaping_rewards():
     actions = {i: {"action": env.ACTION_STAY} for i in range(env.num_agents)}
     obs, rewards, done, truncated, info = env.step(actions)
     assert len(rewards) == env.num_agents
+
+
+def test_signal_hunt_completion_shaping_rewards_fire_once():
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+
+    config = SyncOrSinkConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        num_agents=2,
+        fov_preset="easy",
+        signal_shaping=True,
+        signal_target_visit_bonus=0.4,
+        signal_decoy_visit_penalty=0.25,
+        signal_unique_target_scan_bonus=0.7,
+    )
+    env = SyncOrSinkEnv(config)
+    env.reset(seed=0)
+    target = env.scenario_state.data["target"]
+    decoy = env.scenario_state.data["decoys"][0]
+    env.agent_positions[0] = target
+    env.agent_positions[1] = decoy
+
+    actions = {0: {"action": env.ACTION_STAY}, 1: {"action": env.ACTION_STAY}}
+    _, rewards, done, _, info = env.step(actions)
+    assert done is False
+    assert rewards[0] == pytest.approx(0.4)
+    assert rewards[1] == pytest.approx(-0.25)
+    assert {"event": "target_visit"} in info["events"][0]
+    assert {"event": "decoy_visit"} in info["events"][1]
+
+    _, rewards, done, _, info = env.step(actions)
+    assert done is False
+    assert rewards[0] == pytest.approx(0.0)
+    assert rewards[1] == pytest.approx(0.0)
+    assert {"event": "target_visit"} not in info["events"][0]
+    assert {"event": "decoy_visit"} not in info["events"][1]
+
+    scan_actions = {0: {"action": env.ACTION_INTERACT}, 1: {"action": env.ACTION_STAY}}
+    _, rewards, done, _, info = env.step(scan_actions)
+    assert done is False
+    assert rewards[0] == pytest.approx(0.7)
+    assert {"event": "target_scan"} in info["events"][0]
+    assert {"event": "unique_target_scan"} in info["events"][0]
+
+    _, rewards, done, _, info = env.step(scan_actions)
+    assert done is False
+    assert rewards[0] == pytest.approx(0.0)
+    assert {"event": "target_scan"} in info["events"][0]
+    assert {"event": "unique_target_scan"} not in info["events"][0]
 
 
 def test_energy_grid_node_critical_events():

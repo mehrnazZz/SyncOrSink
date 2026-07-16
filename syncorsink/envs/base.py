@@ -64,6 +64,9 @@ class SyncOrSinkConfig:
     signal_colocation_bonus: float = 0.0  # reward when 2+ agents interact near target simultaneously
     signal_colocation_radius: int = 2     # manhattan distance threshold for co-location
     signal_comm_utility: float = 0.0      # reward for sending a message that precedes teammate's useful action
+    signal_target_visit_bonus: float = 0.0      # first visit to true target per agent
+    signal_decoy_visit_penalty: float = 0.0     # first visit to each decoy per agent
+    signal_unique_target_scan_bonus: float = 0.0  # first true-target scan per agent
     # energy grid difficulty presets
     energy_preset: str = "hard"  # "easy" or "hard"
     energy_private_monitor: bool = True  # each agent only sees energy of assigned nodes

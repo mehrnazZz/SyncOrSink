@@ -543,12 +543,15 @@ def local_energy_policy(env):
 
 def local_signal_policy(env):
     """
-    Scenario-specific local policy for signal hunt using shared map + hints.
+    Scenario-specific local policy for signal hunt using per-agent map + hints.
+
+    This policy is intentionally decentralized: each agent only updates its
+    target constraints from its own observation and received messages. That
+    keeps imitation labels aligned with the learner's POMDP observation stream.
     """
+    from .oracle import _move_to_any_or_open
+
     passable = {0, TILE_CLUE, TILE_TARGET, TILE_WATER, TILE_BEACON}
-    shared_mem: dict[tuple[int, int], int] = {}
-    claimed_clues: set[tuple[int, int]] = set()
-    rejected_targets: set[tuple[int, int]] = set()
     def _new_constraints():
         return {
             "exact_targets": set(),
@@ -560,16 +563,30 @@ def local_signal_policy(env):
             "y_parity": None,
         }
 
-    constraints = _new_constraints()
-    last_sent: dict[int, list[int]] = {}
-    sent_messages: dict[int, set[tuple[int, ...]]] = {}
-    last_target_interact_pos: dict[int, tuple[int, int]] = {}
+    def _new_agent_state():
+        return {
+            "mem": {},
+            "claimed_clues": set(),
+            "rejected_targets": set(),
+            "constraints": _new_constraints(),
+            "last_sent": [],
+            "sent_messages": set(),
+            "last_target_interact_pos": None,
+        }
+
+    agent_state: dict[int, dict] = {}
     last_step = -1
+
+    def _state_for(aid: int) -> dict:
+        aid = int(aid)
+        if aid not in agent_state:
+            agent_state[aid] = _new_agent_state()
+        return agent_state[aid]
 
     def _clip_msg(tokens: list[int]) -> list[int]:
         return [max(0, min(env.token_vocab_size - 1, int(t))) for t in tokens][: env.comm_token_limit]
 
-    def _add_exact_target(x: int, y: int):
+    def _add_exact_target(constraints: dict, x: int, y: int):
         if 0 <= x < env.map_size and 0 <= y < env.map_size:
             constraints["exact_targets"].add((x, y))
 
@@ -594,7 +611,7 @@ def local_signal_policy(env):
             i += length
         return segments
 
-    def _parse_signal_tokens(raw):
+    def _parse_signal_tokens(raw, constraints: dict):
         for segment in _signal_segments(raw):
             code = segment[0]
             if code == 21:
@@ -608,7 +625,7 @@ def local_signal_policy(env):
             elif code == 22:
                 ox, oy = int(segment[2]), int(segment[3])
                 dx, dy = int(segment[4]), int(segment[5])
-                _add_exact_target(ox + dx, oy + dy)
+                _add_exact_target(constraints, ox + dx, oy + dy)
             elif code == 23:
                 constraints["parity"] = int(segment[1])
                 for name, value in {"NW": 0, "NE": 1, "SW": 2, "SE": 3}.items():
@@ -621,16 +638,16 @@ def local_signal_policy(env):
             elif code == 25:
                 constraints["y_parity"] = int(segment[1])
             elif code == 26:
-                _add_exact_target(int(segment[1]), int(segment[2]))
+                _add_exact_target(constraints, int(segment[1]), int(segment[2]))
             else:
                 break
 
-    def _parse_inbox(ob: dict):
+    def _parse_inbox(ob: dict, constraints: dict):
         tokens = ob.get("messages_tokens")
         if tokens is None:
             return
         for msg in tokens:
-            _parse_signal_tokens(msg)
+            _parse_signal_tokens(msg, constraints)
 
     def _record_feedback(info: dict):
         events = (info or {}).get("events", {})
@@ -646,10 +663,14 @@ def local_signal_policy(env):
             for event in agent_events:
                 if not isinstance(event, dict):
                     continue
-                if event.get("event") == "decoy_scan" and aid in last_target_interact_pos:
-                    rejected_targets.add(last_target_interact_pos[aid])
+                if event.get("event") == "decoy_scan":
+                    st = agent_state.get(int(aid))
+                    if st is not None and st.get("last_target_interact_pos") is not None:
+                        rejected_pos = st["last_target_interact_pos"]
+                        st["rejected_targets"].add(rejected_pos)
+                        st["constraints"]["exact_targets"].discard(rejected_pos)
 
-    def _in_quadrant(pos: tuple[int, int]) -> bool:
+    def _in_quadrant(pos: tuple[int, int], constraints: dict) -> bool:
         q = constraints["quadrant"]
         if q is None:
             return True
@@ -663,8 +684,14 @@ def local_signal_policy(env):
             return x < half and y >= half
         return x >= half and y >= half
 
-    def _matches_constraints(pos: tuple[int, int]) -> bool:
-        exact_targets = constraints["exact_targets"]
+    def _matches_constraints(
+        pos: tuple[int, int],
+        constraints: dict,
+        rejected_targets: set[tuple[int, int]] | None = None,
+    ) -> bool:
+        exact_targets = set(constraints["exact_targets"])
+        if rejected_targets:
+            exact_targets -= rejected_targets
         if exact_targets and pos not in exact_targets:
             return False
         if constraints["parity"] is not None and (pos[0] + pos[1]) % 2 != constraints["parity"]:
@@ -673,46 +700,109 @@ def local_signal_policy(env):
             return False
         if constraints["y_parity"] is not None and pos[1] % 2 != constraints["y_parity"]:
             return False
-        if not _in_quadrant(pos):
+        if not _in_quadrant(pos, constraints):
             return False
         for _obj, near_pos, dist in constraints["near"]:
             if abs(pos[0] - near_pos[0]) + abs(pos[1] - near_pos[1]) > dist:
                 return False
         return True
 
-    def _candidate_targets() -> set[tuple[int, int]]:
+    def _candidate_targets(st: dict) -> set[tuple[int, int]]:
+        constraints = st["constraints"]
+        rejected_targets = st["rejected_targets"]
+        mem = st["mem"]
         exact_targets = set(constraints["exact_targets"]) - rejected_targets
         observed = {
-            pos for pos, tile in shared_mem.items()
+            pos for pos, tile in mem.items()
             if tile == TILE_TARGET and pos not in rejected_targets
         }
         if exact_targets:
             return exact_targets
-        return {pos for pos in observed if _matches_constraints(pos)}
+        return {pos for pos in observed if _matches_constraints(pos, constraints, rejected_targets)}
 
-    def _team_candidate(candidates: set[tuple[int, int]]) -> tuple[int, int] | None:
+    def _constraint_strength(constraints: dict) -> int:
+        return int(bool(constraints["near"])) + sum(
+            1
+            for key in ("parity", "quadrant", "x_parity", "y_parity")
+            if constraints.get(key) is not None
+        )
+
+    def _inferred_constraint_targets(st: dict) -> set[tuple[int, int]]:
+        constraints = st["constraints"]
+        rejected_targets = st["rejected_targets"]
+        if set(constraints["exact_targets"]) - rejected_targets or _constraint_strength(constraints) < 3:
+            return set()
+        mem = st["mem"]
+        candidates = set()
+        for y in range(env.map_size):
+            for x in range(env.map_size):
+                pos = (x, y)
+                if pos in rejected_targets:
+                    continue
+                known_tile = mem.get(pos)
+                if known_tile is not None and known_tile != TILE_TARGET:
+                    continue
+                if _matches_constraints(pos, constraints, rejected_targets):
+                    candidates.add(pos)
+        if len(candidates) <= max(8, env.map_size * 4):
+            return candidates
+        return set()
+
+    def _team_candidate(aid: int, candidates: set[tuple[int, int]]) -> tuple[int, int] | None:
         if not candidates:
             return None
+        ax, ay = env.agent_positions[int(aid)]
         return min(
             candidates,
             key=lambda pos: (
-                sum(abs(pos[0] - ax) + abs(pos[1] - ay) for ax, ay in env.agent_positions),
+                abs(pos[0] - ax) + abs(pos[1] - ay),
                 pos[1],
                 pos[0],
             ),
         )
 
-    def _message_for_agent(aid: int, ob: dict) -> list[int]:
-        exact_targets = sorted(constraints["exact_targets"])
+    def _assigned_frontiers(aid: int, frontier: set[tuple[int, int]]) -> set[tuple[int, int]]:
+        if not frontier or env.num_agents <= 1:
+            return frontier
+        half = float(env.map_size) / 2.0
+        aid = int(aid)
+        if env.num_agents == 2:
+            preferred = {
+                pos for pos in frontier
+                if (pos[0] < half) == (aid % 2 == 0)
+            }
+            return preferred or frontier
+        quadrant = aid % 4
+        preferred = {
+            pos for pos in frontier
+            if (
+                (quadrant == 0 and pos[0] < half and pos[1] < half)
+                or (quadrant == 1 and pos[0] >= half and pos[1] < half)
+                or (quadrant == 2 and pos[0] < half and pos[1] >= half)
+                or (quadrant == 3 and pos[0] >= half and pos[1] >= half)
+            )
+        }
+        return preferred or frontier
+
+    def _message_for_agent(
+        ob: dict,
+        st: dict,
+        candidate_target: tuple[int, int] | None = None,
+    ) -> list[int]:
+        constraints = st["constraints"]
+        exact_targets = sorted(set(constraints["exact_targets"]) - st["rejected_targets"])
         if exact_targets:
             tx, ty = exact_targets[0]
             return _clip_msg([26, tx, ty])
-        seen = sent_messages.setdefault(aid, set())
+        seen = st["sent_messages"]
         for segment in reversed(_signal_segments(ob.get("goal_hint"))):
             key = tuple(segment)
             if key not in seen:
                 seen.add(key)
                 return _clip_msg(segment)
+        if candidate_target is not None:
+            tx, ty = candidate_target
+            return _clip_msg([26, tx, ty])
         return []
 
     def _move_toward(agent_id: int, pos: tuple[int, int], goals: set[tuple[int, int]], mem: dict):
@@ -725,89 +815,122 @@ def local_signal_policy(env):
         return _bfs_next_step(pos, goals, passable, mem)
 
     def _policy(obs: Dict[int, dict], info: dict, state: dict):
-        nonlocal constraints, last_step
+        nonlocal last_step
         step = int(state.get("step", 0))
         if step == 0 and last_step != 0:
-            shared_mem.clear()
-            claimed_clues.clear()
-            rejected_targets.clear()
-            constraints = _new_constraints()
-            last_sent.clear()
-            sent_messages.clear()
-            last_target_interact_pos.clear()
+            agent_state.clear()
         last_step = step
         _record_feedback(info)
         actions = {}
         for aid, ob in obs.items():
-            _parse_signal_tokens(ob.get("goal_hint"))
-            _parse_inbox(ob)
+            aid = int(aid)
+            st = _state_for(aid)
+            constraints = st["constraints"]
+            mem = st["mem"]
+            claimed_clues = st["claimed_clues"]
+
+            _parse_signal_tokens(ob.get("goal_hint"), constraints)
+            _parse_inbox(ob, constraints)
             local_ids = _local_grid_as_ids(ob["local_grid"])
             px, py = int(ob["self_pos"][0]), int(ob["self_pos"][1])
 
-            # update shared map
+            # Update only this agent's map. Teammate observations arrive through messages.
             h, w = local_ids.shape
             cx, cy = w // 2, h // 2
             for y in range(h):
                 for x in range(w):
                     gx, gy = px + (x - cx), py + (y - cy)
                     tile = int(local_ids[y, x])
-                    shared_mem[(gx, gy)] = tile
+                    mem[(gx, gy)] = tile
 
             center = local_ids[cy, cx]
-            message = _message_for_agent(aid, ob)
-            send = message and message != last_sent.get(aid)
-            if send:
-                last_sent[aid] = message
-            else:
-                message = []
-
-            exact_targets = set(constraints["exact_targets"])
-            candidate_targets = _candidate_targets()
+            current_pos = (px, py)
+            if current_pos in constraints["exact_targets"] and center != TILE_TARGET:
+                st["rejected_targets"].add(current_pos)
+                constraints["exact_targets"].discard(current_pos)
+            exact_targets = set(constraints["exact_targets"]) - st["rejected_targets"]
+            candidate_targets = _candidate_targets(st)
+            inferred_candidate_targets = set()
+            if not candidate_targets:
+                inferred_candidate_targets = _inferred_constraint_targets(st)
+                candidate_targets = inferred_candidate_targets
             unclaimed_clues = {
-                pos for pos, tile in shared_mem.items()
+                pos for pos, tile in mem.items()
                 if tile == TILE_CLUE and pos not in claimed_clues
             }
-            frontier = _frontier_goals(shared_mem, passable)
+            frontier = _frontier_goals(mem, passable)
             safe_targets = exact_targets or (candidate_targets if len(candidate_targets) == 1 else set())
             commit_targets: set[tuple[int, int]] = set()
-            if not safe_targets and not unclaimed_clues and not frontier:
-                candidate = _team_candidate(candidate_targets)
-                if candidate is not None:
-                    commit_targets = {candidate}
+            if (
+                not safe_targets
+                and (not unclaimed_clues or bool(inferred_candidate_targets))
+                and (not frontier or bool(inferred_candidate_targets))
+            ):
+                if inferred_candidate_targets:
+                    commit_targets = set(inferred_candidate_targets)
+                else:
+                    candidate = _team_candidate(aid, candidate_targets)
+                    if candidate is not None:
+                        commit_targets = {candidate}
             scan_targets = safe_targets | commit_targets
+            candidate_message_target = None
+            if safe_targets:
+                candidate_message_target = min(
+                    safe_targets,
+                    key=lambda pos: (abs(pos[0] - px) + abs(pos[1] - py), pos[1], pos[0]),
+                )
+            message = _message_for_agent(ob, st, candidate_message_target)
+            send = message and message != st.get("last_sent")
+            if send:
+                st["last_sent"] = message
+            else:
+                message = []
 
             if center == TILE_CLUE and (px, py) not in claimed_clues:
                 claimed_clues.add((px, py))
                 actions[aid] = {"action": env.ACTION_INTERACT, "message_tokens": message}
-                last_target_interact_pos.pop(aid, None)
+                st["last_target_interact_pos"] = None
                 continue
             if center == TILE_TARGET and (px, py) in scan_targets:
                 actions[aid] = {"action": env.ACTION_INTERACT, "message_tokens": message}
-                last_target_interact_pos[aid] = (px, py)
+                st["last_target_interact_pos"] = (px, py)
                 continue
 
             if safe_targets:
                 goals = safe_targets
-            elif unclaimed_clues:
-                goals = unclaimed_clues
             elif commit_targets:
                 goals = commit_targets
+            elif unclaimed_clues:
+                goals = unclaimed_clues
             else:
                 goals = set()
 
             step_delta = None
+            fallback_action = None
             if goals:
-                step_delta = _move_toward(aid, (px, py), goals, shared_mem)
+                step_delta = _move_toward(aid, (px, py), goals, mem)
+                if step_delta is None:
+                    candidate_action = _move_to_any_or_open(env, aid, (px, py), goals)
+                    if candidate_action != env.ACTION_STAY:
+                        fallback_action = candidate_action
             if step_delta is None:
                 if frontier:
-                    step_delta = _bfs_next_step((px, py), frontier, passable, shared_mem)
+                    assigned_frontier = _assigned_frontiers(aid, frontier)
+                    step_delta = _bfs_next_step((px, py), assigned_frontier, passable, mem)
+                    if step_delta is None and assigned_frontier is not frontier:
+                        step_delta = _bfs_next_step((px, py), frontier, passable, mem)
+            if step_delta is None and fallback_action is None:
+                door_action = _move_to_any_or_open(env, aid, (px, py), set())
+                if door_action != env.ACTION_STAY:
+                    fallback_action = door_action
             if step_delta is None:
-                actions[aid] = {"action": env.ACTION_STAY, "message_tokens": message}
-                last_target_interact_pos.pop(aid, None)
+                action = fallback_action if fallback_action is not None else env.ACTION_STAY
+                actions[aid] = {"action": action, "message_tokens": message}
+                st["last_target_interact_pos"] = None
             else:
                 dx, dy = step_delta
                 actions[aid] = {"action": _move_from_delta(dx, dy), "message_tokens": message}
-                last_target_interact_pos.pop(aid, None)
+                st["last_target_interact_pos"] = None
         return actions
 
     return _policy

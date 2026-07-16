@@ -49,6 +49,9 @@ class MAPPODecodingSweepConfig:
     signal_colocation_bonus: float = 0.5
     signal_colocation_radius: int = 2
     signal_comm_utility: float = 0.1
+    signal_target_visit_bonus: float = 0.0
+    signal_decoy_visit_penalty: float = 0.0
+    signal_unique_target_scan_bonus: float = 0.0
 
     episodes: int = 10
     seed: int = 1000
@@ -209,6 +212,9 @@ def _env_config(cfg: MAPPODecodingSweepConfig) -> SyncOrSinkConfig:
         signal_colocation_bonus=cfg.signal_colocation_bonus,
         signal_colocation_radius=cfg.signal_colocation_radius,
         signal_comm_utility=cfg.signal_comm_utility,
+        signal_target_visit_bonus=cfg.signal_target_visit_bonus,
+        signal_decoy_visit_penalty=cfg.signal_decoy_visit_penalty,
+        signal_unique_target_scan_bonus=cfg.signal_unique_target_scan_bonus,
     )
 
 

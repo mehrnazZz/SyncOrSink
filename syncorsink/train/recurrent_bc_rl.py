@@ -12,12 +12,14 @@ Pipeline:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import math
 import os
 import warnings
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Optional
+from typing import Any, Mapping, MutableMapping, Optional
 
 import numpy as np
 import torch
@@ -43,6 +45,7 @@ from syncorsink.train.mappo import (
     mask_action_logits,
     resolve_device,
 )
+from syncorsink.policies.pathing import move_action_from_delta, shortest_path
 from syncorsink.train.seed import set_global_seeds
 from syncorsink.policies.mappo_models import MAPPORecurrentActor, MAPPOCritic
 
@@ -70,6 +73,9 @@ class RecurrentConfig:
     obs_signal_features: bool = False
     obs_signal_sync_feedback: bool = False
     obs_signal_scan_state: bool = False
+    obs_signal_negative_memory: bool = False
+    obs_signal_negative_memory_window: int = 64
+    obs_signal_inferred_target_features: bool = False
     obs_signal_target_match_features: bool = False
     signal_decoy_count: Optional[int] = None
     decoy_penalty: float = 0.5
@@ -86,6 +92,9 @@ class RecurrentConfig:
     signal_colocation_bonus: float = 0.0
     signal_colocation_radius: int = 2
     signal_comm_utility: float = 0.0
+    signal_target_visit_bonus: float = 0.0
+    signal_decoy_visit_penalty: float = 0.0
+    signal_unique_target_scan_bonus: float = 0.0
     # architecture
     hidden_dim: int = 128
     comm: bool = False
@@ -109,13 +118,41 @@ class RecurrentConfig:
     bc_comm_send_rate_target: float = -1.0  # negative = match current batch send-label rate
     bc_calibrate_send_threshold: bool = False
     bc_send_threshold_target_rate: float = -1.0  # negative = match dataset send-label rate
+    bc_eval_every_epochs: int = 0
+    bc_eval_episodes: int = 0  # <=0 uses eval_episodes
+    bc_eval_seed_count: int = 1
+    bc_restore_best_eval_epoch: bool = False
     bc_signal_target_interact_weight: float = 1.0
     bc_signal_redundant_target_interact_weight: float = 1.0
     bc_signal_target_pursuit_weight: float = 1.0
+    bc_signal_target_pursuit_action_weight: float = 0.0
     bc_signal_sync_response_weight: float = 1.0
+    bc_signal_sync_response_action_loss_weight: float = 0.0
+    bc_signal_target_match_action_weight: float = 0.0
+    bc_signal_first_target_scan_action_weight: float = 0.0
+    bc_signal_refresh_target_scan_action_weight: float = 0.0
+    bc_signal_joint_target_scan_action_weight: float = 0.0
+    bc_signal_target_opportunity_action_weight: float = 0.0
+    bc_signal_redundant_target_wait_action_loss_weight: float = 0.0
+    bc_signal_scan_decision_loss_weight: float = 0.0
+    bc_signal_scan_decision_pos_weight: float = 1.0
+    bc_signal_scan_decision_neg_weight: float = 1.0
+    bc_signal_scan_gate_loss_weight: float = 0.0
+    bc_signal_scan_gate_pos_weight: float = 1.0
+    bc_signal_scan_gate_neg_weight: float = 1.0
+    bc_signal_target_validity_loss_weight: float = 0.0
+    bc_signal_target_validity_pos_weight: float = 1.0
+    bc_signal_target_validity_neg_weight: float = 1.0
+    bc_signal_target_decision_loss_weight: float = 0.0
+    bc_signal_target_decision_pos_weight: float = 1.0
+    bc_signal_target_decision_neg_weight: float = 1.0
+    bc_signal_target_aux_weight: float = 0.0
     bc_signal_rejected_target_interact_loss_weight: float = 0.0
+    bc_signal_rejected_target_interact_action_loss_weight: float = 0.0
     bc_signal_bad_redundant_target_interact_loss_weight: float = 0.0
     bc_signal_decoy_drift_action_loss_weight: float = 0.0
+    bc_signal_decoy_scan_action_loss_weight: float = 0.0
+    bc_signal_rejected_target_drift_action_loss_weight: float = 0.0
     dagger_rounds: int = 0
     dagger_episodes: int = 20
     dagger_retrain_from_scratch: bool = True
@@ -125,7 +162,8 @@ class RecurrentConfig:
     dagger_focus_events: str = (
         "decoy_scan,solo_target_scan,rejected_target_scan,"
         "bad_redundant_target_scan,target_interact_miss,target_pursuit_miss,"
-        "target_decoy_drift_miss,target_discovery_miss,target_handoff_miss"
+        "target_decoy_drift_miss,target_discovery_miss,target_handoff_miss,"
+        "movement_stall_miss"
     )
     dagger_focus_error_weight: float = 3.0
     dagger_focus_recovery_weight: float = 2.0
@@ -133,6 +171,9 @@ class RecurrentConfig:
     dagger_target_interact_focus_weight: float = 5.0
     dagger_target_discovery_min_map_size: int = 16
     dagger_target_discovery_focus_weight: float = 3.0
+    dagger_movement_stall_min_map_size: int = 16
+    dagger_movement_stall_window: int = 6
+    dagger_movement_stall_focus_weight: float = 4.0
     dagger_target_decoy_drift_focus_weight: float = 5.0
     dagger_solo_target_team_weight: float = 1.0
     dagger_early_stop_patience: int = 0
@@ -144,14 +185,24 @@ class RecurrentConfig:
     dagger_replay_event_weights: str = ""
     dagger_replay_event_caps: str = ""
     dagger_replay_success_only_events: str = ""
+    dagger_replay_priority_events: str = ""
+    dagger_replay_balance_positive_events: str = ""
+    dagger_replay_balance_negative_events: str = ""
+    dagger_replay_max_negative_per_positive: float = -1.0
     dagger_max_replay_snippets_per_episode: int = 4
+    dagger_expert_max_replay_snippets_per_episode: int = -1
     dagger_solo_target_team_success_only: bool = False
+    dagger_positive_target_pursuit_min_map_size: int = 16
+    dagger_redundant_target_wait_labels: bool = False
+    dagger_target_scan_broadcast_labels: bool = False
+    dagger_oracle_message_rollin_rate: float = 0.0
     # RL
     rl_updates: int = 3000
     rollout_steps: int = 256
     rl_balanced_rollouts: bool = False
     rl_rollout_map_steps: str = ""
     rl_redundant_target_scan_penalty: float = 0.0
+    rl_wrong_target_scan_penalty: float = 0.0
     rl_epochs: int = 2
     minibatch_seqs: int = 8  # number of sequences per minibatch
     gamma: float = 0.99
@@ -172,6 +223,7 @@ class RecurrentConfig:
     rl_best_save: Optional[str] = None
     recurrent_init: Optional[str] = None
     recurrent_init_for_dagger: bool = False
+    recurrent_init_allow_obs_dim_mismatch: bool = False
     # device
     device: str = "auto"
     seed: Optional[int] = 0
@@ -182,6 +234,20 @@ class RecurrentConfig:
     eval_seed_count: int = 1
     eval_map_sizes: str = ""
     eval_send_threshold: float = 0.25
+    eval_signal_target_scan_threshold: float = -1.0
+    eval_signal_scan_gate_threshold: float = -1.0
+    eval_signal_scan_gate_suppress: bool = False
+    eval_signal_target_validity_threshold: float = -1.0
+    eval_signal_target_decision_threshold: float = -1.0
+    eval_signal_target_decision_suppress: bool = True
+    eval_signal_scan_sync_assist: bool = False
+    eval_signal_scan_sync_force_first: bool = False
+    eval_signal_scan_broadcast_assist: bool = False
+    eval_signal_exact_target_message_guard: bool = False
+    eval_signal_exact_target_navigation_assist: bool = False
+    eval_signal_exact_target_memory_steps: int = 0
+    eval_signal_scan_refresh_assist: bool = False
+    eval_signal_scan_refresh_threshold: float = 0.5
     wandb: bool = False
     wandb_project: str = "syncorsink"
     wandb_run: Optional[str] = None
@@ -209,6 +275,9 @@ def _build_env(cfg: RecurrentConfig):
         signal_colocation_bonus=cfg.signal_colocation_bonus,
         signal_colocation_radius=cfg.signal_colocation_radius,
         signal_comm_utility=cfg.signal_comm_utility,
+        signal_target_visit_bonus=cfg.signal_target_visit_bonus,
+        signal_decoy_visit_penalty=cfg.signal_decoy_visit_penalty,
+        signal_unique_target_scan_bonus=cfg.signal_unique_target_scan_bonus,
         comm_token_limit=cfg.comm_token_limit,
         token_vocab_size=cfg.comm_vocab_size,
         max_messages=cfg.comm_max_messages,
@@ -725,6 +794,65 @@ def _signal_constraint_features(
     return np.asarray(parts, dtype=np.float32)
 
 
+def _signal_constraint_strength_from_segments(segments: list[list[int]]) -> int:
+    strength = 0
+    has_near = False
+    for segment in segments:
+        if not segment:
+            continue
+        code = int(segment[0])
+        if code == 21:
+            has_near = True
+        elif code == 23:
+            if len(segment) >= 2 and int(segment[1]) in (0, 1):
+                strength += 1
+            if len(segment) >= 3 and 0 <= int(segment[2]) <= 3:
+                strength += 1
+        elif code == 24 and len(segment) >= 2 and int(segment[1]) in (0, 1):
+            strength += 1
+        elif code == 25 and len(segment) >= 2 and int(segment[1]) in (0, 1):
+            strength += 1
+    return strength + (1 if has_near else 0)
+
+
+def _signal_inferred_constraint_targets(
+    obs_agent: dict,
+    observed_map_size: int,
+) -> list[tuple[int, int]]:
+    own_segments, message_segments = _signal_segments_from_observation(obs_agent)
+    segments = [*own_segments, *message_segments]
+    if _signal_targets_from_segments(segments, observed_map_size):
+        return []
+    if _signal_constraint_strength_from_segments(segments) < 3:
+        return []
+    candidates = [
+        (x, y)
+        for y in range(int(observed_map_size))
+        for x in range(int(observed_map_size))
+        if _signal_observation_allows_target(obs_agent, (x, y), observed_map_size)
+    ]
+    if len(candidates) <= max(8, int(observed_map_size) * 4):
+        return candidates
+    return []
+
+
+def _signal_inferred_target_features(
+    obs_agent: dict,
+    self_pos: np.ndarray,
+    observed_map_size: int,
+) -> np.ndarray:
+    candidates = _signal_inferred_constraint_targets(obs_agent, observed_map_size)
+    nearest = _nearest_signal_target(candidates, self_pos)
+    parts = _target_direction_group(nearest, self_pos, observed_map_size)
+    count_scale = max(1.0, float(int(observed_map_size) * 4))
+    sx, sy = int(self_pos[0]), int(self_pos[1])
+    parts.extend([
+        min(1.0, float(len(candidates)) / count_scale),
+        1.0 if nearest is not None and nearest == (sx, sy) else 0.0,
+    ])
+    return np.asarray(parts, dtype=np.float32)
+
+
 def _nearest_signal_target(
     targets: list[tuple[int, int]],
     self_pos: np.ndarray,
@@ -840,6 +968,20 @@ def _signal_rejected_target_mask(obs: dict, observed_map_size: int, num_agents: 
     )
 
 
+def _clear_true_target_rejected_mask(env: SyncOrSinkEnv, mask: np.ndarray) -> np.ndarray:
+    if getattr(env.config, "scenario", None) != "signal_hunt":
+        return mask
+    target = env.scenario_state.data.get("target")
+    if target is None:
+        return mask
+    true_target = (int(target[0]), int(target[1]))
+    corrected = np.asarray(mask, dtype=np.float32).copy()
+    for aid in range(min(env.num_agents, corrected.shape[0])):
+        if tuple(env.agent_positions[int(aid)]) == true_target:
+            corrected[int(aid)] = 0.0
+    return corrected
+
+
 def _recent_signal_scan_age(env: SyncOrSinkEnv, agent_id: int, *, next_step: int) -> int | None:
     scan_log = env.scenario_state.data.get("scan_log") or {}
     last_scan = scan_log.get(int(agent_id), scan_log.get(str(int(agent_id))))
@@ -933,6 +1075,10 @@ def _signal_coordination_features(obs_agent: dict, cfg: RecurrentConfig, observe
         1.0 if message_targets else 0.0,
     ])
     parts.extend(constraint_features.tolist())
+    if cfg.obs_signal_inferred_target_features:
+        parts.extend(
+            _signal_inferred_target_features(obs_agent, pos, observed_map_size).tolist()
+        )
     if cfg.obs_signal_target_match_features:
         parts.extend(
             _signal_visible_target_match_features(obs_agent, pos, observed_map_size).tolist()
@@ -990,6 +1136,7 @@ def _feedback_dim(cfg: RecurrentConfig) -> int:
         12
         + (4 if cfg.obs_signal_sync_feedback else 0)
         + (4 if cfg.obs_signal_scan_state else 0)
+        + (8 if cfg.obs_signal_negative_memory else 0)
     )
 
 
@@ -1141,6 +1288,147 @@ def _signal_scan_state_feedback_flags(
     ]
 
 
+def _signal_xy(raw) -> tuple[int, int] | None:
+    if raw is None:
+        return None
+    try:
+        arr = np.asarray(raw, dtype=np.int64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if arr.size < 2:
+        return None
+    return int(arr[0]), int(arr[1])
+
+
+def _obs_agent_for_feedback(obs: dict | None, agent_id: int) -> dict | None:
+    if not isinstance(obs, dict):
+        return None
+    if "self_pos" in obs:
+        return obs
+    obs_agent = obs.get(int(agent_id), obs.get(str(int(agent_id))))
+    return obs_agent if isinstance(obs_agent, dict) else None
+
+
+def _normalize_signal_negative_target_log(raw) -> list[dict]:
+    entries: list[dict] = []
+    if raw is None:
+        return entries
+    if isinstance(raw, dict):
+        raw_iterable = [raw] if any(key in raw for key in ("pos", "target", "target_pos")) else raw.values()
+    else:
+        raw_iterable = raw
+    try:
+        iterator = iter(raw_iterable)
+    except TypeError:
+        return entries
+    for item in iterator:
+        if isinstance(item, dict):
+            pos = _signal_xy(item.get("pos", item.get("target", item.get("target_pos"))))
+            if pos is None:
+                continue
+            try:
+                step = int(item.get("step", 0))
+            except (TypeError, ValueError):
+                step = 0
+            try:
+                entry_agent = int(item.get("agent_id", item.get("agent", -1)))
+            except (TypeError, ValueError):
+                entry_agent = -1
+            entries.append({"agent_id": entry_agent, "pos": pos, "step": step})
+            continue
+        pos = _signal_xy(item)
+        if pos is not None:
+            entries.append({"agent_id": -1, "pos": pos, "step": 0})
+    return entries
+
+
+def _signal_negative_memory_feedback_flags(
+    cfg: RecurrentConfig,
+    agent_id: int,
+    num_agents: int,
+    *,
+    env: SyncOrSinkEnv | None = None,
+    scan_state: dict | None = None,
+    obs: dict | None = None,
+) -> list[float]:
+    del num_agents
+    if cfg.scenario != "signal_hunt":
+        return [0.0] * 8
+    if env is not None:
+        state = getattr(getattr(env, "scenario_state", None), "data", {}) or {}
+        raw_log = state.get("negative_target_log") or []
+        current_step = int(getattr(env, "steps", 0))
+    elif scan_state is not None:
+        raw_log = scan_state.get("negative_target_log") or []
+        current_step = int(scan_state.get("step", 0))
+    else:
+        return [0.0] * 8
+
+    window = max(1, int(getattr(cfg, "obs_signal_negative_memory_window", 64)))
+    active_entries = []
+    for entry in _normalize_signal_negative_target_log(raw_log):
+        age = current_step - int(entry.get("step", 0))
+        if 0 <= age <= window:
+            active_entries.append((int(entry.get("agent_id", -1)), tuple(entry["pos"]), int(age)))
+    if not active_entries:
+        return [0.0] * 8
+
+    agent_id = int(agent_id)
+    obs_agent = _obs_agent_for_feedback(obs, agent_id)
+    if env is not None:
+        self_pos = tuple(env.agent_positions[agent_id])
+        observed_map_size = int(getattr(env, "map_size", cfg.map_size))
+    elif obs_agent is not None:
+        parsed_pos = _signal_xy(obs_agent.get("self_pos"))
+        self_pos = parsed_pos if parsed_pos is not None else None
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+    else:
+        self_pos = None
+        observed_map_size = int(cfg.map_size)
+
+    self_recent = any(entry_agent == agent_id for entry_agent, _pos, _age in active_entries)
+    teammate_recent = any(entry_agent >= 0 and entry_agent != agent_id for entry_agent, _pos, _age in active_entries)
+    self_at_negative = 0.0
+    any_at_negative = 0.0
+    nearest_pos: tuple[int, int] | None = None
+    if self_pos is not None:
+        self_at_negative = 1.0 if any(
+            pos == self_pos and entry_agent == agent_id
+            for entry_agent, pos, _age in active_entries
+        ) else 0.0
+        any_at_negative = 1.0 if any(pos == self_pos for _entry_agent, pos, _age in active_entries) else 0.0
+        nearest_pos = min(
+            (pos for _entry_agent, pos, _age in active_entries),
+            key=lambda pos: (abs(pos[0] - self_pos[0]) + abs(pos[1] - self_pos[1]), pos[1], pos[0]),
+        )
+
+    nearest_visible_negative = 0.0
+    dx_norm = 0.0
+    dy_norm = 0.0
+    if nearest_pos is not None and self_pos is not None:
+        denom = max(1.0, float(observed_map_size - 1))
+        dx_norm = float(nearest_pos[0] - self_pos[0]) / denom
+        dy_norm = float(nearest_pos[1] - self_pos[1]) / denom
+        if obs_agent is not None:
+            visible = set(_visible_signal_targets(obs_agent, np.asarray(self_pos, dtype=np.int64), observed_map_size))
+            nearest_visible_negative = 1.0 if nearest_pos in visible else 0.0
+
+    max_remaining = max(
+        (float(window - age + 1) / max(1.0, float(window + 1)) for _entry_agent, _pos, age in active_entries),
+        default=0.0,
+    )
+    return [
+        1.0 if self_recent else 0.0,
+        1.0 if teammate_recent else 0.0,
+        self_at_negative,
+        any_at_negative,
+        nearest_visible_negative,
+        dx_norm,
+        dy_norm,
+        max_remaining,
+    ]
+
+
 def _feedback_matrix(
     cfg: RecurrentConfig,
     num_agents: int,
@@ -1150,6 +1438,7 @@ def _feedback_matrix(
     info: dict | None = None,
     env: SyncOrSinkEnv | None = None,
     scan_state: dict | None = None,
+    obs: dict | None = None,
 ) -> np.ndarray | None:
     if not cfg.obs_feedback:
         return None
@@ -1183,6 +1472,23 @@ def _feedback_matrix(
                 ),
                 dtype=np.float32,
             )
+        if cfg.obs_signal_negative_memory:
+            offset = (
+                12
+                + (4 if cfg.obs_signal_sync_feedback else 0)
+                + (4 if cfg.obs_signal_scan_state else 0)
+            )
+            rows[aid, offset:offset + 8] = np.asarray(
+                _signal_negative_memory_feedback_flags(
+                    cfg,
+                    aid,
+                    num_agents,
+                    env=env,
+                    scan_state=scan_state,
+                    obs=obs,
+                ),
+                dtype=np.float32,
+            )
     return rows
 
 
@@ -1191,6 +1497,107 @@ def _message_lengths(actions: dict[int, dict]) -> dict[int, int]:
         int(aid): len(action.get("message_tokens") or [])
         for aid, action in actions.items()
     }
+
+
+def _initial_signal_scan_state(cfg: RecurrentConfig) -> dict:
+    return {
+        "scan_log": {},
+        "scan_pos": {},
+        "scan_broadcast_log": {},
+        "scan_window": int(cfg.scan_window),
+        "negative_target_log": [],
+        "negative_memory_window": int(cfg.obs_signal_negative_memory_window),
+        "step": 0,
+    }
+
+
+def _signal_positions_from_obs(obs: dict) -> dict[int, tuple[int, int]]:
+    positions: dict[int, tuple[int, int]] = {}
+    if not isinstance(obs, dict):
+        return positions
+    for raw_aid, obs_agent in obs.items():
+        try:
+            aid = int(raw_aid)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(obs_agent, dict):
+            continue
+        pos = _signal_xy(obs_agent.get("self_pos"))
+        if pos is not None:
+            positions[aid] = pos
+    return positions
+
+
+def _update_signal_scan_state_from_info(
+    cfg: RecurrentConfig,
+    scan_state: dict,
+    info: dict | None,
+    num_agents: int,
+    prev_positions: Mapping[int, tuple[int, int]],
+    *,
+    has_policy_step: bool,
+) -> bool:
+    if cfg.scenario != "signal_hunt" or not (
+        cfg.obs_signal_scan_state or cfg.obs_signal_negative_memory
+    ):
+        return True
+    if not has_policy_step:
+        return True
+    scan_state["step"] = int(scan_state.get("step", 0)) + 1
+    for aid, names in _event_names_by_agent(info or {}, num_agents).items():
+        if cfg.obs_signal_scan_state and "target_scan" in names:
+            scan_state.setdefault("scan_log", {})[int(aid)] = int(scan_state["step"])
+            pos = prev_positions.get(int(aid))
+            if pos is not None:
+                scan_state.setdefault("scan_pos", {})[int(aid)] = tuple(pos)
+        if cfg.obs_signal_negative_memory and "decoy_scan" in names:
+            pos = prev_positions.get(int(aid))
+            if pos is not None:
+                scan_state.setdefault("negative_target_log", []).append({
+                    "agent_id": int(aid),
+                    "pos": tuple(pos),
+                    "step": int(scan_state["step"]),
+                })
+    if cfg.obs_signal_negative_memory:
+        window = max(1, int(cfg.obs_signal_negative_memory_window))
+        current_step = int(scan_state.get("step", 0))
+        scan_state["negative_target_log"] = [
+            entry
+            for entry in _normalize_signal_negative_target_log(
+                scan_state.get("negative_target_log") or []
+            )
+            if 0 <= current_step - int(entry.get("step", 0)) <= window
+        ]
+    return True
+
+
+def _mix_oracle_rollin_messages(
+    model_actions: dict[int, dict],
+    oracle_actions: dict[int, dict],
+    rate: float,
+    rng: np.random.Generator,
+) -> tuple[dict[int, dict], int, int]:
+    rate = min(1.0, max(0.0, float(rate)))
+    mixed: dict[int, dict] = {}
+    replaced_agents = 0
+    replaced_tokens = 0
+    for aid, model_action in model_actions.items():
+        aid_int = int(aid)
+        action = dict(model_action)
+        action["message_tokens"] = [int(t) for t in action.get("message_tokens", [])]
+        if rate > 0.0 and float(rng.random()) < rate:
+            oracle_tokens = [
+                int(t)
+                for t in oracle_actions.get(aid_int, oracle_actions.get(aid, {})).get(
+                    "message_tokens",
+                    [],
+                )
+            ]
+            action["message_tokens"] = oracle_tokens
+            replaced_agents += 1
+            replaced_tokens += len(oracle_tokens)
+        mixed[aid_int] = action
+    return mixed, replaced_agents, replaced_tokens
 
 
 def _signal_target_interact_agents(env: SyncOrSinkEnv, actions: dict[int, dict]) -> list[int]:
@@ -1214,10 +1621,14 @@ def _signal_rejected_target_interact_agents(
 ) -> list[int]:
     if getattr(env.config, "scenario", None) != "signal_hunt":
         return []
+    true_target = env.scenario_state.data.get("target")
+    true_target_pos = tuple(true_target) if true_target is not None else None
     agents: list[int] = []
     for aid, action in actions.items():
         aid = int(aid)
         if int(action.get("action", -1)) != env.ACTION_INTERACT:
+            continue
+        if true_target_pos is not None and tuple(env.agent_positions[aid]) == true_target_pos:
             continue
         obs_agent = obs.get(aid)
         if obs_agent is None:
@@ -1259,6 +1670,126 @@ def _redundant_target_scan_agents(env: SyncOrSinkEnv, actions: dict[int, dict]) 
     return redundant
 
 
+_SIGNAL_TARGET_SCAN_KIND_UNKNOWN = -1
+_SIGNAL_TARGET_SCAN_KIND_FIRST = 0
+_SIGNAL_TARGET_SCAN_KIND_REFRESH = 1
+_SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION = 2
+_SIGNAL_TARGET_SCAN_KIND_REDUNDANT_ACTIVE = 3
+_SIGNAL_TARGET_SCAN_KIND_NAMES = (
+    "first",
+    "refresh",
+    "joint_completion",
+    "redundant_active",
+)
+
+
+def _signal_target_scan_kind(env: SyncOrSinkEnv, agent_id: int, *, next_step: int | None = None) -> int:
+    if getattr(env.config, "scenario", None) != "signal_hunt":
+        return _SIGNAL_TARGET_SCAN_KIND_UNKNOWN
+    target = env.scenario_state.data.get("target")
+    if target is None:
+        return _SIGNAL_TARGET_SCAN_KIND_UNKNOWN
+    agent_id = int(agent_id)
+    if tuple(env.agent_positions[agent_id]) != tuple(target):
+        return _SIGNAL_TARGET_SCAN_KIND_UNKNOWN
+    if next_step is None:
+        next_step = int(env.steps) + 1
+    scan_window = int(env.scenario_state.data.get("scan_window", getattr(env.config, "scan_window", 3)))
+    for other_id in range(env.num_agents):
+        if int(other_id) == agent_id:
+            continue
+        other_age = _recent_signal_scan_age(env, int(other_id), next_step=int(next_step))
+        if other_age is not None and 0 <= int(other_age) <= scan_window:
+            return _SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION
+    self_age = _recent_signal_scan_age(env, agent_id, next_step=int(next_step))
+    if self_age is None:
+        return _SIGNAL_TARGET_SCAN_KIND_FIRST
+    if int(self_age) >= scan_window:
+        return _SIGNAL_TARGET_SCAN_KIND_REFRESH
+    return _SIGNAL_TARGET_SCAN_KIND_REDUNDANT_ACTIVE
+
+
+def _signal_target_scan_label_mask(env: SyncOrSinkEnv, actions: dict[int, dict]) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    kind_ids = np.full((env.num_agents,), _SIGNAL_TARGET_SCAN_KIND_UNKNOWN, dtype=np.int64)
+    for aid in _signal_target_interact_agents(env, actions):
+        kind = _signal_target_scan_kind(env, int(aid))
+        if kind < 0:
+            continue
+        mask[int(aid)] = 1.0
+        kind_ids[int(aid)] = int(kind)
+    return mask, kind_ids
+
+
+def _signal_target_scan_opportunity_label_mask(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    cfg: RecurrentConfig,
+    feedback: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    kind_ids = np.full((env.num_agents,), _SIGNAL_TARGET_SCAN_KIND_UNKNOWN, dtype=np.int64)
+    if getattr(env.config, "scenario", None) != "signal_hunt":
+        return mask, kind_ids
+    target = env.scenario_state.data.get("target")
+    if target is None:
+        return mask, kind_ids
+    true_target = (int(target[0]), int(target[1]))
+    for aid in range(env.num_agents):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        if not _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_INTERACT):
+            continue
+        pos_arr = np.asarray(
+            obs_agent.get("self_pos", env.agent_positions[aid]),
+            dtype=np.int64,
+        ).reshape(-1)
+        if pos_arr.size < 2:
+            continue
+        pos = (int(pos_arr[0]), int(pos_arr[1]))
+        if pos != true_target:
+            continue
+        kind = _signal_target_scan_kind(env, int(aid))
+        if kind not in (
+            _SIGNAL_TARGET_SCAN_KIND_FIRST,
+            _SIGNAL_TARGET_SCAN_KIND_REFRESH,
+            _SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION,
+        ):
+            continue
+        if not _signal_center_target_scan_decoding_candidate(obs_agent, cfg):
+            observed_map_size = _observed_map_size(obs_agent, cfg)
+            if (
+                kind != _SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION
+                or not _signal_feedback_teammate_scan_active(cfg, feedback, int(aid), env.num_agents)
+                or not _signal_center_visible_target_tile(obs_agent, cfg)
+                or _signal_center_rejected_target(obs_agent, observed_map_size)
+            ):
+                continue
+        mask[int(aid)] = 1.0
+        kind_ids[int(aid)] = int(kind)
+    return mask, kind_ids
+
+
+def _signal_feedback_teammate_scan_active(
+    cfg: RecurrentConfig,
+    feedback: np.ndarray | None,
+    agent_id: int,
+    num_agents: int,
+) -> bool:
+    if feedback is None or not (cfg.obs_feedback and cfg.obs_signal_scan_state):
+        return False
+    try:
+        feedback_arr = np.asarray(feedback, dtype=np.float32).reshape(int(num_agents), -1)
+    except (TypeError, ValueError):
+        return False
+    scan_offset = 12 + (4 if cfg.obs_signal_sync_feedback else 0)
+    agent_id = int(agent_id)
+    if agent_id < 0 or agent_id >= feedback_arr.shape[0] or feedback_arr.shape[1] <= scan_offset + 1:
+        return False
+    return float(feedback_arr[agent_id, scan_offset + 1]) > 0.0
+
+
 def _apply_redundant_target_scan_penalty(
     rewards: dict[int, float],
     redundant_agents: list[int],
@@ -1278,6 +1809,33 @@ def _apply_redundant_target_scan_penalty(
     return applied, penalty * applied
 
 
+def _wrong_target_scan_agents(info: dict | None, num_agents: int) -> list[int]:
+    return [
+        int(aid)
+        for aid, names in _event_names_by_agent(info, num_agents).items()
+        if "decoy_scan" in names
+    ]
+
+
+def _apply_wrong_target_scan_penalty(
+    rewards: dict[int, float],
+    wrong_agents: list[int],
+    penalty: float,
+) -> tuple[int, float]:
+    penalty = max(0.0, float(penalty))
+    if penalty <= 0.0 or not wrong_agents:
+        return 0, 0.0
+
+    applied = 0
+    for aid in wrong_agents:
+        aid = int(aid)
+        if aid not in rewards:
+            continue
+        rewards[aid] = float(rewards[aid]) - penalty
+        applied += 1
+    return applied, penalty * applied
+
+
 def _move_delta_for_action(env: SyncOrSinkEnv, action_id: int) -> tuple[int, int] | None:
     return {
         env.ACTION_UP: (0, -1),
@@ -1285,6 +1843,173 @@ def _move_delta_for_action(env: SyncOrSinkEnv, action_id: int) -> tuple[int, int
         env.ACTION_LEFT: (-1, 0),
         env.ACTION_RIGHT: (1, 0),
     }.get(int(action_id))
+
+
+def _signal_action_moves_toward_target(
+    env: SyncOrSinkEnv,
+    *,
+    pos: tuple[int, int],
+    target: tuple[int, int],
+    action_id: int,
+    rejected_targets: list[tuple[int, int]] | tuple[tuple[int, int], ...] = (),
+) -> bool:
+    if int(action_id) == env.ACTION_INTERACT:
+        return tuple(pos) == tuple(target)
+    delta = _move_delta_for_action(env, int(action_id))
+    if delta is None:
+        return False
+    nx, ny = int(pos[0]) + int(delta[0]), int(pos[1]) + int(delta[1])
+    if not (0 <= nx < env.map_size and 0 <= ny < env.map_size):
+        return False
+    if int(env.grid[ny, nx]) in (1, TILE_DOOR):
+        return False
+    if (nx, ny) in set(rejected_targets):
+        return False
+    current_dist = abs(int(target[0]) - int(pos[0])) + abs(int(target[1]) - int(pos[1]))
+    next_dist = abs(int(target[0]) - int(nx)) + abs(int(target[1]) - int(ny))
+    return next_dist < current_dist
+
+
+def _signal_target_decoding_candidate(
+    obs_agent: dict,
+    cfg: RecurrentConfig,
+    target: tuple[int, int],
+) -> bool:
+    if cfg.scenario != "signal_hunt" or not isinstance(obs_agent, dict):
+        return False
+    if not _signal_observation_has_target_information(obs_agent):
+        return False
+    pos_arr = np.asarray(
+        obs_agent.get("self_pos", np.zeros((2,), dtype=np.int16)),
+        dtype=np.int64,
+    ).reshape(-1)
+    if pos_arr.size < 2:
+        return False
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    target = (int(target[0]), int(target[1]))
+    if not _signal_observation_allows_target(obs_agent, target, observed_map_size):
+        return False
+
+    own_segments, message_segments = _signal_segments_from_observation(obs_agent)
+    exact_targets = set(_signal_targets_from_segments([*own_segments, *message_segments], observed_map_size))
+    if target in exact_targets:
+        return True
+
+    visible_targets = set(_visible_signal_targets(obs_agent, pos_arr, observed_map_size))
+    if target in visible_targets:
+        allowed_visible_targets = {
+            visible_target
+            for visible_target in visible_targets
+            if _signal_observation_allows_target(obs_agent, visible_target, observed_map_size)
+        }
+        if allowed_visible_targets == {target}:
+            return True
+
+    inferred_targets = set(_signal_inferred_constraint_targets(obs_agent, observed_map_size))
+    return inferred_targets == {target}
+
+
+def _signal_target_pursuit_action_label_mask(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    cfg: RecurrentConfig,
+) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    action_ids = np.full((env.num_agents,), -1, dtype=np.int64)
+    if getattr(env.config, "scenario", None) != "signal_hunt":
+        return mask, action_ids
+    target = env.scenario_state.data.get("target")
+    if target is None:
+        return mask, action_ids
+    true_target = (int(target[0]), int(target[1]))
+    observed_map_size = int(env.map_size)
+    for aid in range(env.num_agents):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        pos_arr = np.asarray(
+            obs_agent.get("self_pos", env.agent_positions[aid]),
+            dtype=np.int64,
+        ).reshape(-1)
+        if pos_arr.size < 2:
+            continue
+        pos = (int(pos_arr[0]), int(pos_arr[1]))
+        if pos == true_target:
+            continue
+        if not _signal_target_decoding_candidate(obs_agent, cfg, true_target):
+            continue
+        visible_targets = _visible_signal_targets(obs_agent, pos_arr, observed_map_size)
+        rejected_targets = {
+            visible_target
+            for visible_target in visible_targets
+            if visible_target != true_target
+            and not _signal_observation_allows_target(obs_agent, visible_target, observed_map_size)
+        }
+        dx, dy, path_target = shortest_path(
+            env.grid,
+            pos,
+            [true_target],
+            blocked_positions=rejected_targets,
+        )
+        if path_target != true_target:
+            continue
+        action_id = int(move_action_from_delta(dx, dy, env))
+        if action_id == int(env.ACTION_STAY):
+            continue
+        if not _action_allowed_from_obs(obs_agent, action_id):
+            continue
+        mask[aid] = 1.0
+        action_ids[aid] = action_id
+    return mask, action_ids
+
+
+def _signal_target_match_action_label_mask(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    actions: dict[int, dict],
+) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    action_ids = np.full((env.num_agents,), -1, dtype=np.int64)
+    if getattr(env.config, "scenario", None) != "signal_hunt":
+        return mask, action_ids
+    target = env.scenario_state.data.get("target")
+    if target is None:
+        return mask, action_ids
+    true_target = (int(target[0]), int(target[1]))
+    observed_map_size = int(env.map_size)
+    for aid in range(env.num_agents):
+        obs_agent = obs.get(aid)
+        if obs_agent is None or not _signal_observation_has_target_information(obs_agent):
+            continue
+        pos_arr = np.asarray(obs_agent.get("self_pos", env.agent_positions[aid]), dtype=np.int64).reshape(-1)
+        if pos_arr.size < 2:
+            continue
+        pos = (int(pos_arr[0]), int(pos_arr[1]))
+        visible_targets = _visible_signal_targets(obs_agent, pos_arr, observed_map_size)
+        if true_target not in visible_targets:
+            continue
+        if not _signal_observation_allows_target(obs_agent, true_target, observed_map_size):
+            continue
+        rejected_targets = [
+            visible_target
+            for visible_target in visible_targets
+            if visible_target != true_target
+            and not _signal_observation_allows_target(obs_agent, visible_target, observed_map_size)
+        ]
+        if not rejected_targets:
+            continue
+        action = int(actions.get(aid, {}).get("action", -1))
+        if not _signal_action_moves_toward_target(
+            env,
+            pos=pos,
+            target=true_target,
+            action_id=action,
+            rejected_targets=rejected_targets,
+        ):
+            continue
+        mask[aid] = 1.0
+        action_ids[aid] = action
+    return mask, action_ids
 
 
 def _signal_target_pursuit_agents(
@@ -1326,11 +2051,26 @@ def _signal_target_pursuit_agents(
     return agents
 
 
+def _signal_positive_target_pursuit_agents(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    actions: dict[int, dict],
+    *,
+    min_map_size: int = 16,
+) -> list[int]:
+    if getattr(env.config, "scenario", None) != "signal_hunt":
+        return []
+    if int(env.map_size) < int(min_map_size):
+        return []
+    return _signal_target_pursuit_agents(env, obs, actions)
+
+
 def _signal_sync_response_agents(
     env: SyncOrSinkEnv,
     obs: dict,
     actions: dict[int, dict],
     feedback: np.ndarray | None,
+    cfg: RecurrentConfig | None = None,
 ) -> list[int]:
     if getattr(env.config, "scenario", None) != "signal_hunt" or feedback is None:
         return []
@@ -1341,10 +2081,43 @@ def _signal_sync_response_agents(
     target_pursuers = set(_signal_target_pursuit_agents(env, obs, actions))
     responders = []
     for aid in range(min(env.num_agents, feedback_arr.shape[0])):
-        teammate_scanned = float(feedback_arr[aid, 13]) > 0.0
-        if teammate_scanned and (aid in target_interactors or aid in target_pursuers):
+        row = feedback_arr[aid]
+        teammate_scanned_now = float(row[13]) > 0.0
+        self_scan_active = False
+        teammate_scan_active = False
+        if cfg is not None and bool(getattr(cfg, "obs_signal_scan_state", False)):
+            scan_offset = 12 + (4 if bool(getattr(cfg, "obs_signal_sync_feedback", False)) else 0)
+            if row.shape[0] > scan_offset + 1:
+                self_scan_active = float(row[scan_offset]) > 0.0
+                teammate_scan_active = float(row[scan_offset + 1]) > 0.0
+        if (
+            (teammate_scanned_now or teammate_scan_active)
+            and not self_scan_active
+            and (aid in target_interactors or aid in target_pursuers)
+        ):
             responders.append(aid)
     return responders
+
+
+def _signal_sync_response_action_label_mask(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    actions: dict[int, dict],
+    feedback: np.ndarray | None,
+    cfg: RecurrentConfig | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    action_ids = np.full((env.num_agents,), -1, dtype=np.int64)
+    for aid in _signal_sync_response_agents(env, obs, actions, feedback, cfg=cfg):
+        action_id = int(actions.get(int(aid), {}).get("action", -1))
+        obs_agent = obs.get(int(aid), obs.get(str(int(aid)))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        if not _action_allowed_from_obs(obs_agent, action_id):
+            continue
+        mask[int(aid)] = 1.0
+        action_ids[int(aid)] = action_id
+    return mask, action_ids
 
 
 def _signal_target_pursuit_miss_agents(
@@ -1400,6 +2173,71 @@ def _signal_decoy_pursuit_agents(
     return agents
 
 
+def _signal_rejected_target_drift_agents(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    actions: dict[int, dict],
+) -> list[int]:
+    if getattr(env.config, "scenario", None) != "signal_hunt":
+        return []
+    agents: list[int] = []
+    for aid, action in actions.items():
+        aid = int(aid)
+        delta = _move_delta_for_action(env, int(action.get("action", -1)))
+        if delta is None:
+            continue
+        obs_agent = obs.get(aid)
+        if obs_agent is None:
+            continue
+        if not _signal_observation_has_target_information(obs_agent):
+            continue
+        pos_arr = np.asarray(obs_agent.get("self_pos", env.agent_positions[aid]), dtype=np.int64).reshape(-1)
+        if pos_arr.size < 2:
+            continue
+        pos = (int(pos_arr[0]), int(pos_arr[1]))
+        nx, ny = pos[0] + int(delta[0]), pos[1] + int(delta[1])
+        if not (0 <= nx < env.map_size and 0 <= ny < env.map_size):
+            continue
+        if int(env.grid[ny, nx]) in (1, TILE_DOOR):
+            continue
+        visible_targets = _visible_signal_targets(obs_agent, pos_arr, int(env.map_size))
+        if not visible_targets:
+            continue
+        allowed_targets = [
+            target
+            for target in visible_targets
+            if _signal_observation_allows_target(obs_agent, target, int(env.map_size))
+        ]
+        allowed_set = set(allowed_targets)
+        rejected_targets = [target for target in visible_targets if target not in allowed_set]
+        if not rejected_targets:
+            continue
+
+        def nearest_distance(targets: list[tuple[int, int]], point: tuple[int, int]) -> int | None:
+            if not targets:
+                return None
+            return min(abs(int(tx) - point[0]) + abs(int(ty) - point[1]) for tx, ty in targets)
+
+        current_rejected_dist = nearest_distance(rejected_targets, pos)
+        next_rejected_dist = nearest_distance(rejected_targets, (nx, ny))
+        if current_rejected_dist is None or next_rejected_dist is None:
+            continue
+        if next_rejected_dist >= current_rejected_dist:
+            continue
+        if allowed_targets:
+            current_allowed_dist = nearest_distance(allowed_targets, pos)
+            next_allowed_dist = nearest_distance(allowed_targets, (nx, ny))
+            if (
+                current_allowed_dist is not None
+                and next_allowed_dist is not None
+                and next_allowed_dist < current_allowed_dist
+                and next_allowed_dist <= next_rejected_dist
+            ):
+                continue
+        agents.append(aid)
+    return agents
+
+
 def _signal_target_decoy_drift_miss_agents(
     env: SyncOrSinkEnv,
     obs: dict,
@@ -1451,18 +2289,78 @@ def _signal_target_discovery_miss_agents(
     return sorted(missed - decoy_drifters)
 
 
+def _signal_movement_stall_miss_agents(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    oracle_actions: dict[int, dict],
+    model_actions: dict[int, dict],
+    position_history: Mapping[int, list[tuple[int, int]]],
+    *,
+    min_map_size: int = 16,
+    window: int = 6,
+) -> list[int]:
+    if getattr(env.config, "scenario", None) != "signal_hunt":
+        return []
+    if int(env.map_size) < int(min_map_size) or int(window) < 3:
+        return []
+    target = env.scenario_state.data.get("target")
+    movement_actions = {
+        env.ACTION_UP,
+        env.ACTION_DOWN,
+        env.ACTION_LEFT,
+        env.ACTION_RIGHT,
+        env.ACTION_STAY,
+    }
+    stalled: list[int] = []
+    for aid in range(env.num_agents):
+        oracle_action = int(oracle_actions.get(aid, {}).get("action", -1))
+        model_action = int(model_actions.get(aid, {}).get("action", -1))
+        if oracle_action == model_action or model_action not in movement_actions:
+            continue
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        pos = _signal_xy(obs_agent.get("self_pos")) if isinstance(obs_agent, dict) else None
+        if pos is None:
+            pos = tuple(env.agent_positions[int(aid)])
+        if target is not None and tuple(pos) == tuple(target):
+            continue
+        recent = [*position_history.get(int(aid), []), tuple(pos)][-int(window):]
+        if len(recent) < int(window):
+            continue
+        if len(set(recent)) <= 2:
+            stalled.append(int(aid))
+    return stalled
+
+
 def _signal_target_handoff_miss_agents(
     env: SyncOrSinkEnv,
     obs: dict,
     oracle_actions: dict[int, dict],
     model_actions: dict[int, dict],
     feedback: np.ndarray | None,
+    cfg: RecurrentConfig | None = None,
 ) -> list[int]:
-    oracle_responders = set(_signal_sync_response_agents(env, obs, oracle_actions, feedback))
-    if not oracle_responders:
-        return []
-    model_responders = set(_signal_sync_response_agents(env, obs, model_actions, feedback))
-    return sorted(int(aid) for aid in oracle_responders if int(aid) not in model_responders)
+    missed: set[int] = set()
+    oracle_responders = set(_signal_sync_response_agents(env, obs, oracle_actions, feedback, cfg=cfg))
+    if oracle_responders:
+        model_responders = set(_signal_sync_response_agents(env, obs, model_actions, feedback, cfg=cfg))
+        missed.update(
+            int(aid)
+            for aid in oracle_responders
+            if int(aid) not in model_responders
+        )
+
+    model_target_interactors = set(_signal_target_interact_agents(env, model_actions))
+    if len(model_target_interactors) == 1:
+        oracle_joiners = set(_signal_target_pursuit_agents(env, obs, oracle_actions))
+        oracle_joiners.update(_signal_target_interact_agents(env, oracle_actions))
+        model_joiners = set(_signal_target_pursuit_agents(env, obs, model_actions))
+        model_joiners.update(model_target_interactors)
+        missed.update(
+            int(aid)
+            for aid in oracle_joiners
+            if int(aid) not in model_target_interactors and int(aid) not in model_joiners
+        )
+    return sorted(missed)
 
 
 def _apply_signal_target_interact_weight(
@@ -1514,9 +2412,212 @@ def _apply_signal_sync_response_weight(
     if target_weight <= 1.0 or not cfg.obs_signal_sync_feedback:
         return weights
     weighted = np.asarray(weights, dtype=np.float32).copy()
-    for aid in _signal_sync_response_agents(env, obs, actions, feedback):
+    for aid in _signal_sync_response_agents(env, obs, actions, feedback, cfg=cfg):
         weighted[int(aid)] = max(float(weighted[int(aid)]), target_weight)
     return weighted
+
+
+def _signal_target_join_action(env: SyncOrSinkEnv, agent_id: int) -> int:
+    target = env.scenario_state.data.get("target")
+    if target is None:
+        return env.ACTION_STAY
+    target = tuple(target)
+    agent_id = int(agent_id)
+    pos = tuple(env.agent_positions[agent_id])
+    if pos == target:
+        return env.ACTION_INTERACT
+    blocked_positions = {
+        tuple(other_pos)
+        for other_id, other_pos in enumerate(env.agent_positions)
+        if int(other_id) != agent_id and tuple(other_pos) != target
+    }
+    dx, dy, reached = shortest_path(
+        env.grid,
+        pos,
+        {target},
+        blocked_positions=blocked_positions,
+    )
+    if reached is None:
+        return env.ACTION_STAY
+    return move_action_from_delta(dx, dy, env)
+
+
+def _signal_feedback_target_handoff_agents(
+    cfg: RecurrentConfig,
+    env: SyncOrSinkEnv,
+    feedback: np.ndarray | None,
+    obs: dict | None = None,
+) -> list[int]:
+    if getattr(env.config, "scenario", None) != "signal_hunt":
+        return []
+    if feedback is None:
+        return []
+    feedback_arr = np.asarray(feedback, dtype=np.float32)
+    if feedback_arr.ndim != 2 or feedback_arr.shape[0] < env.num_agents:
+        return []
+    agents: list[int] = []
+    sync_offset = 12
+    scan_offset = 12 + (4 if cfg.obs_signal_sync_feedback else 0)
+    target = env.scenario_state.data.get("target")
+    true_target = (int(target[0]), int(target[1])) if target is not None else None
+    for aid in range(env.num_agents):
+        row = feedback_arr[int(aid)]
+        teammate_scan_now = (
+            cfg.obs_signal_sync_feedback
+            and row.shape[0] > sync_offset + 1
+            and float(row[sync_offset + 1]) > 0.0
+        )
+        self_scan_active = False
+        teammate_scan_active = False
+        if cfg.obs_signal_scan_state and row.shape[0] > scan_offset + 1:
+            self_scan_active = float(row[scan_offset]) > 0.0
+            teammate_scan_active = float(row[scan_offset + 1]) > 0.0
+        if (teammate_scan_now or teammate_scan_active) and not self_scan_active:
+            if obs is not None:
+                obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+                if not isinstance(obs_agent, dict) or true_target is None:
+                    continue
+                if not _signal_target_decoding_candidate(obs_agent, cfg, true_target):
+                    continue
+            agents.append(int(aid))
+    return agents
+
+
+def _apply_signal_target_handoff_overrides(
+    cfg: RecurrentConfig,
+    env: SyncOrSinkEnv,
+    actions: dict[int, dict],
+    feedback: np.ndarray | None,
+    obs: dict | None = None,
+) -> tuple[dict[int, dict], list[int]]:
+    handoff_agents = _signal_feedback_target_handoff_agents(cfg, env, feedback, obs=obs)
+    if not handoff_agents:
+        return actions, []
+    corrected = {int(aid): dict(action) for aid, action in actions.items()}
+    for aid in handoff_agents:
+        action = corrected.setdefault(int(aid), {"message_tokens": []})
+        action["action"] = _signal_target_join_action(env, int(aid))
+        action.setdefault("message_tokens", [])
+    return corrected, handoff_agents
+
+
+def _signal_exact_target_message(cfg: RecurrentConfig, env: SyncOrSinkEnv) -> list[int]:
+    target = env.scenario_state.data.get("target")
+    if target is None:
+        return []
+    return _signal_exact_target_message_for_pos(cfg, tuple(target))
+
+
+def _signal_exact_target_message_for_pos(
+    cfg: RecurrentConfig,
+    pos: tuple[int, int] | None,
+) -> list[int]:
+    if pos is None or not cfg.comm or int(cfg.comm_token_limit) < 3 or int(cfg.comm_vocab_size) <= 26:
+        return []
+    tx, ty = int(pos[0]), int(pos[1])
+    if not (0 <= tx < int(cfg.comm_vocab_size) and 0 <= ty < int(cfg.comm_vocab_size)):
+        return []
+    return [26, tx, ty]
+
+
+def _signal_target_scan_broadcaster_agents(
+    cfg: RecurrentConfig,
+    env: SyncOrSinkEnv,
+    feedback: np.ndarray | None,
+    info: dict | None = None,
+) -> list[int]:
+    del feedback
+    if not cfg.dagger_target_scan_broadcast_labels:
+        return []
+    if getattr(env.config, "scenario", None) != "signal_hunt":
+        return []
+    target = env.scenario_state.data.get("target")
+    if target is None or not _signal_exact_target_message(cfg, env):
+        return []
+    names_by_agent = _event_names_by_agent(info or {}, env.num_agents)
+    broadcasters: list[int] = []
+    for aid in range(env.num_agents):
+        if tuple(env.agent_positions[int(aid)]) != tuple(target):
+            continue
+        if "first_target_scan" in names_by_agent.get(int(aid), set()):
+            broadcasters.append(int(aid))
+    return broadcasters
+
+
+def _apply_signal_target_scan_broadcast_overrides(
+    cfg: RecurrentConfig,
+    env: SyncOrSinkEnv,
+    actions: dict[int, dict],
+    feedback: np.ndarray | None,
+    info: dict | None = None,
+) -> tuple[dict[int, dict], list[int]]:
+    broadcasters = _signal_target_scan_broadcaster_agents(cfg, env, feedback, info=info)
+    if not broadcasters:
+        return actions, []
+    message = _signal_exact_target_message(cfg, env)
+    if not message:
+        return actions, []
+    corrected = {int(aid): dict(action) for aid, action in actions.items()}
+    for aid in broadcasters:
+        action = corrected.setdefault(int(aid), {"action": env.ACTION_STAY})
+        action["message_tokens"] = list(message)
+    return corrected, broadcasters
+
+
+def _apply_signal_redundant_target_wait_overrides(
+    env: SyncOrSinkEnv,
+    actions: dict[int, dict],
+) -> tuple[dict[int, dict], list[int]]:
+    scan_window = int(env.scenario_state.data.get("scan_window", getattr(env.config, "scan_window", 3)))
+    next_step = int(env.steps) + 1
+    wait_agents = []
+    for aid in _redundant_target_scan_agents(env, actions):
+        age = _recent_signal_scan_age(env, int(aid), next_step=next_step)
+        if age is not None and 0 <= int(age) < scan_window:
+            wait_agents.append(int(aid))
+    if not wait_agents:
+        return actions, []
+    corrected = {int(aid): dict(action) for aid, action in actions.items()}
+    label_agents: list[int] = []
+    for aid in sorted(wait_agents):
+        action = corrected.get(int(aid))
+        if action is None or int(action.get("action", -1)) != env.ACTION_INTERACT:
+            continue
+        action["action"] = env.ACTION_STAY
+        action.setdefault("message_tokens", [])
+        label_agents.append(int(aid))
+    return corrected, label_agents
+
+
+def _signal_redundant_target_wait_action_label_mask(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    actions: dict[int, dict],
+) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    action_ids = np.full((env.num_agents,), -1, dtype=np.int64)
+    if getattr(env.config, "scenario", None) != "signal_hunt":
+        return mask, action_ids
+    target = env.scenario_state.data.get("target")
+    if target is None:
+        return mask, action_ids
+    scan_window = int(env.scenario_state.data.get("scan_window", getattr(env.config, "scan_window", 3)))
+    next_step = int(env.steps) + 1
+    for aid in range(env.num_agents):
+        if tuple(env.agent_positions[int(aid)]) != tuple(target):
+            continue
+        action_id = int(actions.get(int(aid), {}).get("action", -1))
+        if action_id != int(env.ACTION_STAY):
+            continue
+        age = _recent_signal_scan_age(env, int(aid), next_step=next_step)
+        if age is None or not (0 <= int(age) < scan_window):
+            continue
+        obs_agent = obs.get(int(aid), obs.get(str(int(aid)))) if isinstance(obs, dict) else None
+        if isinstance(obs_agent, dict) and not _action_allowed_from_obs(obs_agent, env.ACTION_STAY):
+            continue
+        mask[int(aid)] = 1.0
+        action_ids[int(aid)] = int(env.ACTION_STAY)
+    return mask, action_ids
 
 
 def _make_oracle_policy(env: SyncOrSinkEnv, cfg: RecurrentConfig):
@@ -1548,9 +2649,147 @@ def _new_episode_sequence() -> dict:
         "step_weights": [],
         "signal_rejected_target_mask": [],
         "signal_bad_redundant_target_mask": [],
+        "signal_target_scan_action_mask": [],
+        "signal_target_scan_kind_id": [],
+        "signal_target_opportunity_action_mask": [],
+        "signal_target_opportunity_kind_id": [],
+        "signal_redundant_target_wait_action_mask": [],
+        "signal_redundant_target_wait_action_id": [],
+        "signal_target_pursuit_action_mask": [],
+        "signal_target_pursuit_action_id": [],
+        "signal_sync_response_action_mask": [],
+        "signal_sync_response_action_id": [],
+        "signal_target_match_action_mask": [],
+        "signal_target_match_action_id": [],
+        "signal_target_validity_mask": [],
+        "signal_target_validity_label": [],
+        "signal_target_decision_mask": [],
+        "signal_target_decision_label": [],
+        "signal_target_aux_mask": [],
+        "signal_target_aux_xy": [],
         "signal_decoy_drift_action_mask": [],
         "signal_decoy_drift_action_id": [],
+        "signal_decoy_scan_action_mask": [],
+        "signal_decoy_scan_action_id": [],
+        "signal_rejected_target_drift_action_mask": [],
+        "signal_rejected_target_drift_action_id": [],
     }
+
+
+def _signal_target_aux_label(env: SyncOrSinkEnv) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    xy = np.zeros((env.num_agents, 2), dtype=np.float32)
+    if env.config.scenario != "signal_hunt" or env.scenario_state is None:
+        return mask, xy
+    target = env.scenario_state.data.get("target")
+    if target is None:
+        return mask, xy
+    denom = max(1.0, float(env.map_size - 1))
+    target_xy = np.array([float(target[0]) / denom, float(target[1]) / denom], dtype=np.float32)
+    mask[:] = 1.0
+    xy[:, :] = target_xy
+    return mask, xy
+
+
+def _signal_target_validity_label(env: SyncOrSinkEnv, obs: dict) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    labels = np.zeros((env.num_agents,), dtype=np.float32)
+    if getattr(env.config, "scenario", None) != "signal_hunt" or env.scenario_state is None:
+        return mask, labels
+    target = env.scenario_state.data.get("target")
+    if target is None:
+        return mask, labels
+    true_target = (int(target[0]), int(target[1]))
+    observed_map_size = int(env.map_size)
+    for aid in range(env.num_agents):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        if not _signal_observation_has_target_information(obs_agent):
+            continue
+        pos_arr = np.asarray(obs_agent.get("self_pos", env.agent_positions[aid]), dtype=np.int64).reshape(-1)
+        if pos_arr.size < 2:
+            continue
+        pos = (int(pos_arr[0]), int(pos_arr[1]))
+        if pos not in set(_visible_signal_targets(obs_agent, pos_arr, observed_map_size)):
+            continue
+        mask[aid] = 1.0
+        labels[aid] = 1.0 if pos == true_target else 0.0
+    return mask, labels
+
+
+def _signal_target_decision_label_mask(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    cfg: RecurrentConfig,
+    actions: dict[int, dict],
+    *,
+    target_scan_mask: np.ndarray | None = None,
+    target_scan_kind_id: np.ndarray | None = None,
+    target_opportunity_mask: np.ndarray | None = None,
+    target_opportunity_kind_id: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    labels = np.zeros((env.num_agents,), dtype=np.float32)
+    if getattr(env.config, "scenario", None) != "signal_hunt" or env.scenario_state is None:
+        return mask, labels
+    target = env.scenario_state.data.get("target")
+    if target is None:
+        return mask, labels
+    true_target = (int(target[0]), int(target[1]))
+    positive_kinds = {
+        _SIGNAL_TARGET_SCAN_KIND_FIRST,
+        _SIGNAL_TARGET_SCAN_KIND_REFRESH,
+        _SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION,
+    }
+    if target_scan_mask is None or target_scan_kind_id is None:
+        target_scan_mask, target_scan_kind_id = _signal_target_scan_label_mask(env, actions)
+    if target_opportunity_mask is None or target_opportunity_kind_id is None:
+        target_opportunity_mask = np.zeros((env.num_agents,), dtype=np.float32)
+        target_opportunity_kind_id = np.full(
+            (env.num_agents,),
+            _SIGNAL_TARGET_SCAN_KIND_UNKNOWN,
+            dtype=np.int64,
+        )
+
+    for aid in range(env.num_agents):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        if not _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_INTERACT):
+            continue
+        pos_arr = np.asarray(
+            obs_agent.get("self_pos", env.agent_positions[aid]),
+            dtype=np.int64,
+        ).reshape(-1)
+        if pos_arr.size < 2:
+            continue
+        pos = (int(pos_arr[0]), int(pos_arr[1]))
+        if not _signal_center_visible_target_tile(obs_agent, cfg):
+            continue
+
+        scan_kind = int(target_scan_kind_id[int(aid)])
+        opportunity_kind = int(target_opportunity_kind_id[int(aid)])
+        positive = (
+            (float(target_scan_mask[int(aid)]) > 0.0 and scan_kind in positive_kinds)
+            or (
+                float(target_opportunity_mask[int(aid)]) > 0.0
+                and opportunity_kind in positive_kinds
+            )
+        )
+        if positive:
+            mask[int(aid)] = 1.0
+            labels[int(aid)] = 1.0
+            continue
+
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        redundant_kind = _signal_target_scan_kind(env, int(aid)) == _SIGNAL_TARGET_SCAN_KIND_REDUNDANT_ACTIVE
+        rejected = _signal_center_rejected_target(obs_agent, observed_map_size)
+        negative = pos != true_target or redundant_kind or (rejected and pos != true_target)
+        if negative:
+            mask[int(aid)] = 1.0
+            labels[int(aid)] = 0.0
+    return mask, labels
 
 
 def _append_labeled_step(
@@ -1576,8 +2815,52 @@ def _append_labeled_step(
         actions=actions,
         feedback=feedback,
     )
-    rejected_target_mask = _signal_rejected_target_mask(obs, int(env.map_size), env.num_agents)
+    rejected_target_mask = _clear_true_target_rejected_mask(
+        env,
+        _signal_rejected_target_mask(obs, int(env.map_size), env.num_agents),
+    )
     bad_redundant_target_mask = _signal_bad_redundant_target_mask(env, obs)
+    target_scan_mask, target_scan_kind_id = _signal_target_scan_label_mask(env, actions)
+    target_opportunity_mask, target_opportunity_kind_id = _signal_target_scan_opportunity_label_mask(
+        env,
+        obs,
+        cfg,
+        feedback=feedback,
+    )
+    redundant_wait_action_mask, redundant_wait_action_id = _signal_redundant_target_wait_action_label_mask(
+        env,
+        obs,
+        actions,
+    )
+    target_pursuit_action_mask, target_pursuit_action_id = _signal_target_pursuit_action_label_mask(
+        env,
+        obs,
+        cfg,
+    )
+    sync_response_action_mask, sync_response_action_id = _signal_sync_response_action_label_mask(
+        env,
+        obs,
+        actions,
+        feedback,
+        cfg=cfg,
+    )
+    target_match_action_mask, target_match_action_id = _signal_target_match_action_label_mask(
+        env,
+        obs,
+        actions,
+    )
+    target_validity_mask, target_validity_label = _signal_target_validity_label(env, obs)
+    target_decision_mask, target_decision_label = _signal_target_decision_label_mask(
+        env,
+        obs,
+        cfg,
+        actions,
+        target_scan_mask=target_scan_mask,
+        target_scan_kind_id=target_scan_kind_id,
+        target_opportunity_mask=target_opportunity_mask,
+        target_opportunity_kind_id=target_opportunity_kind_id,
+    )
+    target_aux_mask, target_aux_xy = _signal_target_aux_label(env)
     for aid in range(env.num_agents):
         fb = feedback[aid] if feedback is not None else None
         ep_data["obs"].append(_flatten_recurrent_obs(obs[aid], cfg, fb))
@@ -1592,8 +2875,30 @@ def _append_labeled_step(
         ep_data["step_weights"].append(float(weights[aid]))
         ep_data["signal_rejected_target_mask"].append(float(rejected_target_mask[aid]))
         ep_data["signal_bad_redundant_target_mask"].append(float(bad_redundant_target_mask[aid]))
+        ep_data["signal_target_scan_action_mask"].append(float(target_scan_mask[aid]))
+        ep_data["signal_target_scan_kind_id"].append(int(target_scan_kind_id[aid]))
+        ep_data["signal_target_opportunity_action_mask"].append(float(target_opportunity_mask[aid]))
+        ep_data["signal_target_opportunity_kind_id"].append(int(target_opportunity_kind_id[aid]))
+        ep_data["signal_redundant_target_wait_action_mask"].append(float(redundant_wait_action_mask[aid]))
+        ep_data["signal_redundant_target_wait_action_id"].append(int(redundant_wait_action_id[aid]))
+        ep_data["signal_target_pursuit_action_mask"].append(float(target_pursuit_action_mask[aid]))
+        ep_data["signal_target_pursuit_action_id"].append(int(target_pursuit_action_id[aid]))
+        ep_data["signal_sync_response_action_mask"].append(float(sync_response_action_mask[aid]))
+        ep_data["signal_sync_response_action_id"].append(int(sync_response_action_id[aid]))
+        ep_data["signal_target_match_action_mask"].append(float(target_match_action_mask[aid]))
+        ep_data["signal_target_match_action_id"].append(int(target_match_action_id[aid]))
+        ep_data["signal_target_validity_mask"].append(float(target_validity_mask[aid]))
+        ep_data["signal_target_validity_label"].append(float(target_validity_label[aid]))
+        ep_data["signal_target_decision_mask"].append(float(target_decision_mask[aid]))
+        ep_data["signal_target_decision_label"].append(float(target_decision_label[aid]))
+        ep_data["signal_target_aux_mask"].append(float(target_aux_mask[aid]))
+        ep_data["signal_target_aux_xy"].append(target_aux_xy[aid].astype(np.float32, copy=True))
         ep_data["signal_decoy_drift_action_mask"].append(0.0)
         ep_data["signal_decoy_drift_action_id"].append(-1)
+        ep_data["signal_decoy_scan_action_mask"].append(0.0)
+        ep_data["signal_decoy_scan_action_id"].append(-1)
+        ep_data["signal_rejected_target_drift_action_mask"].append(0.0)
+        ep_data["signal_rejected_target_drift_action_id"].append(-1)
 
 
 def _finalize_episode_sequence(
@@ -1623,12 +2928,105 @@ def _finalize_episode_sequence(
             ep_data.get("signal_bad_redundant_target_mask", []),
             dtype=np.float32,
         ).reshape(-1, env.num_agents),
+        "signal_target_scan_action_mask": np.array(
+            ep_data.get("signal_target_scan_action_mask", []),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_target_scan_kind_id": np.array(
+            ep_data.get("signal_target_scan_kind_id", []),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "signal_target_opportunity_action_mask": np.array(
+            ep_data.get("signal_target_opportunity_action_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_target_opportunity_kind_id": np.array(
+            ep_data.get(
+                "signal_target_opportunity_kind_id",
+                [_SIGNAL_TARGET_SCAN_KIND_UNKNOWN for _ in ep_data["actions"]],
+            ),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "signal_redundant_target_wait_action_mask": np.array(
+            ep_data.get("signal_redundant_target_wait_action_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_redundant_target_wait_action_id": np.array(
+            ep_data.get("signal_redundant_target_wait_action_id", [-1 for _ in ep_data["actions"]]),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "signal_target_pursuit_action_mask": np.array(
+            ep_data.get("signal_target_pursuit_action_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_target_pursuit_action_id": np.array(
+            ep_data.get("signal_target_pursuit_action_id", [-1 for _ in ep_data["actions"]]),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "signal_sync_response_action_mask": np.array(
+            ep_data.get("signal_sync_response_action_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_sync_response_action_id": np.array(
+            ep_data.get("signal_sync_response_action_id", [-1 for _ in ep_data["actions"]]),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "signal_target_match_action_mask": np.array(
+            ep_data.get("signal_target_match_action_mask", []),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_target_match_action_id": np.array(
+            ep_data.get("signal_target_match_action_id", []),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "signal_target_validity_mask": np.array(
+            ep_data.get("signal_target_validity_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_target_validity_label": np.array(
+            ep_data.get("signal_target_validity_label", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_target_decision_mask": np.array(
+            ep_data.get("signal_target_decision_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_target_decision_label": np.array(
+            ep_data.get("signal_target_decision_label", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_target_aux_mask": np.array(
+            ep_data.get("signal_target_aux_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_target_aux_xy": np.stack(
+            ep_data.get(
+                "signal_target_aux_xy",
+                [np.zeros((2,), dtype=np.float32) for _ in ep_data["actions"]],
+            )
+        ).astype(np.float32).reshape(-1, env.num_agents, 2),
         "signal_decoy_drift_action_mask": np.array(
             ep_data.get("signal_decoy_drift_action_mask", []),
             dtype=np.float32,
         ).reshape(-1, env.num_agents),
         "signal_decoy_drift_action_id": np.array(
             ep_data.get("signal_decoy_drift_action_id", []),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "signal_decoy_scan_action_mask": np.array(
+            ep_data.get("signal_decoy_scan_action_mask", []),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_decoy_scan_action_id": np.array(
+            ep_data.get("signal_decoy_scan_action_id", []),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "signal_rejected_target_drift_action_mask": np.array(
+            ep_data.get("signal_rejected_target_drift_action_mask", []),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_rejected_target_drift_action_id": np.array(
+            ep_data.get("signal_rejected_target_drift_action_id", []),
             dtype=np.int64,
         ).reshape(-1, env.num_agents),
     }
@@ -1638,6 +3036,15 @@ def _finalize_episode_sequence(
 
 def _episode_count_transitions(episodes) -> int:
     return int(sum(ep["obs"].shape[0] * ep["obs"].shape[1] for ep in episodes))
+
+
+def _episode_count_label_mask(episodes, key: str) -> int:
+    total = 0
+    for ep in episodes:
+        if key not in ep:
+            continue
+        total += int(np.asarray(ep[key], dtype=np.float32).sum())
+    return total
 
 
 def _episode_training_weight(ep_data: dict) -> float:
@@ -1758,6 +3165,150 @@ def _slice_recurrent_episode(episode: dict, start: int, end: int, **metadata) ->
             episode["actions"][start:end],
             dtype=np.float32,
         )
+    if "signal_target_scan_action_mask" in episode:
+        sliced["signal_target_scan_action_mask"] = episode["signal_target_scan_action_mask"][start:end].copy()
+    else:
+        sliced["signal_target_scan_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_target_scan_kind_id" in episode:
+        sliced["signal_target_scan_kind_id"] = episode["signal_target_scan_kind_id"][start:end].copy()
+    else:
+        sliced["signal_target_scan_kind_id"] = np.full_like(
+            episode["actions"][start:end],
+            _SIGNAL_TARGET_SCAN_KIND_UNKNOWN,
+            dtype=np.int64,
+        )
+    if "signal_target_opportunity_action_mask" in episode:
+        sliced["signal_target_opportunity_action_mask"] = episode[
+            "signal_target_opportunity_action_mask"
+        ][start:end].copy()
+    else:
+        sliced["signal_target_opportunity_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_target_opportunity_kind_id" in episode:
+        sliced["signal_target_opportunity_kind_id"] = episode[
+            "signal_target_opportunity_kind_id"
+        ][start:end].copy()
+    else:
+        sliced["signal_target_opportunity_kind_id"] = np.full_like(
+            episode["actions"][start:end],
+            _SIGNAL_TARGET_SCAN_KIND_UNKNOWN,
+            dtype=np.int64,
+        )
+    if "signal_redundant_target_wait_action_mask" in episode:
+        sliced["signal_redundant_target_wait_action_mask"] = episode[
+            "signal_redundant_target_wait_action_mask"
+        ][start:end].copy()
+    else:
+        sliced["signal_redundant_target_wait_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_redundant_target_wait_action_id" in episode:
+        sliced["signal_redundant_target_wait_action_id"] = episode[
+            "signal_redundant_target_wait_action_id"
+        ][start:end].copy()
+    else:
+        sliced["signal_redundant_target_wait_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
+    if "signal_target_pursuit_action_mask" in episode:
+        sliced["signal_target_pursuit_action_mask"] = episode[
+            "signal_target_pursuit_action_mask"
+        ][start:end].copy()
+    else:
+        sliced["signal_target_pursuit_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_target_pursuit_action_id" in episode:
+        sliced["signal_target_pursuit_action_id"] = episode[
+            "signal_target_pursuit_action_id"
+        ][start:end].copy()
+    else:
+        sliced["signal_target_pursuit_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
+    if "signal_sync_response_action_mask" in episode:
+        sliced["signal_sync_response_action_mask"] = episode["signal_sync_response_action_mask"][
+            start:end
+        ].copy()
+    else:
+        sliced["signal_sync_response_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_sync_response_action_id" in episode:
+        sliced["signal_sync_response_action_id"] = episode["signal_sync_response_action_id"][start:end].copy()
+    else:
+        sliced["signal_sync_response_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
+    if "signal_target_match_action_mask" in episode:
+        sliced["signal_target_match_action_mask"] = episode["signal_target_match_action_mask"][start:end].copy()
+    else:
+        sliced["signal_target_match_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_target_match_action_id" in episode:
+        sliced["signal_target_match_action_id"] = episode["signal_target_match_action_id"][start:end].copy()
+    else:
+        sliced["signal_target_match_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
+    if "signal_target_validity_mask" in episode:
+        sliced["signal_target_validity_mask"] = episode["signal_target_validity_mask"][start:end].copy()
+    else:
+        sliced["signal_target_validity_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_target_validity_label" in episode:
+        sliced["signal_target_validity_label"] = episode["signal_target_validity_label"][start:end].copy()
+    else:
+        sliced["signal_target_validity_label"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_target_decision_mask" in episode:
+        sliced["signal_target_decision_mask"] = episode["signal_target_decision_mask"][start:end].copy()
+    else:
+        sliced["signal_target_decision_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_target_decision_label" in episode:
+        sliced["signal_target_decision_label"] = episode["signal_target_decision_label"][start:end].copy()
+    else:
+        sliced["signal_target_decision_label"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_target_aux_mask" in episode:
+        sliced["signal_target_aux_mask"] = episode["signal_target_aux_mask"][start:end].copy()
+    else:
+        sliced["signal_target_aux_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_target_aux_xy" in episode:
+        sliced["signal_target_aux_xy"] = episode["signal_target_aux_xy"][start:end].copy()
+    else:
+        base = episode["actions"][start:end]
+        sliced["signal_target_aux_xy"] = np.zeros((*base.shape, 2), dtype=np.float32)
     if "signal_decoy_drift_action_mask" in episode:
         sliced["signal_decoy_drift_action_mask"] = episode["signal_decoy_drift_action_mask"][start:end].copy()
     else:
@@ -1769,6 +3320,40 @@ def _slice_recurrent_episode(episode: dict, start: int, end: int, **metadata) ->
         sliced["signal_decoy_drift_action_id"] = episode["signal_decoy_drift_action_id"][start:end].copy()
     else:
         sliced["signal_decoy_drift_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
+    if "signal_decoy_scan_action_mask" in episode:
+        sliced["signal_decoy_scan_action_mask"] = episode["signal_decoy_scan_action_mask"][start:end].copy()
+    else:
+        sliced["signal_decoy_scan_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_decoy_scan_action_id" in episode:
+        sliced["signal_decoy_scan_action_id"] = episode["signal_decoy_scan_action_id"][start:end].copy()
+    else:
+        sliced["signal_decoy_scan_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
+    if "signal_rejected_target_drift_action_mask" in episode:
+        sliced["signal_rejected_target_drift_action_mask"] = episode[
+            "signal_rejected_target_drift_action_mask"
+        ][start:end].copy()
+    else:
+        sliced["signal_rejected_target_drift_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_rejected_target_drift_action_id" in episode:
+        sliced["signal_rejected_target_drift_action_id"] = episode[
+            "signal_rejected_target_drift_action_id"
+        ][start:end].copy()
+    else:
+        sliced["signal_rejected_target_drift_action_id"] = np.full_like(
             episode["actions"][start:end],
             -1,
             dtype=np.int64,
@@ -1786,7 +3371,12 @@ def _focus_replay_episodes(
 ) -> list[dict]:
     if not cfg.dagger_focus_replay or not focus_records:
         return []
-    max_snippets = max(0, int(cfg.dagger_max_replay_snippets_per_episode))
+    max_snippets = int(cfg.dagger_max_replay_snippets_per_episode)
+    if source == "expert_positive_replay":
+        expert_max = int(getattr(cfg, "dagger_expert_max_replay_snippets_per_episode", -1))
+        if expert_max >= 0:
+            max_snippets = expert_max
+    max_snippets = max(0, max_snippets)
     if max_snippets <= 0:
         return []
 
@@ -1805,12 +3395,31 @@ def _focus_replay_episodes(
         field_name="dagger_replay_event_caps",
     )
     success_only_events = _dagger_replay_success_only_events(cfg)
+    priority_events = _dagger_replay_priority_events(cfg)
     parent_success = bool(episode.get("success", False))
+    balance_positive_events = _dagger_replay_balance_positive_events(cfg)
+    balance_negative_events = _dagger_replay_balance_negative_events(cfg)
+    balance_ratio = float(getattr(cfg, "dagger_replay_max_negative_per_positive", -1.0))
+    balance_enabled = (
+        source == "dagger_focus_replay"
+        and balance_ratio >= 0.0
+        and bool(balance_positive_events)
+        and bool(balance_negative_events)
+    )
 
     snippets = []
+    candidates = []
     seen_windows = set()
     event_counts: dict[str, int] = {}
-    for record in sorted(focus_records, key=lambda item: (int(item["step"]), str(item["event"]))):
+    sorted_records = sorted(
+        focus_records,
+        key=lambda item: (
+            0 if str(item["event"]) in priority_events else 1,
+            int(item["step"]),
+            str(item["event"]),
+        ),
+    )
+    for record_index, record in enumerate(sorted_records):
         event = str(record["event"])
         if event in success_only_events and not parent_success:
             continue
@@ -1848,11 +3457,58 @@ def _focus_replay_episodes(
         )
         if "map_size" in episode:
             metadata["map_size"] = episode["map_size"]
-        snippets.append(_slice_recurrent_episode(episode, start, end, **metadata))
+        snippet = _slice_recurrent_episode(episode, start, end, **metadata)
         event_counts[event] = event_counts.get(event, 0) + 1
+        if balance_enabled:
+            candidates.append((record_index, event, snippet))
+            continue
+        snippets.append(snippet)
         if len(snippets) >= max_snippets:
             break
+    if balance_enabled:
+        snippets = _balanced_focus_replay_candidates(
+            candidates,
+            positive_events=balance_positive_events,
+            negative_events=balance_negative_events,
+            priority_events=priority_events,
+            max_negative_per_positive=balance_ratio,
+            max_snippets=max_snippets,
+        )
     return snippets
+
+
+def _balanced_focus_replay_candidates(
+    candidates: list[tuple[int, str, dict]],
+    *,
+    positive_events: set[str],
+    negative_events: set[str],
+    priority_events: set[str],
+    max_negative_per_positive: float,
+    max_snippets: int,
+) -> list[dict]:
+    if not candidates or max_snippets <= 0:
+        return []
+    max_negative_per_positive = max(0.0, float(max_negative_per_positive))
+    positive_count = sum(1 for _idx, event, _snippet in candidates if event in positive_events)
+    negative_limit = int(math.ceil(float(positive_count) * max_negative_per_positive))
+    negative_kept = 0
+    filtered: list[tuple[int, int, dict]] = []
+    for record_index, event, snippet in candidates:
+        if event in negative_events:
+            if negative_kept >= negative_limit:
+                continue
+            negative_kept += 1
+        if event in priority_events:
+            priority = 0
+        elif event in positive_events:
+            priority = 1
+        elif event in negative_events:
+            priority = 3
+        else:
+            priority = 2
+        filtered.append((priority, record_index, snippet))
+    filtered.sort(key=lambda item: (item[0], item[1]))
+    return [snippet for _priority, _record_index, snippet in filtered[:max_snippets]]
 
 
 def _dagger_episode_weight(cfg: RecurrentConfig, success: bool) -> float:
@@ -1881,6 +3537,30 @@ def _dagger_replay_success_only_events(cfg: RecurrentConfig) -> set[str]:
     return {
         item.strip()
         for item in str(cfg.dagger_replay_success_only_events or "").split(",")
+        if item.strip()
+    }
+
+
+def _dagger_replay_priority_events(cfg: RecurrentConfig) -> set[str]:
+    return {
+        item.strip()
+        for item in str(cfg.dagger_replay_priority_events or "").split(",")
+        if item.strip()
+    }
+
+
+def _dagger_replay_balance_positive_events(cfg: RecurrentConfig) -> set[str]:
+    return {
+        item.strip()
+        for item in str(cfg.dagger_replay_balance_positive_events or "").split(",")
+        if item.strip()
+    }
+
+
+def _dagger_replay_balance_negative_events(cfg: RecurrentConfig) -> set[str]:
+    return {
+        item.strip()
+        for item in str(cfg.dagger_replay_balance_negative_events or "").split(",")
         if item.strip()
     }
 
@@ -1954,6 +3634,52 @@ def _label_latest_signal_decoy_drift_actions(
 ) -> int:
     action_masks = ep_data.get("signal_decoy_drift_action_mask")
     action_ids = ep_data.get("signal_decoy_drift_action_id")
+    if not action_masks or action_ids is None:
+        return 0
+    labeled = 0
+    start = len(action_masks) - num_agents
+    for aid in agent_ids:
+        idx = start + int(aid)
+        if start <= idx < len(action_masks):
+            action = int(model_actions[int(aid)].get("action", SyncOrSinkEnv.ACTION_STAY))
+            action_masks[idx] = 1.0
+            action_ids[idx] = action
+            labeled += 1
+    return labeled
+
+
+def _label_latest_signal_decoy_scan_actions(
+    ep_data: dict,
+    *,
+    num_agents: int,
+    agent_ids,
+    model_actions: dict[int, dict],
+) -> int:
+    action_masks = ep_data.get("signal_decoy_scan_action_mask")
+    action_ids = ep_data.get("signal_decoy_scan_action_id")
+    if not action_masks or action_ids is None:
+        return 0
+    labeled = 0
+    start = len(action_masks) - num_agents
+    for aid in agent_ids:
+        idx = start + int(aid)
+        if start <= idx < len(action_masks):
+            action = int(model_actions[int(aid)].get("action", SyncOrSinkEnv.ACTION_STAY))
+            action_masks[idx] = 1.0
+            action_ids[idx] = action
+            labeled += 1
+    return labeled
+
+
+def _label_latest_signal_rejected_target_drift_actions(
+    ep_data: dict,
+    *,
+    num_agents: int,
+    agent_ids,
+    model_actions: dict[int, dict],
+) -> int:
+    action_masks = ep_data.get("signal_rejected_target_drift_action_mask")
+    action_ids = ep_data.get("signal_rejected_target_drift_action_id")
     if not action_masks or action_ids is None:
         return 0
     labeled = 0
@@ -2126,9 +3852,51 @@ def collect_episode_demos(cfg: RecurrentConfig):
                 prev_msg_lens=prev_msg_lens,
                 info=prev_info,
                 env=env,
+                obs=obs,
             )
             actions = oracle_fn(obs, info, {"step": step})
+            actions, _broadcast_label_agents = _apply_signal_target_scan_broadcast_overrides(
+                episode_cfg,
+                env,
+                actions,
+                feedback,
+                info=prev_info,
+            )
+            actions, handoff_label_agents = _apply_signal_target_handoff_overrides(
+                episode_cfg,
+                env,
+                actions,
+                feedback,
+                obs=obs,
+            )
+            if episode_cfg.dagger_redundant_target_wait_labels:
+                actions, _redundant_wait_label_agents = _apply_signal_redundant_target_wait_overrides(
+                    env,
+                    actions,
+                )
             _append_labeled_step(ep_data, obs, actions, env, episode_cfg, feedback=feedback)
+            if "target_handoff" in positive_replay_events and handoff_label_agents:
+                for aid in handoff_label_agents:
+                    positive_records.append({
+                        "event": "target_handoff",
+                        "step": step,
+                        "agents": [aid],
+                        "kind": "positive",
+                    })
+            if "target_pursuit" in positive_replay_events:
+                target_pursuit_agents = _signal_positive_target_pursuit_agents(
+                    env,
+                    obs,
+                    actions,
+                    min_map_size=episode_cfg.dagger_positive_target_pursuit_min_map_size,
+                )
+                for aid in target_pursuit_agents:
+                    positive_records.append({
+                        "event": "target_pursuit",
+                        "step": step,
+                        "agents": [aid],
+                        "kind": "positive",
+                    })
             obs, rewards, done, truncated, info = env.step(actions)
             event_names = _event_names_by_agent(info or {}, env.num_agents)
             for aid, names in event_names.items():
@@ -2351,6 +4119,49 @@ def _signal_rejected_target_interact_loss(
     return _weighted_mean(loss_vec, weights)
 
 
+def _signal_rejected_target_interact_action_loss(
+    logits: torch.Tensor,
+    rejected_target_mask: torch.Tensor,
+    sample_weight: torch.Tensor | None = None,
+) -> torch.Tensor:
+    bad_action_id = torch.full(
+        rejected_target_mask.reshape(-1).shape,
+        int(SyncOrSinkEnv.ACTION_INTERACT),
+        dtype=torch.long,
+        device=logits.device,
+    )
+    return _signal_bad_action_loss(
+        logits,
+        bad_action_id,
+        rejected_target_mask,
+        sample_weight=sample_weight,
+    )
+
+
+def _signal_bad_action_loss(
+    logits: torch.Tensor,
+    bad_action_id: torch.Tensor,
+    bad_action_mask: torch.Tensor,
+    sample_weight: torch.Tensor | None = None,
+) -> torch.Tensor:
+    bad_action_mask = bad_action_mask.float().reshape(-1)
+    if sample_weight is not None:
+        weights = bad_action_mask * sample_weight.float().reshape(-1)
+    else:
+        weights = bad_action_mask
+    if float(weights.detach().sum().item()) <= 0.0:
+        return torch.tensor(0.0, dtype=logits.dtype, device=logits.device)
+    action_ids = bad_action_id.long().reshape(-1).clamp(0, logits.shape[-1] - 1)
+    bad_logits = logits.gather(1, action_ids.unsqueeze(1)).squeeze(1)
+    other_logits = logits.masked_fill(
+        nn.functional.one_hot(action_ids, num_classes=logits.shape[-1]).bool(),
+        torch.finfo(logits.dtype).min,
+    )
+    other_logsumexp = torch.logsumexp(other_logits, dim=-1)
+    loss_vec = nn.functional.softplus(bad_logits - other_logsumexp)
+    return _weighted_mean(loss_vec, weights)
+
+
 def _signal_bad_redundant_target_interact_loss(
     logits: torch.Tensor,
     bad_redundant_target_mask: torch.Tensor,
@@ -2369,22 +4180,199 @@ def _signal_decoy_drift_action_loss(
     decoy_drift_action_mask: torch.Tensor,
     sample_weight: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    decoy_drift_action_mask = decoy_drift_action_mask.float().reshape(-1)
+    return _signal_bad_action_loss(
+        logits,
+        decoy_drift_action_id,
+        decoy_drift_action_mask,
+        sample_weight=sample_weight,
+    )
+
+
+def _signal_target_match_action_loss(
+    logits: torch.Tensor,
+    target_match_action_id: torch.Tensor,
+    target_match_action_mask: torch.Tensor,
+    sample_weight: torch.Tensor | None = None,
+) -> torch.Tensor:
+    target_match_action_mask = target_match_action_mask.float().reshape(-1)
     if sample_weight is not None:
-        weights = decoy_drift_action_mask * sample_weight.float().reshape(-1)
+        weights = target_match_action_mask * sample_weight.float().reshape(-1)
     else:
-        weights = decoy_drift_action_mask
+        weights = target_match_action_mask
     if float(weights.detach().sum().item()) <= 0.0:
         return torch.tensor(0.0, dtype=logits.dtype, device=logits.device)
-    action_ids = decoy_drift_action_id.long().reshape(-1).clamp(0, logits.shape[-1] - 1)
-    bad_logits = logits.gather(1, action_ids.unsqueeze(1)).squeeze(1)
-    other_logits = logits.masked_fill(
-        nn.functional.one_hot(action_ids, num_classes=logits.shape[-1]).bool(),
-        torch.finfo(logits.dtype).min,
-    )
-    other_logsumexp = torch.logsumexp(other_logits, dim=-1)
-    loss_vec = nn.functional.softplus(bad_logits - other_logsumexp)
+    action_ids = target_match_action_id.long().reshape(-1).clamp(0, logits.shape[-1] - 1)
+    loss_vec = nn.functional.cross_entropy(logits, action_ids, reduction="none")
     return _weighted_mean(loss_vec, weights)
+
+
+def _signal_target_scan_action_loss(
+    logits: torch.Tensor,
+    target_scan_action_mask: torch.Tensor,
+    target_scan_kind_id: torch.Tensor,
+    *,
+    first_weight: float = 0.0,
+    refresh_weight: float = 0.0,
+    joint_weight: float = 0.0,
+    sample_weight: torch.Tensor | None = None,
+) -> torch.Tensor:
+    first_weight = max(0.0, float(first_weight))
+    refresh_weight = max(0.0, float(refresh_weight))
+    joint_weight = max(0.0, float(joint_weight))
+    if first_weight <= 0.0 and refresh_weight <= 0.0 and joint_weight <= 0.0:
+        return torch.tensor(0.0, dtype=logits.dtype, device=logits.device)
+    mask = target_scan_action_mask.float().reshape(-1)
+    kind = target_scan_kind_id.long().reshape(-1)
+    weights = torch.zeros_like(mask)
+    if first_weight > 0.0:
+        weights = weights + first_weight * (kind == _SIGNAL_TARGET_SCAN_KIND_FIRST).float()
+    if refresh_weight > 0.0:
+        weights = weights + refresh_weight * (kind == _SIGNAL_TARGET_SCAN_KIND_REFRESH).float()
+    if joint_weight > 0.0:
+        weights = weights + joint_weight * (kind == _SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION).float()
+    weights = weights * mask
+    if sample_weight is not None:
+        weights = weights * sample_weight.float().reshape(-1)
+    if float(weights.detach().sum().item()) <= 0.0:
+        return torch.tensor(0.0, dtype=logits.dtype, device=logits.device)
+    action_ids = torch.full(
+        (logits.shape[0],),
+        int(SyncOrSinkEnv.ACTION_INTERACT),
+        dtype=torch.long,
+        device=logits.device,
+    )
+    loss_vec = nn.functional.cross_entropy(logits, action_ids, reduction="none")
+    return _weighted_mean(loss_vec, weights)
+
+
+def _signal_scan_decision_loss(
+    logits: torch.Tensor,
+    positive_scan_mask: torch.Tensor,
+    negative_scan_mask: torch.Tensor,
+    *,
+    positive_weight: float = 1.0,
+    negative_weight: float = 1.0,
+    sample_weight: torch.Tensor | None = None,
+) -> torch.Tensor:
+    positive_scan_mask = positive_scan_mask.float().reshape(-1).clamp(0.0, 1.0)
+    negative_scan_mask = negative_scan_mask.float().reshape(-1).clamp(0.0, 1.0)
+    negative_scan_mask = negative_scan_mask * (1.0 - positive_scan_mask)
+    positive_weight = max(0.0, float(positive_weight))
+    negative_weight = max(0.0, float(negative_weight))
+    weights = positive_scan_mask * positive_weight + negative_scan_mask * negative_weight
+    if sample_weight is not None:
+        weights = weights * sample_weight.float().reshape(-1)
+    if float(weights.detach().sum().item()) <= 0.0:
+        return torch.tensor(0.0, dtype=logits.dtype, device=logits.device)
+    targets = positive_scan_mask
+    interact_logits = logits[:, SyncOrSinkEnv.ACTION_INTERACT]
+    loss_vec = nn.functional.binary_cross_entropy_with_logits(
+        interact_logits,
+        targets,
+        reduction="none",
+    )
+    return _weighted_mean(loss_vec, weights)
+
+
+def _signal_scan_gate_loss(
+    scan_gate_logits: torch.Tensor,
+    positive_scan_mask: torch.Tensor,
+    negative_scan_mask: torch.Tensor,
+    *,
+    positive_weight: float = 1.0,
+    negative_weight: float = 1.0,
+    sample_weight: torch.Tensor | None = None,
+) -> torch.Tensor:
+    positive_scan_mask = positive_scan_mask.float().reshape(-1).clamp(0.0, 1.0)
+    negative_scan_mask = negative_scan_mask.float().reshape(-1).clamp(0.0, 1.0)
+    negative_scan_mask = negative_scan_mask * (1.0 - positive_scan_mask)
+    positive_weight = max(0.0, float(positive_weight))
+    negative_weight = max(0.0, float(negative_weight))
+    weights = positive_scan_mask * positive_weight + negative_scan_mask * negative_weight
+    if sample_weight is not None:
+        weights = weights * sample_weight.float().reshape(-1)
+    if float(weights.detach().sum().item()) <= 0.0:
+        return torch.tensor(0.0, dtype=scan_gate_logits.dtype, device=scan_gate_logits.device)
+    loss_vec = nn.functional.binary_cross_entropy_with_logits(
+        scan_gate_logits.reshape(-1),
+        positive_scan_mask,
+        reduction="none",
+    )
+    return _weighted_mean(loss_vec, weights)
+
+
+def _signal_target_validity_loss(
+    validity_logits: torch.Tensor,
+    validity_mask: torch.Tensor,
+    validity_label: torch.Tensor,
+    *,
+    positive_weight: float = 1.0,
+    negative_weight: float = 1.0,
+    sample_weight: torch.Tensor | None = None,
+) -> torch.Tensor:
+    validity_mask = validity_mask.float().reshape(-1).clamp(0.0, 1.0)
+    validity_label = validity_label.float().reshape(-1).clamp(0.0, 1.0)
+    positive_weight = max(0.0, float(positive_weight))
+    negative_weight = max(0.0, float(negative_weight))
+    weights = validity_mask * (
+        validity_label * positive_weight + (1.0 - validity_label) * negative_weight
+    )
+    if sample_weight is not None:
+        weights = weights * sample_weight.float().reshape(-1)
+    if float(weights.detach().sum().item()) <= 0.0:
+        return torch.tensor(0.0, dtype=validity_logits.dtype, device=validity_logits.device)
+    loss_vec = nn.functional.binary_cross_entropy_with_logits(
+        validity_logits.reshape(-1),
+        validity_label,
+        reduction="none",
+    )
+    return _weighted_mean(loss_vec, weights)
+
+
+def _signal_target_decision_loss(
+    decision_logits: torch.Tensor,
+    decision_mask: torch.Tensor,
+    decision_label: torch.Tensor,
+    *,
+    positive_weight: float = 1.0,
+    negative_weight: float = 1.0,
+    sample_weight: torch.Tensor | None = None,
+) -> torch.Tensor:
+    return _signal_target_validity_loss(
+        decision_logits,
+        decision_mask,
+        decision_label,
+        positive_weight=positive_weight,
+        negative_weight=negative_weight,
+        sample_weight=sample_weight,
+    )
+
+
+def _signal_target_aux_loss(
+    pred: torch.Tensor,
+    target_mask: torch.Tensor,
+    target_xy: torch.Tensor,
+    sample_weight: torch.Tensor | None = None,
+) -> torch.Tensor:
+    target_mask = target_mask.float().reshape(-1)
+    target_xy = target_xy.float().reshape(-1, 2)
+    if sample_weight is not None:
+        weights = sample_weight.float().reshape(-1)
+    else:
+        weights = torch.ones_like(target_mask)
+    present_loss_vec = nn.functional.binary_cross_entropy_with_logits(
+        pred[:, 0],
+        target_mask,
+        reduction="none",
+    )
+    present_loss = _weighted_mean(present_loss_vec, weights)
+    xy_weights = weights * target_mask
+    if float(xy_weights.detach().sum().item()) <= 0.0:
+        xy_loss = torch.tensor(0.0, dtype=pred.dtype, device=pred.device)
+    else:
+        pred_xy = torch.sigmoid(pred[:, 1:3])
+        xy_loss = _weighted_mean(((pred_xy - target_xy) ** 2).mean(dim=-1), xy_weights)
+    return present_loss + xy_loss
 
 
 def _send_threshold_for_target_rate(probs, target_rate: float) -> float:
@@ -2470,8 +4458,17 @@ def train_recurrent_bc(
             comm_token_limit=cfg.comm_token_limit,
             comm_vocab_size=cfg.comm_vocab_size,
         ).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=cfg.bc_lr)
+    trainable_params = list(model.parameters())
+    optimizer = optim.Adam(trainable_params, lr=cfg.bc_lr)
     send_pos_weight = _recurrent_comm_send_pos_weight(episodes, cfg, device) if cfg.comm else None
+    bc_eval_every = max(0, int(getattr(cfg, "bc_eval_every_epochs", 0)))
+    bc_eval_seed_count = max(1, int(getattr(cfg, "bc_eval_seed_count", 1)))
+    bc_eval_episodes = int(getattr(cfg, "bc_eval_episodes", 0))
+    bc_restore_best = bool(getattr(cfg, "bc_restore_best_eval_epoch", False))
+    best_epoch_score = None
+    best_epoch_state = None
+    best_epoch_threshold = None
+    best_epoch_row = None
 
     for epoch in range(cfg.bc_epochs):
         np.random.shuffle(episodes)
@@ -2493,6 +4490,8 @@ def train_recurrent_bc(
         comm_pred_len_sum = 0.0
         rejected_target_loss_sum = 0.0
         rejected_target_loss_steps = 0
+        rejected_target_action_loss_sum = 0.0
+        rejected_target_action_loss_steps = 0
         rejected_target_count = 0
         rejected_target_pred_interact_count = 0
         rejected_target_interact_prob_sum = 0.0
@@ -2501,11 +4500,97 @@ def train_recurrent_bc(
         bad_redundant_target_count = 0
         bad_redundant_target_pred_interact_count = 0
         bad_redundant_target_interact_prob_sum = 0.0
+        target_scan_label_count = 0
+        target_scan_pred_interact_count = 0
+        target_scan_interact_prob_sum = 0.0
+        target_scan_kind_counts = [0 for _ in _SIGNAL_TARGET_SCAN_KIND_NAMES]
+        target_scan_kind_pred_interact_counts = [0 for _ in _SIGNAL_TARGET_SCAN_KIND_NAMES]
+        target_scan_kind_interact_prob_sums = [0.0 for _ in _SIGNAL_TARGET_SCAN_KIND_NAMES]
+        target_scan_action_loss_sum = 0.0
+        target_scan_action_loss_steps = 0
+        target_opportunity_label_count = 0
+        target_opportunity_pred_interact_count = 0
+        target_opportunity_interact_prob_sum = 0.0
+        target_opportunity_kind_counts = [0 for _ in _SIGNAL_TARGET_SCAN_KIND_NAMES]
+        target_opportunity_kind_pred_interact_counts = [
+            0 for _ in _SIGNAL_TARGET_SCAN_KIND_NAMES
+        ]
+        target_opportunity_kind_interact_prob_sums = [
+            0.0 for _ in _SIGNAL_TARGET_SCAN_KIND_NAMES
+        ]
+        target_opportunity_action_loss_sum = 0.0
+        target_opportunity_action_loss_steps = 0
+        redundant_wait_action_loss_sum = 0.0
+        redundant_wait_action_loss_steps = 0
+        redundant_wait_action_count = 0
+        redundant_wait_pred_action_count = 0
+        redundant_wait_action_prob_sum = 0.0
+        target_pursuit_action_loss_sum = 0.0
+        target_pursuit_action_loss_steps = 0
+        target_pursuit_action_count = 0
+        target_pursuit_pred_action_count = 0
+        target_pursuit_action_prob_sum = 0.0
+        sync_response_action_loss_sum = 0.0
+        sync_response_action_loss_steps = 0
+        sync_response_action_count = 0
+        sync_response_pred_action_count = 0
+        sync_response_action_prob_sum = 0.0
+        scan_decision_loss_sum = 0.0
+        scan_decision_loss_steps = 0
+        scan_decision_positive_count = 0
+        scan_decision_negative_count = 0
+        scan_decision_positive_pred_count = 0
+        scan_decision_negative_pred_count = 0
+        scan_gate_loss_sum = 0.0
+        scan_gate_loss_steps = 0
+        scan_gate_positive_count = 0
+        scan_gate_negative_count = 0
+        scan_gate_positive_pred_count = 0
+        scan_gate_negative_pred_count = 0
+        scan_gate_positive_prob_sum = 0.0
+        scan_gate_negative_prob_sum = 0.0
+        target_match_action_loss_sum = 0.0
+        target_match_action_loss_steps = 0
+        target_match_action_count = 0
+        target_match_pred_action_count = 0
+        target_match_action_prob_sum = 0.0
+        target_validity_loss_sum = 0.0
+        target_validity_loss_steps = 0
+        target_validity_positive_count = 0
+        target_validity_negative_count = 0
+        target_validity_positive_pred_count = 0
+        target_validity_negative_pred_count = 0
+        target_validity_positive_prob_sum = 0.0
+        target_validity_negative_prob_sum = 0.0
+        target_decision_loss_sum = 0.0
+        target_decision_loss_steps = 0
+        target_decision_positive_count = 0
+        target_decision_negative_count = 0
+        target_decision_positive_pred_count = 0
+        target_decision_negative_pred_count = 0
+        target_decision_positive_prob_sum = 0.0
+        target_decision_negative_prob_sum = 0.0
+        target_aux_loss_sum = 0.0
+        target_aux_steps = 0
+        target_aux_count = 0
+        target_aux_present_correct = 0
+        target_aux_present_total = 0
+        target_aux_xy_l1_sum = 0.0
         decoy_drift_action_loss_sum = 0.0
         decoy_drift_action_loss_steps = 0
         decoy_drift_action_count = 0
         decoy_drift_pred_bad_action_count = 0
         decoy_drift_bad_action_prob_sum = 0.0
+        decoy_scan_action_loss_sum = 0.0
+        decoy_scan_action_loss_steps = 0
+        decoy_scan_action_count = 0
+        decoy_scan_pred_bad_action_count = 0
+        decoy_scan_bad_action_prob_sum = 0.0
+        rejected_target_drift_action_loss_sum = 0.0
+        rejected_target_drift_action_loss_steps = 0
+        rejected_target_drift_action_count = 0
+        rejected_target_drift_pred_bad_action_count = 0
+        rejected_target_drift_bad_action_prob_sum = 0.0
         loss_den = 0.0
         chunks = 0
 
@@ -2534,6 +4619,177 @@ def train_recurrent_bc(
                 )
             else:
                 bad_redundant_target_seq = torch.zeros_like(act_seq, dtype=torch.float32, device=device)
+            if "signal_target_scan_action_mask" in ep_data:
+                target_scan_action_mask_seq = torch.tensor(
+                    ep_data["signal_target_scan_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_scan_action_mask_seq = torch.zeros_like(act_seq, dtype=torch.float32, device=device)
+            if "signal_target_scan_kind_id" in ep_data:
+                target_scan_kind_id_seq = torch.tensor(
+                    ep_data["signal_target_scan_kind_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                target_scan_kind_id_seq = torch.full_like(
+                    act_seq,
+                    _SIGNAL_TARGET_SCAN_KIND_UNKNOWN,
+                    dtype=torch.long,
+                    device=device,
+                )
+            if "signal_target_opportunity_action_mask" in ep_data:
+                target_opportunity_action_mask_seq = torch.tensor(
+                    ep_data["signal_target_opportunity_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_opportunity_action_mask_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "signal_target_opportunity_kind_id" in ep_data:
+                target_opportunity_kind_id_seq = torch.tensor(
+                    ep_data["signal_target_opportunity_kind_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                target_opportunity_kind_id_seq = torch.full_like(
+                    act_seq,
+                    _SIGNAL_TARGET_SCAN_KIND_UNKNOWN,
+                    dtype=torch.long,
+                    device=device,
+                )
+            if "signal_redundant_target_wait_action_mask" in ep_data:
+                redundant_wait_action_mask_seq = torch.tensor(
+                    ep_data["signal_redundant_target_wait_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                redundant_wait_action_mask_seq = torch.zeros_like(act_seq, dtype=torch.float32, device=device)
+            if "signal_redundant_target_wait_action_id" in ep_data:
+                redundant_wait_action_id_seq = torch.tensor(
+                    ep_data["signal_redundant_target_wait_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                redundant_wait_action_id_seq = torch.full_like(act_seq, -1, dtype=torch.long, device=device)
+            if "signal_target_pursuit_action_mask" in ep_data:
+                target_pursuit_action_mask_seq = torch.tensor(
+                    ep_data["signal_target_pursuit_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_pursuit_action_mask_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "signal_target_pursuit_action_id" in ep_data:
+                target_pursuit_action_id_seq = torch.tensor(
+                    ep_data["signal_target_pursuit_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                target_pursuit_action_id_seq = torch.full_like(
+                    act_seq,
+                    -1,
+                    dtype=torch.long,
+                    device=device,
+                )
+            if "signal_sync_response_action_mask" in ep_data:
+                sync_response_action_mask_seq = torch.tensor(
+                    ep_data["signal_sync_response_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                sync_response_action_mask_seq = torch.zeros_like(act_seq, dtype=torch.float32, device=device)
+            if "signal_sync_response_action_id" in ep_data:
+                sync_response_action_id_seq = torch.tensor(
+                    ep_data["signal_sync_response_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                sync_response_action_id_seq = torch.full_like(act_seq, -1, dtype=torch.long, device=device)
+            if "signal_target_match_action_mask" in ep_data:
+                target_match_action_mask_seq = torch.tensor(
+                    ep_data["signal_target_match_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_match_action_mask_seq = torch.zeros_like(act_seq, dtype=torch.float32, device=device)
+            if "signal_target_match_action_id" in ep_data:
+                target_match_action_id_seq = torch.tensor(
+                    ep_data["signal_target_match_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                target_match_action_id_seq = torch.full_like(act_seq, -1, dtype=torch.long, device=device)
+            if "signal_target_validity_mask" in ep_data:
+                target_validity_mask_seq = torch.tensor(
+                    ep_data["signal_target_validity_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_validity_mask_seq = torch.zeros_like(act_seq, dtype=torch.float32, device=device)
+            if "signal_target_validity_label" in ep_data:
+                target_validity_label_seq = torch.tensor(
+                    ep_data["signal_target_validity_label"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_validity_label_seq = torch.zeros_like(act_seq, dtype=torch.float32, device=device)
+            if "signal_target_decision_mask" in ep_data:
+                target_decision_mask_seq = torch.tensor(
+                    ep_data["signal_target_decision_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_decision_mask_seq = torch.zeros_like(act_seq, dtype=torch.float32, device=device)
+            if "signal_target_decision_label" in ep_data:
+                target_decision_label_seq = torch.tensor(
+                    ep_data["signal_target_decision_label"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_decision_label_seq = torch.zeros_like(act_seq, dtype=torch.float32, device=device)
+            if "signal_target_aux_mask" in ep_data:
+                target_aux_mask_seq = torch.tensor(
+                    ep_data["signal_target_aux_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_aux_mask_seq = torch.zeros_like(act_seq, dtype=torch.float32, device=device)
+            if "signal_target_aux_xy" in ep_data:
+                target_aux_xy_seq = torch.tensor(
+                    ep_data["signal_target_aux_xy"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_aux_xy_seq = torch.zeros(
+                    (*act_seq.shape, 2),
+                    dtype=torch.float32,
+                    device=device,
+                )
             if "signal_decoy_drift_action_mask" in ep_data:
                 decoy_drift_action_mask_seq = torch.tensor(
                     ep_data["signal_decoy_drift_action_mask"],
@@ -2550,6 +4806,47 @@ def train_recurrent_bc(
                 )
             else:
                 decoy_drift_action_id_seq = torch.full_like(act_seq, -1, dtype=torch.long, device=device)
+            if "signal_decoy_scan_action_mask" in ep_data:
+                decoy_scan_action_mask_seq = torch.tensor(
+                    ep_data["signal_decoy_scan_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                decoy_scan_action_mask_seq = torch.zeros_like(act_seq, dtype=torch.float32, device=device)
+            if "signal_decoy_scan_action_id" in ep_data:
+                decoy_scan_action_id_seq = torch.tensor(
+                    ep_data["signal_decoy_scan_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                decoy_scan_action_id_seq = torch.full_like(act_seq, -1, dtype=torch.long, device=device)
+            if "signal_rejected_target_drift_action_mask" in ep_data:
+                rejected_target_drift_action_mask_seq = torch.tensor(
+                    ep_data["signal_rejected_target_drift_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                rejected_target_drift_action_mask_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "signal_rejected_target_drift_action_id" in ep_data:
+                rejected_target_drift_action_id_seq = torch.tensor(
+                    ep_data["signal_rejected_target_drift_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                rejected_target_drift_action_id_seq = torch.full_like(
+                    act_seq,
+                    -1,
+                    dtype=torch.long,
+                    device=device,
+                )
             T = obs_seq.shape[0]
             N = obs_seq.shape[1]
             episode_weight = _episode_training_weight(ep_data)
@@ -2577,18 +4874,39 @@ def train_recurrent_bc(
                     action_loss = nn.functional.cross_entropy(logits, act_seq[t], reduction="none")
                     loss = _weighted_mean(action_loss, sample_weight)
                     rejected_target_mask = rejected_target_seq[t]
+                    target_scan_action_mask = target_scan_action_mask_seq[t]
+                    target_scan_kind_ids = target_scan_kind_id_seq[t]
+                    target_opportunity_action_mask = target_opportunity_action_mask_seq[t]
+                    target_opportunity_kind_ids = target_opportunity_kind_id_seq[t]
+                    positive_target_scan_mask = torch.maximum(
+                        target_scan_action_mask.float(),
+                        target_opportunity_action_mask.float(),
+                    ).clamp(0.0, 1.0)
+                    rejected_loss_mask = rejected_target_mask * (1.0 - positive_target_scan_mask)
                     rejected_weight = float(cfg.bc_signal_rejected_target_interact_loss_weight)
                     if rejected_weight > 0.0:
                         rejected_loss = _signal_rejected_target_interact_loss(
                             logits,
-                            rejected_target_mask,
+                            rejected_loss_mask,
                             sample_weight=sample_weight,
                         )
                         loss = loss + rejected_weight * rejected_loss
                         rejected_target_loss_sum += float(rejected_loss.item())
                         rejected_target_loss_steps += 1
+                    rejected_action_weight = float(
+                        cfg.bc_signal_rejected_target_interact_action_loss_weight
+                    )
+                    if rejected_action_weight > 0.0:
+                        rejected_action_loss = _signal_rejected_target_interact_action_loss(
+                            logits,
+                            rejected_loss_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + rejected_action_weight * rejected_action_loss
+                        rejected_target_action_loss_sum += float(rejected_action_loss.item())
+                        rejected_target_action_loss_steps += 1
                     with torch.no_grad():
-                        rejected_bool = rejected_target_mask > 0.0
+                        rejected_bool = rejected_loss_mask > 0.0
                         rejected_count = int(rejected_bool.sum().item())
                         if rejected_count > 0:
                             rejected_target_count += rejected_count
@@ -2626,6 +4944,332 @@ def train_recurrent_bc(
                                 .sum()
                                 .item()
                             )
+                    target_scan_action_mask = target_scan_action_mask_seq[t]
+                    target_scan_kind_ids = target_scan_kind_id_seq[t]
+                    with torch.no_grad():
+                        target_scan_bool = target_scan_action_mask > 0.0
+                        target_scan_count = int(target_scan_bool.sum().item())
+                        if target_scan_count > 0:
+                            target_scan_label_count += target_scan_count
+                            pred_interact = logits.argmax(dim=-1) == SyncOrSinkEnv.ACTION_INTERACT
+                            interact_probs = torch.softmax(logits, dim=-1)[:, SyncOrSinkEnv.ACTION_INTERACT]
+                            target_scan_pred_interact_count += int(
+                                pred_interact[target_scan_bool].sum().item()
+                            )
+                            target_scan_interact_prob_sum += float(
+                                interact_probs[target_scan_bool].sum().item()
+                            )
+                            clipped_kind_ids = target_scan_kind_ids.clamp(0, len(_SIGNAL_TARGET_SCAN_KIND_NAMES) - 1)
+                            for kind_idx in range(len(_SIGNAL_TARGET_SCAN_KIND_NAMES)):
+                                kind_bool = target_scan_bool & (clipped_kind_ids == int(kind_idx))
+                                kind_count = int(kind_bool.sum().item())
+                                if kind_count <= 0:
+                                    continue
+                                target_scan_kind_counts[kind_idx] += kind_count
+                                target_scan_kind_pred_interact_counts[kind_idx] += int(
+                                    pred_interact[kind_bool].sum().item()
+                                )
+                                target_scan_kind_interact_prob_sums[kind_idx] += float(
+                                    interact_probs[kind_bool].sum().item()
+                                )
+                    first_scan_action_weight = float(cfg.bc_signal_first_target_scan_action_weight)
+                    refresh_scan_action_weight = float(cfg.bc_signal_refresh_target_scan_action_weight)
+                    joint_scan_action_weight = float(cfg.bc_signal_joint_target_scan_action_weight)
+                    if (
+                        first_scan_action_weight > 0.0
+                        or refresh_scan_action_weight > 0.0
+                        or joint_scan_action_weight > 0.0
+                    ):
+                        target_scan_action_loss = _signal_target_scan_action_loss(
+                            logits,
+                            target_scan_action_mask,
+                            target_scan_kind_ids,
+                            first_weight=first_scan_action_weight,
+                            refresh_weight=refresh_scan_action_weight,
+                            joint_weight=joint_scan_action_weight,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + target_scan_action_loss
+                        target_scan_action_loss_sum += float(target_scan_action_loss.item())
+                        target_scan_action_loss_steps += 1
+                    target_opportunity_action_mask = target_opportunity_action_mask_seq[t]
+                    target_opportunity_kind_ids = target_opportunity_kind_id_seq[t]
+                    with torch.no_grad():
+                        target_opportunity_bool = target_opportunity_action_mask > 0.0
+                        target_opportunity_count = int(target_opportunity_bool.sum().item())
+                        if target_opportunity_count > 0:
+                            target_opportunity_label_count += target_opportunity_count
+                            pred_interact = logits.argmax(dim=-1) == SyncOrSinkEnv.ACTION_INTERACT
+                            interact_probs = torch.softmax(logits, dim=-1)[:, SyncOrSinkEnv.ACTION_INTERACT]
+                            target_opportunity_pred_interact_count += int(
+                                pred_interact[target_opportunity_bool].sum().item()
+                            )
+                            target_opportunity_interact_prob_sum += float(
+                                interact_probs[target_opportunity_bool].sum().item()
+                            )
+                            clipped_kind_ids = target_opportunity_kind_ids.clamp(
+                                0,
+                                len(_SIGNAL_TARGET_SCAN_KIND_NAMES) - 1,
+                            )
+                            for kind_idx in range(len(_SIGNAL_TARGET_SCAN_KIND_NAMES)):
+                                kind_bool = target_opportunity_bool & (clipped_kind_ids == int(kind_idx))
+                                kind_count = int(kind_bool.sum().item())
+                                if kind_count <= 0:
+                                    continue
+                                target_opportunity_kind_counts[kind_idx] += kind_count
+                                target_opportunity_kind_pred_interact_counts[kind_idx] += int(
+                                    pred_interact[kind_bool].sum().item()
+                                )
+                                target_opportunity_kind_interact_prob_sums[kind_idx] += float(
+                                    interact_probs[kind_bool].sum().item()
+                                )
+                    opportunity_action_weight = float(cfg.bc_signal_target_opportunity_action_weight)
+                    if opportunity_action_weight > 0.0:
+                        target_opportunity_action_loss = _signal_target_scan_action_loss(
+                            logits,
+                            target_opportunity_action_mask,
+                            target_opportunity_kind_ids,
+                            first_weight=opportunity_action_weight,
+                            refresh_weight=opportunity_action_weight,
+                            joint_weight=opportunity_action_weight,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + target_opportunity_action_loss
+                        target_opportunity_action_loss_sum += float(
+                            target_opportunity_action_loss.item()
+                        )
+                        target_opportunity_action_loss_steps += 1
+                    redundant_wait_action_mask = redundant_wait_action_mask_seq[t]
+                    redundant_wait_action_id = redundant_wait_action_id_seq[t]
+                    redundant_wait_action_weight = float(
+                        cfg.bc_signal_redundant_target_wait_action_loss_weight
+                    )
+                    if redundant_wait_action_weight > 0.0:
+                        redundant_wait_loss = _signal_target_match_action_loss(
+                            logits,
+                            redundant_wait_action_id,
+                            redundant_wait_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + redundant_wait_action_weight * redundant_wait_loss
+                        redundant_wait_action_loss_sum += float(redundant_wait_loss.item())
+                        redundant_wait_action_loss_steps += 1
+                    with torch.no_grad():
+                        redundant_wait_bool = redundant_wait_action_mask > 0.0
+                        redundant_wait_count = int(redundant_wait_bool.sum().item())
+                        if redundant_wait_count > 0:
+                            redundant_wait_action_count += redundant_wait_count
+                            wait_action_ids = redundant_wait_action_id.clamp(0, logits.shape[-1] - 1)
+                            redundant_wait_pred_action_count += int(
+                                (logits.argmax(dim=-1) == wait_action_ids)[redundant_wait_bool]
+                                .sum()
+                                .item()
+                            )
+                            redundant_wait_action_prob_sum += float(
+                                torch.softmax(logits, dim=-1)
+                                .gather(1, wait_action_ids.unsqueeze(1))
+                                .squeeze(1)[redundant_wait_bool]
+                                .sum()
+                                .item()
+                            )
+                    target_pursuit_action_mask = target_pursuit_action_mask_seq[t]
+                    target_pursuit_action_id = target_pursuit_action_id_seq[t]
+                    target_pursuit_action_weight = float(cfg.bc_signal_target_pursuit_action_weight)
+                    if target_pursuit_action_weight > 0.0:
+                        target_pursuit_loss = _signal_target_match_action_loss(
+                            logits,
+                            target_pursuit_action_id,
+                            target_pursuit_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + target_pursuit_action_weight * target_pursuit_loss
+                        target_pursuit_action_loss_sum += float(target_pursuit_loss.item())
+                        target_pursuit_action_loss_steps += 1
+                    with torch.no_grad():
+                        target_pursuit_bool = target_pursuit_action_mask > 0.0
+                        target_pursuit_count = int(target_pursuit_bool.sum().item())
+                        if target_pursuit_count > 0:
+                            target_pursuit_action_count += target_pursuit_count
+                            target_action_ids = target_pursuit_action_id.clamp(0, logits.shape[-1] - 1)
+                            target_pursuit_pred_action_count += int(
+                                (logits.argmax(dim=-1) == target_action_ids)[target_pursuit_bool]
+                                .sum()
+                                .item()
+                            )
+                            target_pursuit_action_prob_sum += float(
+                                torch.softmax(logits, dim=-1)
+                                .gather(1, target_action_ids.unsqueeze(1))
+                                .squeeze(1)[target_pursuit_bool]
+                                .sum()
+                                .item()
+                            )
+                    sync_response_action_mask = sync_response_action_mask_seq[t]
+                    sync_response_action_id = sync_response_action_id_seq[t]
+                    sync_response_action_weight = float(
+                        cfg.bc_signal_sync_response_action_loss_weight
+                    )
+                    if sync_response_action_weight > 0.0:
+                        sync_response_loss = _signal_target_match_action_loss(
+                            logits,
+                            sync_response_action_id,
+                            sync_response_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + sync_response_action_weight * sync_response_loss
+                        sync_response_action_loss_sum += float(sync_response_loss.item())
+                        sync_response_action_loss_steps += 1
+                    with torch.no_grad():
+                        sync_response_bool = sync_response_action_mask > 0.0
+                        sync_response_count = int(sync_response_bool.sum().item())
+                        if sync_response_count > 0:
+                            sync_response_action_count += sync_response_count
+                            sync_action_ids = sync_response_action_id.clamp(0, logits.shape[-1] - 1)
+                            sync_response_pred_action_count += int(
+                                (logits.argmax(dim=-1) == sync_action_ids)[sync_response_bool]
+                                .sum()
+                                .item()
+                            )
+                            sync_response_action_prob_sum += float(
+                                torch.softmax(logits, dim=-1)
+                                .gather(1, sync_action_ids.unsqueeze(1))
+                                .squeeze(1)[sync_response_bool]
+                                .sum()
+                                .item()
+                            )
+                    target_match_action_mask = target_match_action_mask_seq[t]
+                    target_match_action_id = target_match_action_id_seq[t]
+                    target_match_action_weight = float(cfg.bc_signal_target_match_action_weight)
+                    if target_match_action_weight > 0.0:
+                        target_match_loss = _signal_target_match_action_loss(
+                            logits,
+                            target_match_action_id,
+                            target_match_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + target_match_action_weight * target_match_loss
+                        target_match_action_loss_sum += float(target_match_loss.item())
+                        target_match_action_loss_steps += 1
+                    with torch.no_grad():
+                        target_match_bool = target_match_action_mask > 0.0
+                        target_match_count = int(target_match_bool.sum().item())
+                        if target_match_count > 0:
+                            target_match_action_count += target_match_count
+                            target_action_ids = target_match_action_id.clamp(0, logits.shape[-1] - 1)
+                            target_match_pred_action_count += int(
+                                (logits.argmax(dim=-1) == target_action_ids)[target_match_bool]
+                                .sum()
+                                .item()
+                            )
+                            target_match_action_prob_sum += float(
+                                torch.softmax(logits, dim=-1)
+                                .gather(1, target_action_ids.unsqueeze(1))
+                                .squeeze(1)[target_match_bool]
+                                .sum()
+                                .item()
+                            )
+                    target_validity_mask = target_validity_mask_seq[t]
+                    target_validity_label = target_validity_label_seq[t]
+                    target_validity_weight = float(cfg.bc_signal_target_validity_loss_weight)
+                    if target_validity_weight > 0.0 and hasattr(model, "signal_target_validity"):
+                        target_validity_logits = model.signal_target_validity(hidden[0])
+                        target_validity_loss = _signal_target_validity_loss(
+                            target_validity_logits,
+                            target_validity_mask,
+                            target_validity_label,
+                            positive_weight=cfg.bc_signal_target_validity_pos_weight,
+                            negative_weight=cfg.bc_signal_target_validity_neg_weight,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + target_validity_weight * target_validity_loss
+                        target_validity_loss_sum += float(target_validity_loss.item())
+                        target_validity_loss_steps += 1
+                        with torch.no_grad():
+                            validity_bool = target_validity_mask > 0.0
+                            positive_bool = validity_bool & (target_validity_label >= 0.5)
+                            negative_bool = validity_bool & (target_validity_label < 0.5)
+                            validity_prob = torch.sigmoid(target_validity_logits.reshape(-1))
+                            pred_positive = validity_prob >= 0.5
+                            target_validity_positive_count += int(positive_bool.sum().item())
+                            target_validity_negative_count += int(negative_bool.sum().item())
+                            target_validity_positive_pred_count += int(
+                                pred_positive[positive_bool].sum().item()
+                            )
+                            target_validity_negative_pred_count += int(
+                                pred_positive[negative_bool].sum().item()
+                            )
+                            target_validity_positive_prob_sum += float(
+                                validity_prob[positive_bool].sum().item()
+                            )
+                            target_validity_negative_prob_sum += float(
+                                validity_prob[negative_bool].sum().item()
+                            )
+                    target_decision_mask = target_decision_mask_seq[t]
+                    target_decision_label = target_decision_label_seq[t]
+                    target_decision_weight = float(cfg.bc_signal_target_decision_loss_weight)
+                    if target_decision_weight > 0.0 and hasattr(model, "signal_target_decision"):
+                        target_decision_logits = model.signal_target_decision(hidden[0])
+                        target_decision_loss = _signal_target_decision_loss(
+                            target_decision_logits,
+                            target_decision_mask,
+                            target_decision_label,
+                            positive_weight=cfg.bc_signal_target_decision_pos_weight,
+                            negative_weight=cfg.bc_signal_target_decision_neg_weight,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + target_decision_weight * target_decision_loss
+                        target_decision_loss_sum += float(target_decision_loss.item())
+                        target_decision_loss_steps += 1
+                        with torch.no_grad():
+                            decision_bool = target_decision_mask > 0.0
+                            positive_bool = decision_bool & (target_decision_label >= 0.5)
+                            negative_bool = decision_bool & (target_decision_label < 0.5)
+                            decision_prob = torch.sigmoid(target_decision_logits.reshape(-1))
+                            pred_positive = decision_prob >= 0.5
+                            target_decision_positive_count += int(positive_bool.sum().item())
+                            target_decision_negative_count += int(negative_bool.sum().item())
+                            target_decision_positive_pred_count += int(
+                                pred_positive[positive_bool].sum().item()
+                            )
+                            target_decision_negative_pred_count += int(
+                                pred_positive[negative_bool].sum().item()
+                            )
+                            target_decision_positive_prob_sum += float(
+                                decision_prob[positive_bool].sum().item()
+                            )
+                            target_decision_negative_prob_sum += float(
+                                decision_prob[negative_bool].sum().item()
+                            )
+                    target_aux_weight = float(cfg.bc_signal_target_aux_weight)
+                    if target_aux_weight > 0.0 and hasattr(model, "signal_target_aux"):
+                        target_aux_mask = target_aux_mask_seq[t]
+                        target_aux_xy = target_aux_xy_seq[t]
+                        target_aux_pred = model.signal_target_aux(hidden[0])
+                        target_aux_loss = _signal_target_aux_loss(
+                            target_aux_pred,
+                            target_aux_mask,
+                            target_aux_xy,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + target_aux_weight * target_aux_loss
+                        target_aux_loss_sum += float(target_aux_loss.item())
+                        target_aux_steps += 1
+                        with torch.no_grad():
+                            target_aux_bool = target_aux_mask > 0.0
+                            target_aux_label_count = int(target_aux_bool.sum().item())
+                            target_aux_count += target_aux_label_count
+                            present_pred = torch.sigmoid(target_aux_pred[:, 0]) > 0.5
+                            target_aux_present_correct += int(
+                                (present_pred == target_aux_bool).sum().item()
+                            )
+                            target_aux_present_total += int(target_aux_bool.numel())
+                            if target_aux_label_count > 0:
+                                pred_xy = torch.sigmoid(target_aux_pred[:, 1:3])
+                                target_aux_xy_l1_sum += float(
+                                    torch.abs(pred_xy - target_aux_xy)
+                                    .mean(dim=-1)[target_aux_bool]
+                                    .sum()
+                                    .item()
+                                )
                     decoy_drift_action_mask = decoy_drift_action_mask_seq[t]
                     decoy_drift_action_id = decoy_drift_action_id_seq[t]
                     decoy_drift_action_weight = float(cfg.bc_signal_decoy_drift_action_loss_weight)
@@ -2652,6 +5296,140 @@ def train_recurrent_bc(
                                 torch.softmax(logits, dim=-1)
                                 .gather(1, bad_action_ids.unsqueeze(1))
                                 .squeeze(1)[decoy_drift_bool]
+                                .sum()
+                                .item()
+                            )
+                    decoy_scan_action_mask = decoy_scan_action_mask_seq[t]
+                    decoy_scan_action_id = decoy_scan_action_id_seq[t]
+                    decoy_scan_action_weight = float(cfg.bc_signal_decoy_scan_action_loss_weight)
+                    if decoy_scan_action_weight > 0.0:
+                        decoy_scan_loss = _signal_decoy_drift_action_loss(
+                            logits,
+                            decoy_scan_action_id,
+                            decoy_scan_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + decoy_scan_action_weight * decoy_scan_loss
+                        decoy_scan_action_loss_sum += float(decoy_scan_loss.item())
+                        decoy_scan_action_loss_steps += 1
+                    with torch.no_grad():
+                        decoy_scan_bool = decoy_scan_action_mask > 0.0
+                        decoy_scan_count = int(decoy_scan_bool.sum().item())
+                        if decoy_scan_count > 0:
+                            decoy_scan_action_count += decoy_scan_count
+                            bad_action_ids = decoy_scan_action_id.clamp(0, logits.shape[-1] - 1)
+                            decoy_scan_pred_bad_action_count += int(
+                                (logits.argmax(dim=-1) == bad_action_ids)[decoy_scan_bool].sum().item()
+                            )
+                            decoy_scan_bad_action_prob_sum += float(
+                                torch.softmax(logits, dim=-1)
+                                .gather(1, bad_action_ids.unsqueeze(1))
+                                .squeeze(1)[decoy_scan_bool]
+                                .sum()
+                                .item()
+                            )
+                    positive_scan_mask = target_scan_action_mask * (
+                        (target_scan_kind_ids == _SIGNAL_TARGET_SCAN_KIND_FIRST)
+                        | (target_scan_kind_ids == _SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION)
+                        | (target_scan_kind_ids == _SIGNAL_TARGET_SCAN_KIND_REFRESH)
+                    ).float()
+                    opportunity_positive_scan_mask = target_opportunity_action_mask * (
+                        (target_opportunity_kind_ids == _SIGNAL_TARGET_SCAN_KIND_FIRST)
+                        | (target_opportunity_kind_ids == _SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION)
+                        | (target_opportunity_kind_ids == _SIGNAL_TARGET_SCAN_KIND_REFRESH)
+                    ).float()
+                    if float(cfg.bc_signal_target_opportunity_action_weight) > 0.0:
+                        positive_scan_mask = torch.maximum(
+                            positive_scan_mask,
+                            opportunity_positive_scan_mask,
+                        )
+                    redundant_active_scan_mask = target_scan_action_mask * (
+                        target_scan_kind_ids == _SIGNAL_TARGET_SCAN_KIND_REDUNDANT_ACTIVE
+                    ).float()
+                    negative_scan_mask = torch.maximum(
+                        torch.maximum(decoy_scan_action_mask, redundant_active_scan_mask),
+                        torch.maximum(rejected_target_mask, bad_redundant_target_mask),
+                    )
+                    scan_decision_weight = float(cfg.bc_signal_scan_decision_loss_weight)
+                    if scan_decision_weight > 0.0:
+                        scan_decision_loss = _signal_scan_decision_loss(
+                            logits,
+                            positive_scan_mask,
+                            negative_scan_mask,
+                            positive_weight=cfg.bc_signal_scan_decision_pos_weight,
+                            negative_weight=cfg.bc_signal_scan_decision_neg_weight,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + scan_decision_weight * scan_decision_loss
+                        scan_decision_loss_sum += float(scan_decision_loss.item())
+                        scan_decision_loss_steps += 1
+                        with torch.no_grad():
+                            positive_bool = positive_scan_mask > 0.0
+                            negative_bool = (negative_scan_mask > 0.0) & ~positive_bool
+                            pred_interact = logits.argmax(dim=-1) == SyncOrSinkEnv.ACTION_INTERACT
+                            scan_decision_positive_count += int(positive_bool.sum().item())
+                            scan_decision_negative_count += int(negative_bool.sum().item())
+                            scan_decision_positive_pred_count += int(
+                                pred_interact[positive_bool].sum().item()
+                            )
+                            scan_decision_negative_pred_count += int(
+                                pred_interact[negative_bool].sum().item()
+                            )
+                    scan_gate_weight = float(cfg.bc_signal_scan_gate_loss_weight)
+                    if scan_gate_weight > 0.0 and hasattr(model, "signal_scan_gate"):
+                        scan_gate_logits = model.signal_scan_gate(hidden[0])
+                        scan_gate_loss = _signal_scan_gate_loss(
+                            scan_gate_logits,
+                            positive_scan_mask,
+                            negative_scan_mask,
+                            positive_weight=cfg.bc_signal_scan_gate_pos_weight,
+                            negative_weight=cfg.bc_signal_scan_gate_neg_weight,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + scan_gate_weight * scan_gate_loss
+                        scan_gate_loss_sum += float(scan_gate_loss.item())
+                        scan_gate_loss_steps += 1
+                        with torch.no_grad():
+                            positive_bool = positive_scan_mask > 0.0
+                            negative_bool = (negative_scan_mask > 0.0) & ~positive_bool
+                            gate_prob = torch.sigmoid(scan_gate_logits.reshape(-1))
+                            pred_scan = gate_prob >= 0.5
+                            scan_gate_positive_count += int(positive_bool.sum().item())
+                            scan_gate_negative_count += int(negative_bool.sum().item())
+                            scan_gate_positive_pred_count += int(pred_scan[positive_bool].sum().item())
+                            scan_gate_negative_pred_count += int(pred_scan[negative_bool].sum().item())
+                            scan_gate_positive_prob_sum += float(gate_prob[positive_bool].sum().item())
+                            scan_gate_negative_prob_sum += float(gate_prob[negative_bool].sum().item())
+                    rejected_target_drift_action_mask = rejected_target_drift_action_mask_seq[t]
+                    rejected_target_drift_action_id = rejected_target_drift_action_id_seq[t]
+                    rejected_target_drift_action_weight = float(
+                        cfg.bc_signal_rejected_target_drift_action_loss_weight
+                    )
+                    if rejected_target_drift_action_weight > 0.0:
+                        rejected_target_drift_loss = _signal_decoy_drift_action_loss(
+                            logits,
+                            rejected_target_drift_action_id,
+                            rejected_target_drift_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + rejected_target_drift_action_weight * rejected_target_drift_loss
+                        rejected_target_drift_action_loss_sum += float(rejected_target_drift_loss.item())
+                        rejected_target_drift_action_loss_steps += 1
+                    with torch.no_grad():
+                        rejected_target_drift_bool = rejected_target_drift_action_mask > 0.0
+                        rejected_target_drift_count = int(rejected_target_drift_bool.sum().item())
+                        if rejected_target_drift_count > 0:
+                            rejected_target_drift_action_count += rejected_target_drift_count
+                            bad_action_ids = rejected_target_drift_action_id.clamp(0, logits.shape[-1] - 1)
+                            rejected_target_drift_pred_bad_action_count += int(
+                                (logits.argmax(dim=-1) == bad_action_ids)[rejected_target_drift_bool]
+                                .sum()
+                                .item()
+                            )
+                            rejected_target_drift_bad_action_prob_sum += float(
+                                torch.softmax(logits, dim=-1)
+                                .gather(1, bad_action_ids.unsqueeze(1))
+                                .squeeze(1)[rejected_target_drift_bool]
                                 .sum()
                                 .item()
                             )
@@ -2705,7 +5483,7 @@ def train_recurrent_bc(
                 else:
                     optimizer.zero_grad()
                     (chunk_loss * episode_weight).backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    nn.utils.clip_grad_norm_(trainable_params, 1.0)
                     optimizer.step()
                     total_loss += chunk_loss.item() * episode_weight
                     loss_den += episode_weight
@@ -2718,7 +5496,7 @@ def train_recurrent_bc(
                 episode_loss = torch.stack(episode_chunk_losses).mean()
                 optimizer.zero_grad()
                 (episode_loss * episode_weight).backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                nn.utils.clip_grad_norm_(trainable_params, 1.0)
                 optimizer.step()
                 total_loss += episode_loss.item() * episode_weight
                 loss_den += episode_weight
@@ -2743,6 +5521,9 @@ def train_recurrent_bc(
         rejected_target_pred_interact_rate = rejected_target_pred_interact_count / rejected_target_den
         rejected_target_mean_interact_prob = rejected_target_interact_prob_sum / rejected_target_den
         rejected_target_loss_mean = rejected_target_loss_sum / max(rejected_target_loss_steps, 1)
+        rejected_target_action_loss_mean = (
+            rejected_target_action_loss_sum / max(rejected_target_action_loss_steps, 1)
+        )
         bad_redundant_target_den = max(bad_redundant_target_count, 1)
         bad_redundant_target_pred_interact_rate = (
             bad_redundant_target_pred_interact_count / bad_redundant_target_den
@@ -2753,6 +5534,119 @@ def train_recurrent_bc(
         bad_redundant_target_loss_mean = (
             bad_redundant_target_loss_sum / max(bad_redundant_target_loss_steps, 1)
         )
+        target_scan_den = max(target_scan_label_count, 1)
+        target_scan_pred_interact_rate = target_scan_pred_interact_count / target_scan_den
+        target_scan_mean_interact_prob = target_scan_interact_prob_sum / target_scan_den
+        target_scan_kind_rates = {}
+        target_scan_kind_probs = {}
+        for kind_idx, kind_name in enumerate(_SIGNAL_TARGET_SCAN_KIND_NAMES):
+            kind_den = max(target_scan_kind_counts[kind_idx], 1)
+            target_scan_kind_rates[kind_name] = (
+                target_scan_kind_pred_interact_counts[kind_idx] / kind_den
+            )
+            target_scan_kind_probs[kind_name] = (
+                target_scan_kind_interact_prob_sums[kind_idx] / kind_den
+            )
+        target_scan_action_loss_mean = (
+            target_scan_action_loss_sum / max(target_scan_action_loss_steps, 1)
+        )
+        target_opportunity_den = max(target_opportunity_label_count, 1)
+        target_opportunity_pred_interact_rate = (
+            target_opportunity_pred_interact_count / target_opportunity_den
+        )
+        target_opportunity_mean_interact_prob = (
+            target_opportunity_interact_prob_sum / target_opportunity_den
+        )
+        target_opportunity_kind_rates = {}
+        target_opportunity_kind_probs = {}
+        for kind_idx, kind_name in enumerate(_SIGNAL_TARGET_SCAN_KIND_NAMES):
+            kind_den = max(target_opportunity_kind_counts[kind_idx], 1)
+            target_opportunity_kind_rates[kind_name] = (
+                target_opportunity_kind_pred_interact_counts[kind_idx] / kind_den
+            )
+            target_opportunity_kind_probs[kind_name] = (
+                target_opportunity_kind_interact_prob_sums[kind_idx] / kind_den
+            )
+        target_opportunity_action_loss_mean = (
+            target_opportunity_action_loss_sum / max(target_opportunity_action_loss_steps, 1)
+        )
+        redundant_wait_action_den = max(redundant_wait_action_count, 1)
+        redundant_wait_pred_action_rate = (
+            redundant_wait_pred_action_count / redundant_wait_action_den
+        )
+        redundant_wait_mean_action_prob = (
+            redundant_wait_action_prob_sum / redundant_wait_action_den
+        )
+        redundant_wait_action_loss_mean = (
+            redundant_wait_action_loss_sum / max(redundant_wait_action_loss_steps, 1)
+        )
+        target_pursuit_action_den = max(target_pursuit_action_count, 1)
+        target_pursuit_pred_action_rate = (
+            target_pursuit_pred_action_count / target_pursuit_action_den
+        )
+        target_pursuit_mean_action_prob = (
+            target_pursuit_action_prob_sum / target_pursuit_action_den
+        )
+        target_pursuit_action_loss_mean = (
+            target_pursuit_action_loss_sum / max(target_pursuit_action_loss_steps, 1)
+        )
+        sync_response_action_den = max(sync_response_action_count, 1)
+        sync_response_pred_action_rate = (
+            sync_response_pred_action_count / sync_response_action_den
+        )
+        sync_response_mean_action_prob = (
+            sync_response_action_prob_sum / sync_response_action_den
+        )
+        sync_response_action_loss_mean = (
+            sync_response_action_loss_sum / max(sync_response_action_loss_steps, 1)
+        )
+        scan_decision_loss_mean = scan_decision_loss_sum / max(scan_decision_loss_steps, 1)
+        scan_decision_positive_rate = (
+            scan_decision_positive_pred_count / max(scan_decision_positive_count, 1)
+        )
+        scan_decision_negative_rate = (
+            scan_decision_negative_pred_count / max(scan_decision_negative_count, 1)
+        )
+        scan_gate_loss_mean = scan_gate_loss_sum / max(scan_gate_loss_steps, 1)
+        scan_gate_positive_rate = scan_gate_positive_pred_count / max(scan_gate_positive_count, 1)
+        scan_gate_negative_rate = scan_gate_negative_pred_count / max(scan_gate_negative_count, 1)
+        scan_gate_positive_mean_prob = scan_gate_positive_prob_sum / max(scan_gate_positive_count, 1)
+        scan_gate_negative_mean_prob = scan_gate_negative_prob_sum / max(scan_gate_negative_count, 1)
+        target_match_action_den = max(target_match_action_count, 1)
+        target_match_pred_action_rate = target_match_pred_action_count / target_match_action_den
+        target_match_mean_action_prob = target_match_action_prob_sum / target_match_action_den
+        target_match_action_loss_mean = (
+            target_match_action_loss_sum / max(target_match_action_loss_steps, 1)
+        )
+        target_validity_loss_mean = target_validity_loss_sum / max(target_validity_loss_steps, 1)
+        target_validity_positive_pred_rate = (
+            target_validity_positive_pred_count / max(target_validity_positive_count, 1)
+        )
+        target_validity_negative_pred_rate = (
+            target_validity_negative_pred_count / max(target_validity_negative_count, 1)
+        )
+        target_validity_positive_mean_prob = (
+            target_validity_positive_prob_sum / max(target_validity_positive_count, 1)
+        )
+        target_validity_negative_mean_prob = (
+            target_validity_negative_prob_sum / max(target_validity_negative_count, 1)
+        )
+        target_decision_loss_mean = target_decision_loss_sum / max(target_decision_loss_steps, 1)
+        target_decision_positive_pred_rate = (
+            target_decision_positive_pred_count / max(target_decision_positive_count, 1)
+        )
+        target_decision_negative_pred_rate = (
+            target_decision_negative_pred_count / max(target_decision_negative_count, 1)
+        )
+        target_decision_positive_mean_prob = (
+            target_decision_positive_prob_sum / max(target_decision_positive_count, 1)
+        )
+        target_decision_negative_mean_prob = (
+            target_decision_negative_prob_sum / max(target_decision_negative_count, 1)
+        )
+        target_aux_loss_mean = target_aux_loss_sum / max(target_aux_steps, 1)
+        target_aux_present_acc = target_aux_present_correct / max(target_aux_present_total, 1)
+        target_aux_xy_l1 = target_aux_xy_l1_sum / max(target_aux_count, 1)
         decoy_drift_action_den = max(decoy_drift_action_count, 1)
         decoy_drift_pred_bad_action_rate = (
             decoy_drift_pred_bad_action_count / decoy_drift_action_den
@@ -2763,14 +5657,49 @@ def train_recurrent_bc(
         decoy_drift_action_loss_mean = (
             decoy_drift_action_loss_sum / max(decoy_drift_action_loss_steps, 1)
         )
+        decoy_scan_action_den = max(decoy_scan_action_count, 1)
+        decoy_scan_pred_bad_action_rate = (
+            decoy_scan_pred_bad_action_count / decoy_scan_action_den
+        )
+        decoy_scan_mean_bad_action_prob = (
+            decoy_scan_bad_action_prob_sum / decoy_scan_action_den
+        )
+        decoy_scan_action_loss_mean = (
+            decoy_scan_action_loss_sum / max(decoy_scan_action_loss_steps, 1)
+        )
+        rejected_target_drift_action_den = max(rejected_target_drift_action_count, 1)
+        rejected_target_drift_pred_bad_action_rate = (
+            rejected_target_drift_pred_bad_action_count / rejected_target_drift_action_den
+        )
+        rejected_target_drift_mean_bad_action_prob = (
+            rejected_target_drift_bad_action_prob_sum / rejected_target_drift_action_den
+        )
+        rejected_target_drift_action_loss_mean = (
+            rejected_target_drift_action_loss_sum / max(rejected_target_drift_action_loss_steps, 1)
+        )
         print(
             f"[BC] epoch {epoch:3d} | loss {total_loss / max(loss_den, 1e-8):.4f} | "
             f"comm {avg_comm:.4f} | acc {acc:.3f} | "
             f"send {comm_send_label_rate:.3f}->{comm_pred_send_rate:.3f} | "
             f"len+ {comm_pred_positive_len_rate:.3f} | "
             f"rej_int {rejected_target_pred_interact_rate:.3f} | "
+            f"rej_act_loss {rejected_target_action_loss_mean:.3f} | "
             f"bad_red_int {bad_redundant_target_pred_interact_rate:.3f} | "
-            f"decoy_bad {decoy_drift_pred_bad_action_rate:.3f}"
+            f"scan_int {target_scan_pred_interact_rate:.3f} | "
+            f"opp_int {target_opportunity_pred_interact_rate:.3f} | "
+            f"wait_act {redundant_wait_pred_action_rate:.3f} | "
+            f"scan_loss {target_scan_action_loss_mean:.3f} | "
+            f"scan_dec {scan_decision_positive_rate:.3f}/{scan_decision_negative_rate:.3f} | "
+            f"scan_gate {scan_gate_positive_rate:.3f}/{scan_gate_negative_rate:.3f} | "
+            f"pursuit_act {target_pursuit_pred_action_rate:.3f} | "
+            f"sync_act {sync_response_pred_action_rate:.3f} | "
+            f"match_act {target_match_pred_action_rate:.3f} | "
+            f"valid {target_validity_positive_pred_rate:.3f}/{target_validity_negative_pred_rate:.3f} | "
+            f"decision {target_decision_positive_pred_rate:.3f}/{target_decision_negative_pred_rate:.3f} | "
+            f"target_aux {target_aux_xy_l1:.3f} | "
+            f"decoy_bad {decoy_drift_pred_bad_action_rate:.3f} | "
+            f"decoy_scan_bad {decoy_scan_pred_bad_action_rate:.3f} | "
+            f"rej_drift_bad {rejected_target_drift_pred_bad_action_rate:.3f}"
         )
         if wandb_run is not None:
             send_pos_weight_value = (
@@ -2806,6 +5735,9 @@ def train_recurrent_bc(
                     f"{log_prefix}/comm_send_rate_target": float(cfg.bc_comm_send_rate_target),
                     f"{log_prefix}/signal_rejected_target_count": int(rejected_target_count),
                     f"{log_prefix}/signal_rejected_target_interact_loss": float(rejected_target_loss_mean),
+                    f"{log_prefix}/signal_rejected_target_interact_action_loss": float(
+                        rejected_target_action_loss_mean
+                    ),
                     f"{log_prefix}/signal_rejected_target_pred_interact_rate": float(
                         rejected_target_pred_interact_rate
                     ),
@@ -2814,6 +5746,9 @@ def train_recurrent_bc(
                     ),
                     f"{log_prefix}/signal_rejected_target_interact_loss_weight": float(
                         cfg.bc_signal_rejected_target_interact_loss_weight
+                    ),
+                    f"{log_prefix}/signal_rejected_target_interact_action_loss_weight": float(
+                        cfg.bc_signal_rejected_target_interact_action_loss_weight
                     ),
                     f"{log_prefix}/signal_bad_redundant_target_count": int(bad_redundant_target_count),
                     f"{log_prefix}/signal_bad_redundant_target_interact_loss": float(
@@ -2828,6 +5763,241 @@ def train_recurrent_bc(
                     f"{log_prefix}/signal_bad_redundant_target_interact_loss_weight": float(
                         cfg.bc_signal_bad_redundant_target_interact_loss_weight
                     ),
+                    f"{log_prefix}/signal_target_scan_label_count": int(target_scan_label_count),
+                    f"{log_prefix}/signal_target_scan_pred_interact_rate": float(
+                        target_scan_pred_interact_rate
+                    ),
+                    f"{log_prefix}/signal_target_scan_mean_interact_prob": float(
+                        target_scan_mean_interact_prob
+                    ),
+                    f"{log_prefix}/signal_target_scan_action_loss": float(
+                        target_scan_action_loss_mean
+                    ),
+                    f"{log_prefix}/signal_first_target_scan_action_weight": float(
+                        cfg.bc_signal_first_target_scan_action_weight
+                    ),
+                    f"{log_prefix}/signal_refresh_target_scan_action_weight": float(
+                        cfg.bc_signal_refresh_target_scan_action_weight
+                    ),
+                    f"{log_prefix}/signal_joint_target_scan_action_weight": float(
+                        cfg.bc_signal_joint_target_scan_action_weight
+                    ),
+                    f"{log_prefix}/signal_target_opportunity_label_count": int(
+                        target_opportunity_label_count
+                    ),
+                    f"{log_prefix}/signal_target_opportunity_pred_interact_rate": float(
+                        target_opportunity_pred_interact_rate
+                    ),
+                    f"{log_prefix}/signal_target_opportunity_mean_interact_prob": float(
+                        target_opportunity_mean_interact_prob
+                    ),
+                    f"{log_prefix}/signal_target_opportunity_action_loss": float(
+                        target_opportunity_action_loss_mean
+                    ),
+                    f"{log_prefix}/signal_target_opportunity_action_weight": float(
+                        cfg.bc_signal_target_opportunity_action_weight
+                    ),
+                    f"{log_prefix}/signal_redundant_target_wait_action_count": int(
+                        redundant_wait_action_count
+                    ),
+                    f"{log_prefix}/signal_redundant_target_wait_action_loss": float(
+                        redundant_wait_action_loss_mean
+                    ),
+                    f"{log_prefix}/signal_redundant_target_wait_pred_action_rate": float(
+                        redundant_wait_pred_action_rate
+                    ),
+                    f"{log_prefix}/signal_redundant_target_wait_mean_action_prob": float(
+                        redundant_wait_mean_action_prob
+                    ),
+                    f"{log_prefix}/signal_redundant_target_wait_action_loss_weight": float(
+                        cfg.bc_signal_redundant_target_wait_action_loss_weight
+                    ),
+                    f"{log_prefix}/signal_scan_decision_loss": float(scan_decision_loss_mean),
+                    f"{log_prefix}/signal_scan_decision_positive_count": int(
+                        scan_decision_positive_count
+                    ),
+                    f"{log_prefix}/signal_scan_decision_negative_count": int(
+                        scan_decision_negative_count
+                    ),
+                    f"{log_prefix}/signal_scan_decision_positive_pred_interact_rate": float(
+                        scan_decision_positive_rate
+                    ),
+                    f"{log_prefix}/signal_scan_decision_negative_pred_interact_rate": float(
+                        scan_decision_negative_rate
+                    ),
+                    f"{log_prefix}/signal_scan_decision_loss_weight": float(
+                        cfg.bc_signal_scan_decision_loss_weight
+                    ),
+                    f"{log_prefix}/signal_scan_decision_pos_weight": float(
+                        cfg.bc_signal_scan_decision_pos_weight
+                    ),
+                    f"{log_prefix}/signal_scan_decision_neg_weight": float(
+                        cfg.bc_signal_scan_decision_neg_weight
+                    ),
+                    f"{log_prefix}/signal_scan_gate_loss": float(scan_gate_loss_mean),
+                    f"{log_prefix}/signal_scan_gate_positive_count": int(scan_gate_positive_count),
+                    f"{log_prefix}/signal_scan_gate_negative_count": int(scan_gate_negative_count),
+                    f"{log_prefix}/signal_scan_gate_positive_pred_rate": float(
+                        scan_gate_positive_rate
+                    ),
+                    f"{log_prefix}/signal_scan_gate_negative_pred_rate": float(
+                        scan_gate_negative_rate
+                    ),
+                    f"{log_prefix}/signal_scan_gate_positive_mean_prob": float(
+                        scan_gate_positive_mean_prob
+                    ),
+                    f"{log_prefix}/signal_scan_gate_negative_mean_prob": float(
+                        scan_gate_negative_mean_prob
+                    ),
+                    f"{log_prefix}/signal_scan_gate_loss_weight": float(
+                        cfg.bc_signal_scan_gate_loss_weight
+                    ),
+                    f"{log_prefix}/signal_scan_gate_pos_weight": float(
+                        cfg.bc_signal_scan_gate_pos_weight
+                    ),
+                    f"{log_prefix}/signal_scan_gate_neg_weight": float(
+                        cfg.bc_signal_scan_gate_neg_weight
+                    ),
+                    **{
+                        f"{log_prefix}/signal_target_scan_{kind_name}_count": int(
+                            target_scan_kind_counts[kind_idx]
+                        )
+                        for kind_idx, kind_name in enumerate(_SIGNAL_TARGET_SCAN_KIND_NAMES)
+                    },
+                    **{
+                        f"{log_prefix}/signal_target_scan_{kind_name}_pred_interact_rate": float(
+                            target_scan_kind_rates[kind_name]
+                        )
+                        for kind_name in _SIGNAL_TARGET_SCAN_KIND_NAMES
+                    },
+                    **{
+                        f"{log_prefix}/signal_target_scan_{kind_name}_mean_interact_prob": float(
+                            target_scan_kind_probs[kind_name]
+                        )
+                        for kind_name in _SIGNAL_TARGET_SCAN_KIND_NAMES
+                    },
+                    **{
+                        f"{log_prefix}/signal_target_opportunity_{kind_name}_count": int(
+                            target_opportunity_kind_counts[kind_idx]
+                        )
+                        for kind_idx, kind_name in enumerate(_SIGNAL_TARGET_SCAN_KIND_NAMES)
+                    },
+                    **{
+                        f"{log_prefix}/signal_target_opportunity_{kind_name}_pred_interact_rate": float(
+                            target_opportunity_kind_rates[kind_name]
+                        )
+                        for kind_name in _SIGNAL_TARGET_SCAN_KIND_NAMES
+                    },
+                    **{
+                        f"{log_prefix}/signal_target_opportunity_{kind_name}_mean_interact_prob": float(
+                            target_opportunity_kind_probs[kind_name]
+                        )
+                        for kind_name in _SIGNAL_TARGET_SCAN_KIND_NAMES
+                    },
+                    f"{log_prefix}/signal_target_pursuit_action_count": int(
+                        target_pursuit_action_count
+                    ),
+                    f"{log_prefix}/signal_target_pursuit_action_loss": float(
+                        target_pursuit_action_loss_mean
+                    ),
+                    f"{log_prefix}/signal_target_pursuit_pred_action_rate": float(
+                        target_pursuit_pred_action_rate
+                    ),
+                    f"{log_prefix}/signal_target_pursuit_mean_action_prob": float(
+                        target_pursuit_mean_action_prob
+                    ),
+                    f"{log_prefix}/signal_target_pursuit_action_weight": float(
+                        cfg.bc_signal_target_pursuit_action_weight
+                    ),
+                    f"{log_prefix}/signal_sync_response_action_count": int(
+                        sync_response_action_count
+                    ),
+                    f"{log_prefix}/signal_sync_response_action_loss": float(
+                        sync_response_action_loss_mean
+                    ),
+                    f"{log_prefix}/signal_sync_response_pred_action_rate": float(
+                        sync_response_pred_action_rate
+                    ),
+                    f"{log_prefix}/signal_sync_response_mean_action_prob": float(
+                        sync_response_mean_action_prob
+                    ),
+                    f"{log_prefix}/signal_sync_response_action_loss_weight": float(
+                        cfg.bc_signal_sync_response_action_loss_weight
+                    ),
+                    f"{log_prefix}/signal_target_match_action_count": int(target_match_action_count),
+                    f"{log_prefix}/signal_target_match_action_loss": float(target_match_action_loss_mean),
+                    f"{log_prefix}/signal_target_match_pred_action_rate": float(
+                        target_match_pred_action_rate
+                    ),
+                    f"{log_prefix}/signal_target_match_mean_action_prob": float(
+                        target_match_mean_action_prob
+                    ),
+                    f"{log_prefix}/signal_target_match_action_weight": float(
+                        cfg.bc_signal_target_match_action_weight
+                    ),
+                    f"{log_prefix}/signal_target_validity_loss": float(target_validity_loss_mean),
+                    f"{log_prefix}/signal_target_validity_positive_count": int(
+                        target_validity_positive_count
+                    ),
+                    f"{log_prefix}/signal_target_validity_negative_count": int(
+                        target_validity_negative_count
+                    ),
+                    f"{log_prefix}/signal_target_validity_positive_pred_rate": float(
+                        target_validity_positive_pred_rate
+                    ),
+                    f"{log_prefix}/signal_target_validity_negative_pred_rate": float(
+                        target_validity_negative_pred_rate
+                    ),
+                    f"{log_prefix}/signal_target_validity_positive_mean_prob": float(
+                        target_validity_positive_mean_prob
+                    ),
+                    f"{log_prefix}/signal_target_validity_negative_mean_prob": float(
+                        target_validity_negative_mean_prob
+                    ),
+                    f"{log_prefix}/signal_target_validity_loss_weight": float(
+                        cfg.bc_signal_target_validity_loss_weight
+                    ),
+                    f"{log_prefix}/signal_target_validity_pos_weight": float(
+                        cfg.bc_signal_target_validity_pos_weight
+                    ),
+                    f"{log_prefix}/signal_target_validity_neg_weight": float(
+                        cfg.bc_signal_target_validity_neg_weight
+                    ),
+                    f"{log_prefix}/signal_target_decision_loss": float(target_decision_loss_mean),
+                    f"{log_prefix}/signal_target_decision_positive_count": int(
+                        target_decision_positive_count
+                    ),
+                    f"{log_prefix}/signal_target_decision_negative_count": int(
+                        target_decision_negative_count
+                    ),
+                    f"{log_prefix}/signal_target_decision_positive_pred_rate": float(
+                        target_decision_positive_pred_rate
+                    ),
+                    f"{log_prefix}/signal_target_decision_negative_pred_rate": float(
+                        target_decision_negative_pred_rate
+                    ),
+                    f"{log_prefix}/signal_target_decision_positive_mean_prob": float(
+                        target_decision_positive_mean_prob
+                    ),
+                    f"{log_prefix}/signal_target_decision_negative_mean_prob": float(
+                        target_decision_negative_mean_prob
+                    ),
+                    f"{log_prefix}/signal_target_decision_loss_weight": float(
+                        cfg.bc_signal_target_decision_loss_weight
+                    ),
+                    f"{log_prefix}/signal_target_decision_pos_weight": float(
+                        cfg.bc_signal_target_decision_pos_weight
+                    ),
+                    f"{log_prefix}/signal_target_decision_neg_weight": float(
+                        cfg.bc_signal_target_decision_neg_weight
+                    ),
+                    f"{log_prefix}/signal_target_aux_count": int(target_aux_count),
+                    f"{log_prefix}/signal_target_aux_loss": float(target_aux_loss_mean),
+                    f"{log_prefix}/signal_target_aux_present_acc": float(target_aux_present_acc),
+                    f"{log_prefix}/signal_target_aux_xy_l1": float(target_aux_xy_l1),
+                    f"{log_prefix}/signal_target_aux_weight": float(
+                        cfg.bc_signal_target_aux_weight
+                    ),
                     f"{log_prefix}/signal_decoy_drift_action_count": int(decoy_drift_action_count),
                     f"{log_prefix}/signal_decoy_drift_action_loss": float(decoy_drift_action_loss_mean),
                     f"{log_prefix}/signal_decoy_drift_pred_bad_action_rate": float(
@@ -2839,6 +6009,32 @@ def train_recurrent_bc(
                     f"{log_prefix}/signal_decoy_drift_action_loss_weight": float(
                         cfg.bc_signal_decoy_drift_action_loss_weight
                     ),
+                    f"{log_prefix}/signal_decoy_scan_action_count": int(decoy_scan_action_count),
+                    f"{log_prefix}/signal_decoy_scan_action_loss": float(decoy_scan_action_loss_mean),
+                    f"{log_prefix}/signal_decoy_scan_pred_bad_action_rate": float(
+                        decoy_scan_pred_bad_action_rate
+                    ),
+                    f"{log_prefix}/signal_decoy_scan_mean_bad_action_prob": float(
+                        decoy_scan_mean_bad_action_prob
+                    ),
+                    f"{log_prefix}/signal_decoy_scan_action_loss_weight": float(
+                        cfg.bc_signal_decoy_scan_action_loss_weight
+                    ),
+                    f"{log_prefix}/signal_rejected_target_drift_action_count": int(
+                        rejected_target_drift_action_count
+                    ),
+                    f"{log_prefix}/signal_rejected_target_drift_action_loss": float(
+                        rejected_target_drift_action_loss_mean
+                    ),
+                    f"{log_prefix}/signal_rejected_target_drift_pred_bad_action_rate": float(
+                        rejected_target_drift_pred_bad_action_rate
+                    ),
+                    f"{log_prefix}/signal_rejected_target_drift_mean_bad_action_prob": float(
+                        rejected_target_drift_mean_bad_action_prob
+                    ),
+                    f"{log_prefix}/signal_rejected_target_drift_action_loss_weight": float(
+                        cfg.bc_signal_rejected_target_drift_action_loss_weight
+                    ),
                     f"{log_prefix}/action_acc": float(acc),
                     f"{log_prefix}/lr": float(optimizer.param_groups[0]["lr"]),
                     f"{log_prefix}/chunks": int(chunks),
@@ -2848,6 +6044,66 @@ def train_recurrent_bc(
                 },
                 context=f"{log_prefix} log",
             )
+        if bc_eval_every > 0 and (epoch + 1) % bc_eval_every == 0:
+            calibration = {}
+            if cfg.comm and cfg.bc_calibrate_send_threshold:
+                calibration = _calibrate_recurrent_send_threshold(cfg, model, episodes, device)
+            eval_cfg = cfg
+            if bc_eval_episodes > 0:
+                eval_cfg = replace(cfg, eval_episodes=bc_eval_episodes)
+            eval_result = evaluate_recurrent_policy_multi_seed(
+                eval_cfg,
+                model,
+                device,
+                seed_count=bc_eval_seed_count,
+            )
+            eval_score = _recurrent_eval_score(eval_result)
+            is_best_epoch = best_epoch_score is None or eval_score > best_epoch_score
+            row = {
+                "epoch": int(epoch),
+                "eval": eval_result,
+                "eval_score": eval_score,
+                "eval_send_threshold": float(cfg.eval_send_threshold),
+                "is_best_epoch": bool(is_best_epoch),
+            }
+            if calibration:
+                row["calibration"] = calibration
+            print(json.dumps({f"{log_prefix}_epoch_eval": row}, indent=2, sort_keys=True))
+            if is_best_epoch:
+                best_epoch_score = eval_score
+                best_epoch_state = copy.deepcopy(model.state_dict())
+                best_epoch_threshold = float(cfg.eval_send_threshold)
+                best_epoch_row = dict(row)
+            if wandb_run is not None:
+                _wandb_log(
+                    wandb_run,
+                    {
+                        **_recurrent_eval_wandb_payload(
+                            eval_result,
+                            update=epoch,
+                            is_best=is_best_epoch,
+                            best_eval=(best_epoch_row or {}).get("eval") if best_epoch_row else None,
+                            prefix=f"{log_prefix}/epoch_eval",
+                        ),
+                        f"{log_prefix}/epoch_eval_epoch": int(epoch),
+                        f"{log_prefix}/epoch_eval_send_threshold": float(cfg.eval_send_threshold),
+                        f"{log_prefix}/epoch_eval_restore_best_enabled": int(bc_restore_best),
+                        **dict(log_context or {}),
+                    },
+                    context=f"{log_prefix} epoch eval log",
+                )
+
+    if bc_restore_best and best_epoch_state is not None:
+        model.load_state_dict(best_epoch_state)
+        if best_epoch_threshold is not None:
+            cfg.eval_send_threshold = float(best_epoch_threshold)
+        print(json.dumps({
+            f"{log_prefix}_restore_best_epoch": {
+                "epoch": (best_epoch_row or {}).get("epoch"),
+                "eval_score": (best_epoch_row or {}).get("eval_score"),
+                "eval_send_threshold": float(cfg.eval_send_threshold),
+            }
+        }, indent=2, sort_keys=True))
 
     if cfg.comm and cfg.bc_calibrate_send_threshold:
         calibration = _calibrate_recurrent_send_threshold(cfg, model, episodes, device)
@@ -2901,12 +6157,23 @@ def collect_recurrent_dagger_episodes(
     deferred_solo_target_team_records = 0
     dropped_solo_target_team_records = 0
     decoy_drift_action_labels = 0
+    decoy_scan_action_labels = 0
+    rejected_target_drift_action_labels = 0
+    target_handoff_action_labels = 0
+    target_scan_broadcast_labels = 0
+    redundant_target_wait_action_labels = 0
+    oracle_message_rollin_steps = 0
+    oracle_message_rollin_agents = 0
+    oracle_message_rollin_tokens = 0
+    target_interact_miss_kind_counts = {name: 0 for name in _SIGNAL_TARGET_SCAN_KIND_NAMES}
     focus_events = _dagger_focus_events(cfg)
     positive_replay_events = _dagger_positive_replay_events(cfg)
     positive_replay_event_counts: dict[str, int] = {}
+    oracle_message_rollin_rate = min(1.0, max(0.0, float(cfg.dagger_oracle_message_rollin_rate)))
 
     for ep in range(cfg.dagger_episodes):
         seed = 10000 + round_idx * 1000 + ep
+        rng = np.random.default_rng(seed + 7919)
         env, episode_cfg = _build_training_env(cfg, round_idx * cfg.dagger_episodes + ep)
         oracle_fn = _make_oracle_policy(env, episode_cfg)
         obs, info = env.reset(seed=seed)
@@ -2918,12 +6185,24 @@ def collect_recurrent_dagger_episodes(
         last_info = {}
         prev_actions: dict[int, int] = {}
         prev_msg_lens: dict[int, int] = {}
+        scan_state = _initial_signal_scan_state(episode_cfg)
+        has_policy_step = False
+        prev_positions: dict[int, tuple[int, int]] = {}
+        model_position_history: dict[int, list[tuple[int, int]]] = {aid: [] for aid in range(env.num_agents)}
         max_collect_steps = int(cfg.dagger_max_steps_per_episode)
         recovery_remaining = {aid: 0 for aid in range(env.num_agents)}
         focus_records: list[dict] = []
         deferred_team_records: list[dict] = []
 
         while not (done or truncated) and (max_collect_steps <= 0 or step < max_collect_steps):
+            has_policy_step = _update_signal_scan_state_from_info(
+                episode_cfg,
+                scan_state,
+                last_info,
+                env.num_agents,
+                prev_positions,
+                has_policy_step=has_policy_step,
+            )
             feedback = _feedback_matrix(
                 episode_cfg,
                 env.num_agents,
@@ -2931,9 +6210,63 @@ def collect_recurrent_dagger_episodes(
                 prev_msg_lens=prev_msg_lens,
                 info=last_info,
                 env=env,
+                obs=obs,
             )
             oracle_actions = oracle_fn(obs, info, {"step": step})
+            oracle_actions, broadcast_label_agents = _apply_signal_target_scan_broadcast_overrides(
+                episode_cfg,
+                env,
+                oracle_actions,
+                feedback,
+                info=last_info,
+            )
+            target_scan_broadcast_labels += len(broadcast_label_agents)
+            oracle_actions, handoff_label_agents = _apply_signal_target_handoff_overrides(
+                episode_cfg,
+                env,
+                oracle_actions,
+                feedback,
+                obs=obs,
+            )
+            target_handoff_action_labels += len(handoff_label_agents)
+            if "target_handoff" in positive_replay_events and handoff_label_agents:
+                positive_replay_event_counts["target_handoff"] = (
+                    positive_replay_event_counts.get("target_handoff", 0)
+                    + len(handoff_label_agents)
+                )
+                for aid in handoff_label_agents:
+                    focus_records.append({
+                        "event": "target_handoff",
+                        "step": step,
+                        "agents": [aid],
+                        "kind": "positive",
+                    })
+            if episode_cfg.dagger_redundant_target_wait_labels:
+                oracle_actions, redundant_wait_label_agents = _apply_signal_redundant_target_wait_overrides(
+                    env,
+                    oracle_actions,
+                )
+                redundant_target_wait_action_labels += len(redundant_wait_label_agents)
             step_weights = np.ones((env.num_agents,), dtype=np.float32)
+            if "target_pursuit" in positive_replay_events:
+                target_pursuit_agents = _signal_positive_target_pursuit_agents(
+                    env,
+                    obs,
+                    oracle_actions,
+                    min_map_size=episode_cfg.dagger_positive_target_pursuit_min_map_size,
+                )
+                if target_pursuit_agents:
+                    positive_replay_event_counts["target_pursuit"] = (
+                        positive_replay_event_counts.get("target_pursuit", 0)
+                        + len(target_pursuit_agents)
+                    )
+                    for aid in target_pursuit_agents:
+                        focus_records.append({
+                            "event": "target_pursuit",
+                            "step": step,
+                            "agents": [aid],
+                            "kind": "positive",
+                        })
             for aid, remaining in recovery_remaining.items():
                 if remaining > 0:
                     step_weights[aid] = max(step_weights[aid], float(cfg.dagger_focus_recovery_weight))
@@ -2955,6 +6288,7 @@ def collect_recurrent_dagger_episodes(
                 hidden,
                 device,
                 feedback=feedback,
+                scan_state=scan_state,
             )
             target_interact_miss_agents = _signal_target_interact_miss_agents(
                 env,
@@ -2962,6 +6296,13 @@ def collect_recurrent_dagger_episodes(
                 model_actions,
             )
             if target_interact_miss_agents and "target_interact_miss" in focus_events:
+                for aid in target_interact_miss_agents:
+                    kind = _signal_target_scan_kind(env, int(aid))
+                    if 0 <= int(kind) < len(_SIGNAL_TARGET_SCAN_KIND_NAMES):
+                        kind_name = _SIGNAL_TARGET_SCAN_KIND_NAMES[int(kind)]
+                        target_interact_miss_kind_counts[kind_name] = (
+                            target_interact_miss_kind_counts.get(kind_name, 0) + 1
+                        )
                 focus_event_counts["target_interact_miss"] = (
                     focus_event_counts.get("target_interact_miss", 0)
                     + len(target_interact_miss_agents)
@@ -3051,6 +6392,40 @@ def collect_recurrent_dagger_episodes(
                         recovery_remaining[aid],
                         int(cfg.dagger_focus_window),
                     )
+            rejected_target_drift_agents = _signal_rejected_target_drift_agents(
+                env,
+                obs,
+                model_actions,
+            )
+            if rejected_target_drift_agents:
+                rejected_target_drift_action_labels += _label_latest_signal_rejected_target_drift_actions(
+                    ep_data,
+                    num_agents=env.num_agents,
+                    agent_ids=rejected_target_drift_agents,
+                    model_actions=model_actions,
+                )
+            if rejected_target_drift_agents and "rejected_target_drift" in focus_events:
+                focus_event_counts["rejected_target_drift"] = (
+                    focus_event_counts.get("rejected_target_drift", 0)
+                    + len(rejected_target_drift_agents)
+                )
+                focus_records.append({
+                    "event": "rejected_target_drift",
+                    "step": step,
+                    "agents": list(rejected_target_drift_agents),
+                    "kind": "focus",
+                })
+                focused_state_updates += _scale_latest_agent_weights(
+                    ep_data,
+                    num_agents=env.num_agents,
+                    agent_ids=rejected_target_drift_agents,
+                    weight=cfg.dagger_focus_error_weight,
+                )
+                for aid in rejected_target_drift_agents:
+                    recovery_remaining[aid] = max(
+                        recovery_remaining[aid],
+                        int(cfg.dagger_focus_window),
+                    )
             target_discovery_miss_agents = _signal_target_discovery_miss_agents(
                 env,
                 obs,
@@ -3083,12 +6458,47 @@ def collect_recurrent_dagger_episodes(
                         recovery_remaining[aid],
                         int(cfg.dagger_focus_window),
                     )
+            movement_stall_miss_agents = _signal_movement_stall_miss_agents(
+                env,
+                obs,
+                oracle_actions,
+                model_actions,
+                model_position_history,
+                min_map_size=cfg.dagger_movement_stall_min_map_size,
+                window=cfg.dagger_movement_stall_window,
+            )
+            if movement_stall_miss_agents and "movement_stall_miss" in focus_events:
+                focus_event_counts["movement_stall_miss"] = (
+                    focus_event_counts.get("movement_stall_miss", 0)
+                    + len(movement_stall_miss_agents)
+                )
+                focus_records.append({
+                    "event": "movement_stall_miss",
+                    "step": step,
+                    "agents": list(movement_stall_miss_agents),
+                    "kind": "focus",
+                })
+                focused_state_updates += _scale_latest_agent_weights(
+                    ep_data,
+                    num_agents=env.num_agents,
+                    agent_ids=movement_stall_miss_agents,
+                    weight=max(
+                        float(cfg.dagger_focus_error_weight),
+                        float(cfg.dagger_movement_stall_focus_weight),
+                    ),
+                )
+                for aid in movement_stall_miss_agents:
+                    recovery_remaining[aid] = max(
+                        recovery_remaining[aid],
+                        int(cfg.dagger_focus_window),
+                    )
             target_handoff_miss_agents = _signal_target_handoff_miss_agents(
                 env,
                 obs,
                 oracle_actions,
                 model_actions,
                 feedback,
+                cfg=episode_cfg,
             )
             if target_handoff_miss_agents and "target_handoff_miss" in focus_events:
                 focus_event_counts["target_handoff_miss"] = (
@@ -3264,9 +6674,38 @@ def collect_recurrent_dagger_episodes(
                         recovery_remaining[aid],
                         int(cfg.dagger_focus_window),
                     )
-            obs, _rewards, done, truncated, info = env.step(model_actions)
+            rollout_actions, replaced_agents, replaced_tokens = _mix_oracle_rollin_messages(
+                model_actions,
+                oracle_actions,
+                oracle_message_rollin_rate,
+                rng,
+            )
+            if replaced_agents > 0:
+                oracle_message_rollin_steps += 1
+                oracle_message_rollin_agents += int(replaced_agents)
+                oracle_message_rollin_tokens += int(replaced_tokens)
+            prev_positions = _signal_positions_from_obs(obs)
+            history_window = max(1, int(cfg.dagger_movement_stall_window))
+            for aid, pos in prev_positions.items():
+                history = model_position_history.setdefault(int(aid), [])
+                history.append(tuple(pos))
+                if len(history) > history_window:
+                    del history[:-history_window]
+            obs, _rewards, done, truncated, info = env.step(rollout_actions)
             last_info = info or {}
             event_names = _event_names_by_agent(last_info, env.num_agents)
+            decoy_scan_agents = [
+                int(aid)
+                for aid, names in event_names.items()
+                if "decoy_scan" in names
+            ]
+            if decoy_scan_agents:
+                decoy_scan_action_labels += _label_latest_signal_decoy_scan_actions(
+                    ep_data,
+                    num_agents=env.num_agents,
+                    agent_ids=decoy_scan_agents,
+                    model_actions=model_actions,
+                )
             focused_agents = []
             for aid, names in event_names.items():
                 positive_matched = sorted((names & positive_replay_events) - focus_events)
@@ -3301,8 +6740,8 @@ def collect_recurrent_dagger_episodes(
                     agent_ids=focused_agents,
                     weight=cfg.dagger_focus_error_weight,
                 )
-            prev_actions = {aid: int(action["action"]) for aid, action in model_actions.items()}
-            prev_msg_lens = _message_lengths(model_actions)
+            prev_actions = {aid: int(action["action"]) for aid, action in rollout_actions.items()}
+            prev_msg_lens = _message_lengths(rollout_actions)
             step += 1
 
         capped = max_collect_steps > 0 and step >= max_collect_steps and not (done or truncated)
@@ -3370,9 +6809,41 @@ def collect_recurrent_dagger_episodes(
         "solo_target_team_deferred_records": deferred_solo_target_team_records,
         "solo_target_team_dropped_records": dropped_solo_target_team_records,
         "solo_target_team_success_only": bool(cfg.dagger_solo_target_team_success_only),
+        "target_match_action_labels": _episode_count_label_mask(
+            episodes,
+            "signal_target_match_action_mask",
+        ),
+        "target_opportunity_action_labels": _episode_count_label_mask(
+            episodes,
+            "signal_target_opportunity_action_mask",
+        ),
+        "redundant_target_wait_action_aux_labels": _episode_count_label_mask(
+            episodes,
+            "signal_redundant_target_wait_action_mask",
+        ),
+        "target_pursuit_action_labels": _episode_count_label_mask(
+            episodes,
+            "signal_target_pursuit_action_mask",
+        ),
+        "sync_response_action_labels": _episode_count_label_mask(
+            episodes,
+            "signal_sync_response_action_mask",
+        ),
         "decoy_drift_action_labels": decoy_drift_action_labels,
+        "decoy_scan_action_labels": decoy_scan_action_labels,
+        "rejected_target_drift_action_labels": rejected_target_drift_action_labels,
+        "target_handoff_action_labels": target_handoff_action_labels,
+        "target_scan_broadcast_labels": target_scan_broadcast_labels,
+        "redundant_target_wait_action_labels": redundant_target_wait_action_labels,
+        "oracle_message_rollin_rate": float(oracle_message_rollin_rate),
+        "oracle_message_rollin_steps": int(oracle_message_rollin_steps),
+        "oracle_message_rollin_agents": int(oracle_message_rollin_agents),
+        "oracle_message_rollin_tokens": int(oracle_message_rollin_tokens),
+        "target_interact_miss_kinds": target_interact_miss_kind_counts,
         "recovery_state_updates": recovery_state_updates,
         "focus_error_weight": float(cfg.dagger_focus_error_weight),
+        "movement_stall_focus_weight": float(cfg.dagger_movement_stall_focus_weight),
+        "movement_stall_window": int(cfg.dagger_movement_stall_window),
         "solo_target_team_weight": float(cfg.dagger_solo_target_team_weight),
         "focus_recovery_weight": float(cfg.dagger_focus_recovery_weight),
         "focus_replay_enabled": bool(cfg.dagger_focus_replay),
@@ -3406,6 +6877,7 @@ def train_recurrent_bc_dagger(
     best_state = None
     best_row = None
     best_score = None
+    best_eval_send_threshold = None
     non_improving_rounds = 0
     eval_seed_count = max(1, int(cfg.eval_seed_count))
     if initial_model is not None:
@@ -3417,6 +6889,7 @@ def train_recurrent_bc_dagger(
         )
         best_score = _recurrent_eval_score(initial_eval)
         best_state = copy.deepcopy(initial_model.state_dict())
+        best_eval_send_threshold = float(cfg.eval_send_threshold)
         best_row = {
             "round": -1,
             "phase": "recurrent_init",
@@ -3430,6 +6903,7 @@ def train_recurrent_bc_dagger(
             "started_from_recurrent_init": True,
             "eval": initial_eval,
             "eval_score": best_score,
+            "eval_send_threshold": best_eval_send_threshold,
         }
         print(json.dumps({"recurrent_dagger_initial": best_row}, indent=2, sort_keys=True))
 
@@ -3481,10 +6955,12 @@ def train_recurrent_bc_dagger(
             "started_from_recurrent_init": starts_from_initial_model,
             "eval": eval_result,
             "eval_score": eval_score,
+            "eval_send_threshold": float(cfg.eval_send_threshold),
         }
         if is_best:
             best_score = eval_score
             best_state = copy.deepcopy(model.state_dict())
+            best_eval_send_threshold = float(cfg.eval_send_threshold)
             non_improving_rounds = 0
         else:
             non_improving_rounds += 1
@@ -3559,9 +7035,57 @@ def train_recurrent_bc_dagger(
                         "dagger/collect_solo_target_team_success_only": int(
                             bool(collect_summary.get("solo_target_team_success_only", False))
                         ),
+                        "dagger/collect_target_match_action_labels": int(
+                            collect_summary.get("target_match_action_labels", 0)
+                        ),
+                        "dagger/collect_target_opportunity_action_labels": int(
+                            collect_summary.get("target_opportunity_action_labels", 0)
+                        ),
+                        "dagger/collect_redundant_target_wait_action_aux_labels": int(
+                            collect_summary.get("redundant_target_wait_action_aux_labels", 0)
+                        ),
+                        "dagger/collect_target_pursuit_action_labels": int(
+                            collect_summary.get("target_pursuit_action_labels", 0)
+                        ),
+                        "dagger/collect_sync_response_action_labels": int(
+                            collect_summary.get("sync_response_action_labels", 0)
+                        ),
                         "dagger/collect_decoy_drift_action_labels": int(
                             collect_summary.get("decoy_drift_action_labels", 0)
                         ),
+                        "dagger/collect_decoy_scan_action_labels": int(
+                            collect_summary.get("decoy_scan_action_labels", 0)
+                        ),
+                        "dagger/collect_rejected_target_drift_action_labels": int(
+                            collect_summary.get("rejected_target_drift_action_labels", 0)
+                        ),
+                        "dagger/collect_target_handoff_action_labels": int(
+                            collect_summary.get("target_handoff_action_labels", 0)
+                        ),
+                        "dagger/collect_target_scan_broadcast_labels": int(
+                            collect_summary.get("target_scan_broadcast_labels", 0)
+                        ),
+                        "dagger/collect_redundant_target_wait_action_labels": int(
+                            collect_summary.get("redundant_target_wait_action_labels", 0)
+                        ),
+                        "dagger/collect_oracle_message_rollin_rate": float(
+                            collect_summary.get("oracle_message_rollin_rate", 0.0)
+                        ),
+                        "dagger/collect_oracle_message_rollin_steps": int(
+                            collect_summary.get("oracle_message_rollin_steps", 0)
+                        ),
+                        "dagger/collect_oracle_message_rollin_agents": int(
+                            collect_summary.get("oracle_message_rollin_agents", 0)
+                        ),
+                        "dagger/collect_oracle_message_rollin_tokens": int(
+                            collect_summary.get("oracle_message_rollin_tokens", 0)
+                        ),
+                        **{
+                            f"dagger/collect_target_interact_miss_{kind_name}": int(count)
+                            for kind_name, count in sorted(
+                                (collect_summary.get("target_interact_miss_kinds") or {}).items()
+                            )
+                        },
                         "dagger/collect_recovery_state_updates": int(collect_summary["recovery_state_updates"]),
                         "dagger/collect_replay_episodes": int(collect_summary["replay_episodes"]),
                         **{
@@ -3590,11 +7114,656 @@ def train_recurrent_bc_dagger(
 
     if best_state is not None:
         model.load_state_dict(best_state)
+    if best_eval_send_threshold is not None:
+        cfg.eval_send_threshold = float(best_eval_send_threshold)
 
     return model, history, all_episodes, best_row
 
 
-def _decode_recurrent_actions(cfg: RecurrentConfig, model, obs, hidden, device, feedback: np.ndarray | None = None):
+def _signal_center_target_scan_decoding_candidate(obs_agent: dict, cfg: RecurrentConfig) -> bool:
+    if cfg.scenario != "signal_hunt" or not isinstance(obs_agent, dict):
+        return False
+    pos_arr = np.asarray(obs_agent.get("self_pos", np.zeros((2,), dtype=np.int16)), dtype=np.int64).reshape(-1)
+    if pos_arr.size < 2:
+        return False
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    pos = (int(pos_arr[0]), int(pos_arr[1]))
+    visible_targets = set(_visible_signal_targets(obs_agent, pos_arr, observed_map_size))
+    if pos not in visible_targets:
+        return False
+    if not _signal_observation_has_target_information(obs_agent):
+        return False
+    if not _signal_observation_allows_target(obs_agent, pos, observed_map_size):
+        return False
+
+    own_segments, message_segments = _signal_segments_from_observation(obs_agent)
+    exact_targets = set(_signal_targets_from_segments([*own_segments, *message_segments], observed_map_size))
+    if pos in exact_targets:
+        return True
+
+    allowed_visible_targets = {
+        target
+        for target in visible_targets
+        if _signal_observation_allows_target(obs_agent, target, observed_map_size)
+    }
+    if allowed_visible_targets == {pos}:
+        return True
+
+    inferred_targets = set(_signal_inferred_constraint_targets(obs_agent, observed_map_size))
+    return inferred_targets == {pos}
+
+
+def _signal_center_visible_target_tile(obs_agent: dict, cfg: RecurrentConfig) -> bool:
+    if cfg.scenario != "signal_hunt" or not isinstance(obs_agent, dict):
+        return False
+    pos_arr = np.asarray(obs_agent.get("self_pos", np.zeros((2,), dtype=np.int16)), dtype=np.int64).reshape(-1)
+    if pos_arr.size < 2:
+        return False
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    pos = (int(pos_arr[0]), int(pos_arr[1]))
+    return pos in set(_visible_signal_targets(obs_agent, pos_arr, observed_map_size))
+
+
+def _action_allowed_from_obs(obs_agent: dict, action_id: int) -> bool:
+    raw_mask = obs_agent.get("action_mask") if isinstance(obs_agent, dict) else None
+    if raw_mask is None:
+        return True
+    try:
+        mask = np.asarray(raw_mask, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        return True
+    action_id = int(action_id)
+    return action_id < mask.size and float(mask[action_id]) > 0.0
+
+
+def _apply_signal_target_scan_decoding(
+    cfg: RecurrentConfig,
+    obs: dict,
+    logits: torch.Tensor,
+    acts: torch.Tensor,
+) -> torch.Tensor:
+    threshold = float(getattr(cfg, "eval_signal_target_scan_threshold", -1.0))
+    if cfg.scenario != "signal_hunt" or threshold < 0.0:
+        return acts
+    threshold = min(1.0, max(0.0, threshold))
+    interact_probs = torch.softmax(logits, dim=-1)[:, SyncOrSinkEnv.ACTION_INTERACT]
+    corrected = acts.clone()
+    for aid in range(int(acts.shape[0])):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        if not _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_INTERACT):
+            continue
+        if float(interact_probs[aid].detach().cpu().item()) < threshold:
+            continue
+        if _signal_center_target_scan_decoding_candidate(obs_agent, cfg):
+            corrected[aid] = int(SyncOrSinkEnv.ACTION_INTERACT)
+    return corrected
+
+
+def _apply_signal_scan_gate_decoding(
+    cfg: RecurrentConfig,
+    obs: dict,
+    acts: torch.Tensor,
+    scan_gate_logits: torch.Tensor | None,
+) -> torch.Tensor:
+    threshold = float(getattr(cfg, "eval_signal_scan_gate_threshold", -1.0))
+    if cfg.scenario != "signal_hunt" or threshold < 0.0 or scan_gate_logits is None:
+        return acts
+    threshold = min(1.0, max(0.0, threshold))
+    scan_probs = torch.sigmoid(scan_gate_logits.reshape(-1))
+    corrected = acts.clone()
+    for aid in range(int(acts.shape[0])):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        if not _signal_center_visible_target_tile(obs_agent, cfg):
+            continue
+        if not _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_INTERACT):
+            continue
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        candidate = _signal_center_target_scan_decoding_candidate(obs_agent, cfg)
+        rejected = _signal_center_rejected_target(obs_agent, observed_map_size)
+        prob = float(scan_probs[aid].detach().cpu().item())
+        if prob >= threshold and candidate:
+            corrected[aid] = int(SyncOrSinkEnv.ACTION_INTERACT)
+        elif (
+            bool(getattr(cfg, "eval_signal_scan_gate_suppress", True))
+            and int(corrected[aid].item()) == int(SyncOrSinkEnv.ACTION_INTERACT)
+            and (prob < threshold or rejected)
+            and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY)
+        ):
+            corrected[aid] = int(SyncOrSinkEnv.ACTION_STAY)
+    return corrected
+
+
+def _apply_signal_target_validity_decoding(
+    cfg: RecurrentConfig,
+    obs: dict,
+    acts: torch.Tensor,
+    target_validity_logits: torch.Tensor | None,
+) -> torch.Tensor:
+    threshold = float(getattr(cfg, "eval_signal_target_validity_threshold", -1.0))
+    if cfg.scenario != "signal_hunt" or threshold < 0.0 or target_validity_logits is None:
+        return acts
+    threshold = min(1.0, max(0.0, threshold))
+    validity_probs = torch.sigmoid(target_validity_logits.reshape(-1))
+    corrected = acts.clone()
+    for aid in range(int(acts.shape[0])):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        if int(corrected[aid].item()) != int(SyncOrSinkEnv.ACTION_INTERACT):
+            continue
+        if not _signal_center_visible_target_tile(obs_agent, cfg):
+            continue
+        if not _signal_observation_has_target_information(obs_agent):
+            continue
+        if not _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY):
+            continue
+        prob = float(validity_probs[aid].detach().cpu().item())
+        if prob < threshold:
+            corrected[aid] = int(SyncOrSinkEnv.ACTION_STAY)
+    return corrected
+
+
+def _apply_signal_target_decision_decoding(
+    cfg: RecurrentConfig,
+    obs: dict,
+    acts: torch.Tensor,
+    target_decision_logits: torch.Tensor | None,
+) -> torch.Tensor:
+    threshold = float(getattr(cfg, "eval_signal_target_decision_threshold", -1.0))
+    if cfg.scenario != "signal_hunt" or threshold < 0.0 or target_decision_logits is None:
+        return acts
+    threshold = min(1.0, max(0.0, threshold))
+    decision_probs = torch.sigmoid(target_decision_logits.reshape(-1))
+    corrected = acts.clone()
+    for aid in range(int(acts.shape[0])):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        if not _signal_center_visible_target_tile(obs_agent, cfg):
+            continue
+        prob = float(decision_probs[aid].detach().cpu().item())
+        if prob >= threshold and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_INTERACT):
+            corrected[aid] = int(SyncOrSinkEnv.ACTION_INTERACT)
+        elif (
+            bool(getattr(cfg, "eval_signal_target_decision_suppress", True))
+            and int(corrected[aid].item()) == int(SyncOrSinkEnv.ACTION_INTERACT)
+            and prob < threshold
+            and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY)
+        ):
+            corrected[aid] = int(SyncOrSinkEnv.ACTION_STAY)
+    return corrected
+
+
+def _signal_teammate_scan_position_match(
+    cfg: RecurrentConfig,
+    obs_agent: dict,
+    agent_id: int,
+    num_agents: int,
+    scan_state: Mapping[str, Any] | None,
+) -> bool:
+    if scan_state is None:
+        return False
+    self_pos = _signal_xy(obs_agent.get("self_pos"))
+    if self_pos is None:
+        return False
+    scan_positions = scan_state.get("scan_pos") or {}
+    if not isinstance(scan_positions, Mapping):
+        return False
+    scan_log = scan_state.get("scan_log") or {}
+    if not isinstance(scan_log, Mapping):
+        return False
+    current_step = int(scan_state.get("step", 0))
+    scan_window = int(scan_state.get("scan_window", getattr(cfg, "scan_window", 3)))
+    for other_id in range(int(num_agents)):
+        if int(other_id) == int(agent_id):
+            continue
+        last_scan = _scan_log_value(dict(scan_log), int(other_id))
+        if last_scan is None:
+            continue
+        age = current_step - int(last_scan)
+        if age < 0 or age > scan_window:
+            continue
+        other_pos = _signal_xy(scan_positions.get(int(other_id), scan_positions.get(str(int(other_id)))))
+        if other_pos == self_pos:
+            return True
+    return False
+
+
+def _apply_signal_scan_sync_decoding(
+    cfg: RecurrentConfig,
+    obs: dict,
+    acts: torch.Tensor,
+    feedback: np.ndarray | None,
+    scan_state: Mapping[str, Any] | None = None,
+) -> torch.Tensor:
+    if (
+        cfg.scenario != "signal_hunt"
+        or not bool(getattr(cfg, "eval_signal_scan_sync_assist", False))
+        or feedback is None
+        or not (cfg.obs_feedback and cfg.obs_signal_scan_state)
+    ):
+        return acts
+    try:
+        feedback_arr = np.asarray(feedback, dtype=np.float32).reshape(int(acts.shape[0]), -1)
+    except (TypeError, ValueError):
+        return acts
+    scan_offset = 12 + (4 if cfg.obs_signal_sync_feedback else 0)
+    if feedback_arr.shape[1] <= scan_offset + 3:
+        return acts
+
+    corrected = acts.clone()
+    for aid in range(int(acts.shape[0])):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        visible_target = _signal_center_visible_target_tile(obs_agent, cfg)
+        if not visible_target:
+            continue
+        row = feedback_arr[int(aid)]
+        self_active = float(row[scan_offset]) > 0.0
+        teammate_active = float(row[scan_offset + 1]) > 0.0
+        rejected = _signal_center_rejected_target(obs_agent, observed_map_size)
+        teammate_position_match = _signal_teammate_scan_position_match(
+            cfg,
+            obs_agent,
+            int(aid),
+            int(acts.shape[0]),
+            scan_state,
+        )
+        if rejected and not (self_active or (teammate_active and teammate_position_match)):
+            continue
+        candidate = _signal_center_target_scan_decoding_candidate(obs_agent, cfg)
+        if teammate_active and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_INTERACT):
+            corrected[aid] = int(SyncOrSinkEnv.ACTION_INTERACT)
+        elif (
+            self_active
+            and not teammate_active
+            and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY)
+        ):
+            corrected[aid] = int(SyncOrSinkEnv.ACTION_STAY)
+        elif (
+            bool(getattr(cfg, "eval_signal_scan_sync_force_first", False))
+            and candidate
+            and not self_active
+            and not teammate_active
+            and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_INTERACT)
+        ):
+            corrected[aid] = int(SyncOrSinkEnv.ACTION_INTERACT)
+    return corrected
+
+
+def _apply_signal_scan_refresh_decoding(
+    cfg: RecurrentConfig,
+    obs: dict,
+    acts: torch.Tensor,
+    feedback: np.ndarray | None,
+) -> torch.Tensor:
+    if (
+        cfg.scenario != "signal_hunt"
+        or not bool(getattr(cfg, "eval_signal_scan_refresh_assist", False))
+        or feedback is None
+        or not (cfg.obs_feedback and cfg.obs_signal_scan_state)
+    ):
+        return acts
+    try:
+        feedback_arr = np.asarray(feedback, dtype=np.float32).reshape(int(acts.shape[0]), -1)
+    except (TypeError, ValueError):
+        return acts
+    scan_offset = 12 + (4 if cfg.obs_signal_sync_feedback else 0)
+    if feedback_arr.shape[1] <= scan_offset + 3:
+        return acts
+
+    threshold = min(1.0, max(0.0, float(getattr(cfg, "eval_signal_scan_refresh_threshold", 0.5))))
+    corrected = acts.clone()
+    for aid in range(int(acts.shape[0])):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        row = feedback_arr[int(aid)]
+        self_active = float(row[scan_offset]) > 0.0
+        teammate_active = float(row[scan_offset + 1]) > 0.0
+        self_remaining = float(row[scan_offset + 2])
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        if (
+            _signal_center_rejected_target(obs_agent, observed_map_size)
+            or not _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_INTERACT)
+        ):
+            continue
+        candidate = _signal_center_target_scan_decoding_candidate(obs_agent, cfg)
+        visible_target = _signal_center_visible_target_tile(obs_agent, cfg)
+        if not candidate and not (self_active and visible_target):
+            continue
+        if self_active and not teammate_active and 0.0 < self_remaining <= threshold:
+            corrected[aid] = int(SyncOrSinkEnv.ACTION_INTERACT)
+    return corrected
+
+
+def _signal_active_scan_position_message(
+    cfg: RecurrentConfig,
+    scan_state: Mapping[str, Any] | None,
+    agent_id: int,
+) -> list[int]:
+    if (
+        cfg.scenario != "signal_hunt"
+        or not bool(getattr(cfg, "eval_signal_scan_broadcast_assist", False))
+        or not (cfg.comm and cfg.obs_signal_scan_state)
+        or scan_state is None
+    ):
+        return []
+    scan_log = scan_state.get("scan_log") or {}
+    scan_positions = scan_state.get("scan_pos") or {}
+    if not isinstance(scan_log, Mapping) or not isinstance(scan_positions, Mapping):
+        return []
+    last_scan = _scan_log_value(dict(scan_log), int(agent_id))
+    if last_scan is None:
+        return []
+    current_step = int(scan_state.get("step", 0))
+    scan_window = int(scan_state.get("scan_window", getattr(cfg, "scan_window", 3)))
+    age = current_step - int(last_scan)
+    if age < 0 or age > scan_window:
+        return []
+    scan_pos = _signal_xy(scan_positions.get(int(agent_id), scan_positions.get(str(int(agent_id)))))
+    message = _signal_exact_target_message_for_pos(cfg, scan_pos)
+    if not message:
+        return []
+    if not isinstance(scan_state, MutableMapping):
+        return message
+    broadcast_log = scan_state.get("scan_broadcast_log")
+    if not isinstance(broadcast_log, MutableMapping):
+        broadcast_log = {}
+        scan_state["scan_broadcast_log"] = broadcast_log
+    previous = broadcast_log.get(int(agent_id), broadcast_log.get(str(int(agent_id))))
+    previous_step = None
+    previous_pos = None
+    if isinstance(previous, Mapping):
+        raw_step = previous.get("scan_step", previous.get("step"))
+        if raw_step is not None:
+            try:
+                previous_step = int(raw_step)
+            except (TypeError, ValueError):
+                previous_step = None
+        previous_pos = _signal_xy(previous.get("pos"))
+    if previous_step == int(last_scan) and previous_pos == scan_pos:
+        return []
+    broadcast_log[int(agent_id)] = {
+        "scan_step": int(last_scan),
+        "pos": [int(scan_pos[0]), int(scan_pos[1])],
+    }
+    return message
+
+
+def _apply_signal_scan_broadcast_assist(
+    cfg: RecurrentConfig,
+    actions: dict[int, dict],
+    scan_state: Mapping[str, Any] | None,
+) -> dict[int, dict]:
+    corrected = {int(aid): dict(action) for aid, action in actions.items()}
+    if scan_state is None:
+        return corrected
+    for aid in sorted(corrected):
+        message = _signal_active_scan_position_message(cfg, scan_state, int(aid))
+        if not message:
+            continue
+        corrected[int(aid)]["message_tokens"] = message
+    return corrected
+
+
+def _signal_exact_targets_from_message(
+    tokens: list[int] | tuple[int, ...] | np.ndarray,
+    observed_map_size: int,
+) -> list[tuple[int, int]]:
+    exact_segments = [
+        segment
+        for segment in _signal_segments(tokens)
+        if segment and int(segment[0]) == 26
+    ]
+    return _signal_targets_from_segments(exact_segments, int(observed_map_size))
+
+
+def _signal_exact_targets_from_observation(obs_agent: dict, observed_map_size: int) -> set[tuple[int, int]]:
+    own_segments, message_segments = _signal_segments_from_observation(obs_agent)
+    exact_segments = [
+        segment
+        for segment in [*own_segments, *message_segments]
+        if segment and int(segment[0]) == 26
+    ]
+    return set(_signal_targets_from_segments(exact_segments, int(observed_map_size)))
+
+
+def _signal_exact_target_memory_steps(cfg: RecurrentConfig) -> int:
+    return max(0, int(getattr(cfg, "eval_signal_exact_target_memory_steps", 0)))
+
+
+def _signal_exact_target_memory_targets(
+    cfg: RecurrentConfig,
+    scan_state: Mapping[str, Any] | None,
+    agent_id: int,
+) -> set[tuple[int, int]]:
+    ttl = _signal_exact_target_memory_steps(cfg)
+    if ttl <= 0 or scan_state is None:
+        return set()
+    memory = scan_state.get("exact_target_memory") if isinstance(scan_state, Mapping) else None
+    if not isinstance(memory, Mapping):
+        return set()
+    row = memory.get(int(agent_id), memory.get(str(int(agent_id))))
+    if not isinstance(row, Mapping):
+        return set()
+    pos = _signal_xy(row.get("pos"))
+    if pos is None:
+        return set()
+    try:
+        memory_step = int(row.get("step", -10**9))
+    except (TypeError, ValueError):
+        return set()
+    current_step = int(scan_state.get("step", 0))
+    if current_step - memory_step > ttl:
+        return set()
+    return {pos}
+
+
+def _signal_base_trusted_exact_message_targets(
+    cfg: RecurrentConfig,
+    obs_agent: dict,
+    scan_state: Mapping[str, Any] | None,
+) -> set[tuple[int, int]]:
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    own_segments, _message_segments = _signal_segments_from_observation(obs_agent)
+    own_exact_segments = [
+        segment
+        for segment in own_segments
+        if segment and int(segment[0]) == 26
+    ]
+    trusted = set(_signal_targets_from_segments(own_exact_segments, observed_map_size))
+    trusted.update(_signal_active_scan_positions(cfg, scan_state))
+    return trusted
+
+
+def _update_signal_exact_target_memory(
+    cfg: RecurrentConfig,
+    obs: dict,
+    scan_state: Mapping[str, Any] | None,
+) -> None:
+    if _signal_exact_target_memory_steps(cfg) <= 0 or not isinstance(scan_state, MutableMapping):
+        return
+    memory = scan_state.get("exact_target_memory")
+    if not isinstance(memory, MutableMapping):
+        memory = {}
+        scan_state["exact_target_memory"] = memory
+    current_step = int(scan_state.get("step", 0))
+    for raw_aid, obs_agent in (obs or {}).items():
+        if not isinstance(obs_agent, dict):
+            continue
+        try:
+            aid = int(raw_aid)
+        except (TypeError, ValueError):
+            continue
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        exact_targets = _signal_exact_targets_from_observation(obs_agent, observed_map_size)
+        trusted_targets = exact_targets & _signal_base_trusted_exact_message_targets(cfg, obs_agent, scan_state)
+        if len(trusted_targets) != 1:
+            continue
+        target = next(iter(trusted_targets))
+        memory[aid] = {"pos": [int(target[0]), int(target[1])], "step": current_step}
+
+
+def _signal_navigation_action_from_obs(obs_agent: dict, target: tuple[int, int]) -> int | None:
+    pos_arr = np.asarray(obs_agent.get("self_pos", np.zeros((2,), dtype=np.int16)), dtype=np.int64).reshape(-1)
+    if pos_arr.size < 2:
+        return None
+    x, y = int(pos_arr[0]), int(pos_arr[1])
+    tx, ty = int(target[0]), int(target[1])
+    if (x, y) == (tx, ty):
+        return int(SyncOrSinkEnv.ACTION_INTERACT)
+    candidates: list[tuple[int, int]] = []
+    if abs(tx - x) >= abs(ty - y):
+        if tx > x:
+            candidates.append((int(SyncOrSinkEnv.ACTION_RIGHT), abs(tx - x)))
+        elif tx < x:
+            candidates.append((int(SyncOrSinkEnv.ACTION_LEFT), abs(tx - x)))
+        if ty > y:
+            candidates.append((int(SyncOrSinkEnv.ACTION_DOWN), abs(ty - y)))
+        elif ty < y:
+            candidates.append((int(SyncOrSinkEnv.ACTION_UP), abs(ty - y)))
+    else:
+        if ty > y:
+            candidates.append((int(SyncOrSinkEnv.ACTION_DOWN), abs(ty - y)))
+        elif ty < y:
+            candidates.append((int(SyncOrSinkEnv.ACTION_UP), abs(ty - y)))
+        if tx > x:
+            candidates.append((int(SyncOrSinkEnv.ACTION_RIGHT), abs(tx - x)))
+        elif tx < x:
+            candidates.append((int(SyncOrSinkEnv.ACTION_LEFT), abs(tx - x)))
+    for action_id, _distance in candidates:
+        if _action_allowed_from_obs(obs_agent, action_id):
+            return int(action_id)
+    return None
+
+
+def _signal_active_scan_positions(
+    cfg: RecurrentConfig,
+    scan_state: Mapping[str, Any] | None,
+) -> set[tuple[int, int]]:
+    if scan_state is None:
+        return set()
+    scan_log = scan_state.get("scan_log") or {}
+    scan_positions = scan_state.get("scan_pos") or {}
+    if not isinstance(scan_log, Mapping) or not isinstance(scan_positions, Mapping):
+        return set()
+    current_step = int(scan_state.get("step", 0))
+    scan_window = int(scan_state.get("scan_window", getattr(cfg, "scan_window", 3)))
+    agent_ids: set[int] = set()
+    for raw_agent_id in set(scan_log.keys()) | set(scan_positions.keys()):
+        try:
+            agent_ids.add(int(raw_agent_id))
+        except (TypeError, ValueError):
+            continue
+    active_positions: set[tuple[int, int]] = set()
+    for aid in agent_ids:
+        last_scan = _scan_log_value(dict(scan_log), int(aid))
+        if last_scan is None:
+            continue
+        age = current_step - int(last_scan)
+        if age < 0 or age > scan_window:
+            continue
+        scan_pos = _signal_xy(scan_positions.get(int(aid), scan_positions.get(str(int(aid)))))
+        if scan_pos is not None:
+            active_positions.add(scan_pos)
+    return active_positions
+
+
+def _signal_trusted_exact_message_targets(
+    cfg: RecurrentConfig,
+    obs_agent: dict,
+    scan_state: Mapping[str, Any] | None,
+    agent_id: int | None = None,
+) -> set[tuple[int, int]]:
+    trusted = _signal_base_trusted_exact_message_targets(cfg, obs_agent, scan_state)
+    if agent_id is not None:
+        trusted.update(_signal_exact_target_memory_targets(cfg, scan_state, int(agent_id)))
+    return trusted
+
+
+def _apply_signal_exact_target_navigation_assist(
+    cfg: RecurrentConfig,
+    obs: dict,
+    acts: torch.Tensor,
+    scan_state: Mapping[str, Any] | None,
+) -> torch.Tensor:
+    if (
+        cfg.scenario != "signal_hunt"
+        or not bool(getattr(cfg, "eval_signal_exact_target_navigation_assist", False))
+        or not cfg.comm
+    ):
+        return acts
+    _update_signal_exact_target_memory(cfg, obs, scan_state)
+    corrected = acts.clone()
+    for aid in range(int(acts.shape[0])):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        exact_targets = _signal_exact_targets_from_observation(obs_agent, observed_map_size)
+        exact_targets.update(_signal_exact_target_memory_targets(cfg, scan_state, int(aid)))
+        trusted_targets = _signal_trusted_exact_message_targets(cfg, obs_agent, scan_state, agent_id=int(aid))
+        candidate_targets = sorted(exact_targets & trusted_targets)
+        if len(candidate_targets) != 1:
+            continue
+        action_id = _signal_navigation_action_from_obs(obs_agent, candidate_targets[0])
+        if action_id is None or not _action_allowed_from_obs(obs_agent, action_id):
+            continue
+        corrected[aid] = int(action_id)
+    return corrected
+
+
+def _apply_signal_exact_target_message_guard(
+    cfg: RecurrentConfig,
+    obs: dict,
+    actions: dict[int, dict],
+    scan_state: Mapping[str, Any] | None,
+) -> dict[int, dict]:
+    corrected = {int(aid): dict(action) for aid, action in actions.items()}
+    if (
+        cfg.scenario != "signal_hunt"
+        or not bool(getattr(cfg, "eval_signal_exact_target_message_guard", False))
+        or not cfg.comm
+    ):
+        return corrected
+    _update_signal_exact_target_memory(cfg, obs, scan_state)
+    for aid in sorted(corrected):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        tokens = corrected[int(aid)].get("message_tokens", [])
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        exact_targets = set(_signal_exact_targets_from_message(tokens, observed_map_size))
+        if not exact_targets:
+            continue
+        trusted_targets = _signal_trusted_exact_message_targets(
+            cfg,
+            obs_agent,
+            scan_state,
+            agent_id=int(aid),
+        )
+        if exact_targets.issubset(trusted_targets):
+            continue
+        corrected[int(aid)]["message_tokens"] = []
+    return corrected
+
+
+def _decode_recurrent_actions(
+    cfg: RecurrentConfig,
+    model,
+    obs,
+    hidden,
+    device,
+    feedback: np.ndarray | None = None,
+    scan_state: Mapping[str, Any] | None = None,
+):
     env_agents = len(obs)
     obs_batch = _build_recurrent_obs_batch(obs, env_agents, cfg, feedback=feedback)
     obs_tensor = torch.tensor(obs_batch, dtype=torch.float32, device=device)
@@ -3605,6 +7774,25 @@ def _decode_recurrent_actions(cfg: RecurrentConfig, model, obs, hidden, device, 
             logits, hidden = model(obs_tensor, hidden)
     logits = mask_action_logits(logits, action_mask_from_flat_obs(obs_tensor))
     acts = torch.argmax(logits, dim=-1)
+    acts = _apply_signal_target_scan_decoding(cfg, obs, logits, acts)
+    scan_gate_logits = None
+    if hasattr(model, "signal_scan_gate"):
+        with torch.no_grad():
+            scan_gate_logits = model.signal_scan_gate(hidden[0])
+    acts = _apply_signal_scan_gate_decoding(cfg, obs, acts, scan_gate_logits)
+    target_decision_logits = None
+    if hasattr(model, "signal_target_decision"):
+        with torch.no_grad():
+            target_decision_logits = model.signal_target_decision(hidden[0])
+    acts = _apply_signal_target_decision_decoding(cfg, obs, acts, target_decision_logits)
+    acts = _apply_signal_scan_sync_decoding(cfg, obs, acts, feedback, scan_state=scan_state)
+    acts = _apply_signal_scan_refresh_decoding(cfg, obs, acts, feedback)
+    acts = _apply_signal_exact_target_navigation_assist(cfg, obs, acts, scan_state)
+    target_validity_logits = None
+    if hasattr(model, "signal_target_validity"):
+        with torch.no_grad():
+            target_validity_logits = model.signal_target_validity(hidden[0])
+    acts = _apply_signal_target_validity_decoding(cfg, obs, acts, target_validity_logits)
 
     if not cfg.comm:
         return {
@@ -3626,6 +7814,8 @@ def _decode_recurrent_actions(cfg: RecurrentConfig, model, obs, hidden, device, 
             "action": int(acts[aid].item()),
             "message_tokens": [int(t) for t in tokens],
         }
+    actions = _apply_signal_scan_broadcast_assist(cfg, actions, scan_state)
+    actions = _apply_signal_exact_target_message_guard(cfg, obs, actions, scan_state)
     return actions, hidden
 
 
@@ -3641,7 +7831,20 @@ _SIGNAL_EVAL_METRIC_KEYS = (
     "decoy_target_visits",
     "true_target_unscanned_visits",
     "decoy_target_unscanned_visits",
+    "target_first_scan_opportunities",
+    "target_first_scan_misses",
+    "target_refresh_scan_opportunities",
+    "target_refresh_scan_misses",
+    "target_joint_completion_opportunities",
+    "target_joint_completion_misses",
+    "target_redundant_active_scan_opportunities",
+    "target_redundant_active_scans",
     "wrong_target_scans",
+    "target_scan_obs_candidate",
+    "target_scan_obs_rejected",
+    "wrong_scan_obs_candidate",
+    "wrong_scan_obs_rejected",
+    "wrong_scan_obs_uncertain",
     "reached_any_target",
     "reached_true_target",
     "reached_decoy_target",
@@ -3685,6 +7888,9 @@ def _evaluate_recurrent_policy_single_map(cfg: RecurrentConfig, model, device) -
             last_info = {}
             prev_actions: dict[int, int] = {}
             prev_msg_lens: dict[int, int] = {}
+            scan_state = _initial_signal_scan_state(cfg)
+            has_policy_step = False
+            prev_positions: dict[int, tuple[int, int]] = {}
             signal_ep = {
                 "decoy_scans": 0.0,
                 "clues_found": 0.0,
@@ -3697,7 +7903,20 @@ def _evaluate_recurrent_policy_single_map(cfg: RecurrentConfig, model, device) -
                 "decoy_target_visits": 0.0,
                 "true_target_unscanned_visits": 0.0,
                 "decoy_target_unscanned_visits": 0.0,
+                "target_first_scan_opportunities": 0.0,
+                "target_first_scan_misses": 0.0,
+                "target_refresh_scan_opportunities": 0.0,
+                "target_refresh_scan_misses": 0.0,
+                "target_joint_completion_opportunities": 0.0,
+                "target_joint_completion_misses": 0.0,
+                "target_redundant_active_scan_opportunities": 0.0,
+                "target_redundant_active_scans": 0.0,
                 "wrong_target_scans": 0.0,
+                "target_scan_obs_candidate": 0.0,
+                "target_scan_obs_rejected": 0.0,
+                "wrong_scan_obs_candidate": 0.0,
+                "wrong_scan_obs_rejected": 0.0,
+                "wrong_scan_obs_uncertain": 0.0,
             }
             target_scanners = set()
             target_scan_steps: dict[int, int] = {}
@@ -3705,6 +7924,14 @@ def _evaluate_recurrent_policy_single_map(cfg: RecurrentConfig, model, device) -
             reached_decoy_target = False
 
             while not (done or truncated):
+                has_policy_step = _update_signal_scan_state_from_info(
+                    cfg,
+                    scan_state,
+                    last_info,
+                    env.num_agents,
+                    prev_positions,
+                    has_policy_step=has_policy_step,
+                )
                 feedback = _feedback_matrix(
                     cfg,
                     env.num_agents,
@@ -3712,6 +7939,7 @@ def _evaluate_recurrent_policy_single_map(cfg: RecurrentConfig, model, device) -
                     prev_msg_lens=prev_msg_lens,
                     info=last_info,
                     env=env,
+                    obs=obs,
                 )
                 actions, hidden = _decode_recurrent_actions(
                     cfg,
@@ -3720,6 +7948,7 @@ def _evaluate_recurrent_policy_single_map(cfg: RecurrentConfig, model, device) -
                     hidden,
                     device,
                     feedback=feedback,
+                    scan_state=scan_state,
                 )
                 if cfg.scenario == "signal_hunt":
                     target = env.scenario_state.data.get("target")
@@ -3729,6 +7958,7 @@ def _evaluate_recurrent_policy_single_map(cfg: RecurrentConfig, model, device) -
                         for aid, action in actions.items():
                             action_id = int(action.get("action", -1))
                             pos = tuple(env.agent_positions[int(aid)])
+                            obs_agent = obs.get(int(aid), obs.get(str(int(aid)), {}))
                             on_true_target = pos == target_pos
                             on_decoy_target = pos in decoys
                             if on_true_target or on_decoy_target:
@@ -3736,6 +7966,23 @@ def _evaluate_recurrent_policy_single_map(cfg: RecurrentConfig, model, device) -
                             if on_true_target:
                                 reached_true_target = True
                                 signal_ep["true_target_visits"] += 1.0
+                                scan_kind = _signal_target_scan_kind(env, int(aid))
+                                if scan_kind == _SIGNAL_TARGET_SCAN_KIND_FIRST:
+                                    signal_ep["target_first_scan_opportunities"] += 1.0
+                                    if action_id != env.ACTION_INTERACT:
+                                        signal_ep["target_first_scan_misses"] += 1.0
+                                elif scan_kind == _SIGNAL_TARGET_SCAN_KIND_REFRESH:
+                                    signal_ep["target_refresh_scan_opportunities"] += 1.0
+                                    if action_id != env.ACTION_INTERACT:
+                                        signal_ep["target_refresh_scan_misses"] += 1.0
+                                elif scan_kind == _SIGNAL_TARGET_SCAN_KIND_JOINT_COMPLETION:
+                                    signal_ep["target_joint_completion_opportunities"] += 1.0
+                                    if action_id != env.ACTION_INTERACT:
+                                        signal_ep["target_joint_completion_misses"] += 1.0
+                                elif scan_kind == _SIGNAL_TARGET_SCAN_KIND_REDUNDANT_ACTIVE:
+                                    signal_ep["target_redundant_active_scan_opportunities"] += 1.0
+                                    if action_id == env.ACTION_INTERACT:
+                                        signal_ep["target_redundant_active_scans"] += 1.0
                                 if action_id != env.ACTION_INTERACT:
                                     signal_ep["true_target_unscanned_visits"] += 1.0
                             if on_decoy_target:
@@ -3743,6 +7990,12 @@ def _evaluate_recurrent_policy_single_map(cfg: RecurrentConfig, model, device) -
                                 signal_ep["decoy_target_visits"] += 1.0
                                 if action_id == env.ACTION_INTERACT:
                                     signal_ep["wrong_target_scans"] += 1.0
+                                    if _signal_center_rejected_target(obs_agent, int(env.map_size)):
+                                        signal_ep["wrong_scan_obs_rejected"] += 1.0
+                                    elif _signal_center_target_scan_decoding_candidate(obs_agent, cfg):
+                                        signal_ep["wrong_scan_obs_candidate"] += 1.0
+                                    else:
+                                        signal_ep["wrong_scan_obs_uncertain"] += 1.0
                                 else:
                                     signal_ep["decoy_target_unscanned_visits"] += 1.0
                         target_interactors = [
@@ -3771,9 +8024,15 @@ def _evaluate_recurrent_policy_single_map(cfg: RecurrentConfig, model, device) -
                                 int(action.get("action", -1)) == env.ACTION_INTERACT
                                 and tuple(env.agent_positions[int(aid)]) == tuple(target)
                             ):
+                                obs_agent = obs.get(int(aid), obs.get(str(int(aid)), {}))
                                 signal_ep["target_scans"] += 1.0
+                                if _signal_center_target_scan_decoding_candidate(obs_agent, cfg):
+                                    signal_ep["target_scan_obs_candidate"] += 1.0
+                                if _signal_center_rejected_target(obs_agent, int(env.map_size)):
+                                    signal_ep["target_scan_obs_rejected"] += 1.0
                                 target_scanners.add(int(aid))
                                 target_scan_steps[int(aid)] = next_step
+                prev_positions = _signal_positions_from_obs(obs)
                 obs, rewards, done, truncated, info = env.step(actions)
                 last_info = info or {}
                 if cfg.scenario == "signal_hunt":
@@ -4060,16 +8319,21 @@ class RecurrentCheckpointPolicy:
         self.hidden = None
         self.prev_actions: dict[int, int] = {}
         self.prev_msg_lens: dict[int, int] = {}
-        self.scan_state = {"scan_log": {}, "scan_window": int(cfg.scan_window), "step": 0}
+        self.prev_positions: dict[int, tuple[int, int]] = {}
+        self.scan_state = self._initial_scan_state()
         self._has_policy_step = False
         self.model.eval()
+
+    def _initial_scan_state(self) -> dict:
+        return _initial_signal_scan_state(self.cfg)
 
     def reset(self, *args, **kwargs):
         del args, kwargs
         self.hidden = None
         self.prev_actions = {}
         self.prev_msg_lens = {}
-        self.scan_state = {"scan_log": {}, "scan_window": int(self.cfg.scan_window), "step": 0}
+        self.prev_positions = {}
+        self.scan_state = self._initial_scan_state()
         self._has_policy_step = False
         return None
 
@@ -4079,19 +8343,33 @@ class RecurrentCheckpointPolicy:
             "comm": self.cfg.comm,
             "hidden_dim": self.cfg.hidden_dim,
             "eval_send_threshold": self.cfg.eval_send_threshold,
+            "eval_signal_target_scan_threshold": self.cfg.eval_signal_target_scan_threshold,
+            "eval_signal_scan_gate_threshold": self.cfg.eval_signal_scan_gate_threshold,
+            "eval_signal_scan_gate_suppress": self.cfg.eval_signal_scan_gate_suppress,
+            "eval_signal_target_validity_threshold": self.cfg.eval_signal_target_validity_threshold,
+            "eval_signal_target_decision_threshold": self.cfg.eval_signal_target_decision_threshold,
+            "eval_signal_target_decision_suppress": self.cfg.eval_signal_target_decision_suppress,
+            "eval_signal_scan_sync_assist": self.cfg.eval_signal_scan_sync_assist,
+            "eval_signal_scan_sync_force_first": self.cfg.eval_signal_scan_sync_force_first,
+            "eval_signal_scan_broadcast_assist": self.cfg.eval_signal_scan_broadcast_assist,
+            "eval_signal_exact_target_message_guard": self.cfg.eval_signal_exact_target_message_guard,
+            "eval_signal_exact_target_navigation_assist": self.cfg.eval_signal_exact_target_navigation_assist,
+            "eval_signal_exact_target_memory_steps": self.cfg.eval_signal_exact_target_memory_steps,
+            "eval_signal_scan_refresh_assist": self.cfg.eval_signal_scan_refresh_assist,
+            "eval_signal_scan_refresh_threshold": self.cfg.eval_signal_scan_refresh_threshold,
             "obs_signal_scan_state": self.cfg.obs_signal_scan_state,
+            "obs_signal_negative_memory": self.cfg.obs_signal_negative_memory,
         }
 
     def _update_scan_state_from_info(self, info: dict, num_agents: int) -> None:
-        if self.cfg.scenario != "signal_hunt" or not self.cfg.obs_signal_scan_state:
-            return
-        if not self._has_policy_step:
-            self._has_policy_step = True
-            return
-        self.scan_state["step"] = int(self.scan_state.get("step", 0)) + 1
-        for aid, names in _event_names_by_agent(info or {}, num_agents).items():
-            if "target_scan" in names:
-                self.scan_state.setdefault("scan_log", {})[int(aid)] = int(self.scan_state["step"])
+        self._has_policy_step = _update_signal_scan_state_from_info(
+            self.cfg,
+            self.scan_state,
+            info,
+            num_agents,
+            self.prev_positions,
+            has_policy_step=self._has_policy_step,
+        )
 
     def __call__(self, obs: dict, info: dict, state: dict) -> dict[int, dict]:
         del state
@@ -4105,6 +8383,7 @@ class RecurrentCheckpointPolicy:
             prev_msg_lens=self.prev_msg_lens,
             info=info,
             scan_state=self.scan_state,
+            obs=obs,
         )
         actions, self.hidden = _decode_recurrent_actions(
             self.cfg,
@@ -4113,9 +8392,11 @@ class RecurrentCheckpointPolicy:
             self.hidden,
             self.device,
             feedback=feedback,
+            scan_state=self.scan_state,
         )
         self.prev_actions = {aid: int(action["action"]) for aid, action in actions.items()}
         self.prev_msg_lens = _message_lengths(actions)
+        self.prev_positions = _signal_positions_from_obs(obs)
         return actions
 
 
@@ -4124,6 +8405,19 @@ def load_recurrent_checkpoint_policy(
     *,
     device: str | torch.device = "cpu",
     eval_send_threshold: float | None = None,
+    eval_signal_scan_gate_threshold: float | None = None,
+    eval_signal_scan_gate_suppress: bool | None = None,
+    eval_signal_target_validity_threshold: float | None = None,
+    eval_signal_target_decision_threshold: float | None = None,
+    eval_signal_target_decision_suppress: bool | None = None,
+    eval_signal_scan_sync_assist: bool | None = None,
+    eval_signal_scan_sync_force_first: bool | None = None,
+    eval_signal_scan_broadcast_assist: bool | None = None,
+    eval_signal_exact_target_message_guard: bool | None = None,
+    eval_signal_exact_target_navigation_assist: bool | None = None,
+    eval_signal_exact_target_memory_steps: int | None = None,
+    eval_signal_scan_refresh_assist: bool | None = None,
+    eval_signal_scan_refresh_threshold: float | None = None,
 ) -> RecurrentCheckpointPolicy:
     device = resolve_device(str(device)) if isinstance(device, str) else device
     ckpt = torch.load(Path(path), map_location="cpu")
@@ -4132,6 +8426,32 @@ def load_recurrent_checkpoint_policy(
     cfg = RecurrentConfig(**{key: value for key, value in raw_cfg.items() if key in allowed})
     if eval_send_threshold is not None:
         cfg.eval_send_threshold = float(eval_send_threshold)
+    if eval_signal_scan_gate_threshold is not None:
+        cfg.eval_signal_scan_gate_threshold = float(eval_signal_scan_gate_threshold)
+    if eval_signal_scan_gate_suppress is not None:
+        cfg.eval_signal_scan_gate_suppress = bool(eval_signal_scan_gate_suppress)
+    if eval_signal_target_validity_threshold is not None:
+        cfg.eval_signal_target_validity_threshold = float(eval_signal_target_validity_threshold)
+    if eval_signal_target_decision_threshold is not None:
+        cfg.eval_signal_target_decision_threshold = float(eval_signal_target_decision_threshold)
+    if eval_signal_target_decision_suppress is not None:
+        cfg.eval_signal_target_decision_suppress = bool(eval_signal_target_decision_suppress)
+    if eval_signal_scan_sync_assist is not None:
+        cfg.eval_signal_scan_sync_assist = bool(eval_signal_scan_sync_assist)
+    if eval_signal_scan_sync_force_first is not None:
+        cfg.eval_signal_scan_sync_force_first = bool(eval_signal_scan_sync_force_first)
+    if eval_signal_scan_broadcast_assist is not None:
+        cfg.eval_signal_scan_broadcast_assist = bool(eval_signal_scan_broadcast_assist)
+    if eval_signal_exact_target_message_guard is not None:
+        cfg.eval_signal_exact_target_message_guard = bool(eval_signal_exact_target_message_guard)
+    if eval_signal_exact_target_navigation_assist is not None:
+        cfg.eval_signal_exact_target_navigation_assist = bool(eval_signal_exact_target_navigation_assist)
+    if eval_signal_exact_target_memory_steps is not None:
+        cfg.eval_signal_exact_target_memory_steps = int(eval_signal_exact_target_memory_steps)
+    if eval_signal_scan_refresh_assist is not None:
+        cfg.eval_signal_scan_refresh_assist = bool(eval_signal_scan_refresh_assist)
+    if eval_signal_scan_refresh_threshold is not None:
+        cfg.eval_signal_scan_refresh_threshold = float(eval_signal_scan_refresh_threshold)
     state = ckpt.get("model", ckpt)
     first_weight = state.get("encoder.net.0.weight")
     if first_weight is None:
@@ -4145,7 +8465,7 @@ def load_recurrent_checkpoint_policy(
         comm_token_limit=cfg.comm_token_limit,
         comm_vocab_size=cfg.comm_vocab_size,
     ).to(device)
-    model.load_state_dict(state)
+    _load_recurrent_actor_state(model, state)
     return RecurrentCheckpointPolicy(model, cfg, device)
 
 
@@ -4176,6 +8496,61 @@ def _recurrent_training_obs_shape(cfg: RecurrentConfig) -> tuple[int, int]:
     return obs_dim, num_agents
 
 
+def _expand_recurrent_actor_input_state(
+    state: dict,
+    *,
+    checkpoint_obs_dim: int,
+    expected_obs_dim: int,
+) -> dict:
+    if expected_obs_dim <= checkpoint_obs_dim:
+        raise ValueError(
+            f"cannot expand recurrent actor obs_dim from {checkpoint_obs_dim} to {expected_obs_dim}"
+        )
+    first_weight = state.get("encoder.net.0.weight")
+    if first_weight is None:
+        raise ValueError("checkpoint does not contain recurrent actor encoder weights")
+    if int(first_weight.shape[1]) != int(checkpoint_obs_dim):
+        raise ValueError(
+            "checkpoint encoder input width does not match checkpoint_obs_dim: "
+            f"{int(first_weight.shape[1])} != {int(checkpoint_obs_dim)}"
+        )
+    if checkpoint_obs_dim < 8:
+        raise ValueError("cannot expand recurrent actor checkpoint with fewer than 8 action-mask columns")
+
+    expanded = dict(state)
+    extra_dim = int(expected_obs_dim) - int(checkpoint_obs_dim)
+    pad = torch.zeros(
+        (first_weight.shape[0], extra_dim),
+        dtype=first_weight.dtype,
+        device=first_weight.device,
+    )
+    expanded["encoder.net.0.weight"] = torch.cat(
+        [first_weight[:, :-8], pad, first_weight[:, -8:]],
+        dim=1,
+    )
+    return expanded
+
+
+def _load_recurrent_actor_state(model: MAPPORecurrentActor, state: dict) -> None:
+    incompatible = model.load_state_dict(state, strict=False)
+    allowed_missing_prefixes = (
+        "signal_scan_gate.",
+        "signal_target_validity.",
+        "signal_target_decision.",
+        "signal_target_aux.",
+    )
+    missing = [
+        key for key in incompatible.missing_keys
+        if not key.startswith(allowed_missing_prefixes)
+    ]
+    unexpected = list(incompatible.unexpected_keys)
+    if missing or unexpected:
+        raise RuntimeError(
+            "recurrent actor checkpoint state mismatch: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+
+
 def load_recurrent_actor_checkpoint(
     path: str | Path,
     cfg: RecurrentConfig,
@@ -4200,10 +8575,23 @@ def load_recurrent_actor_checkpoint(
     checkpoint_obs_dim = int(first_weight.shape[1])
     expected_obs_dim, _num_agents = _recurrent_training_obs_shape(cfg)
     if checkpoint_obs_dim != expected_obs_dim:
-        raise ValueError(
-            f"recurrent init checkpoint {path} obs_dim={checkpoint_obs_dim} does not match "
-            f"current training obs_dim={expected_obs_dim}; check map/observation flags"
-        )
+        if cfg.recurrent_init_allow_obs_dim_mismatch and expected_obs_dim > checkpoint_obs_dim:
+            state = _expand_recurrent_actor_input_state(
+                state,
+                checkpoint_obs_dim=checkpoint_obs_dim,
+                expected_obs_dim=expected_obs_dim,
+            )
+            print(
+                "Expanded recurrent init checkpoint input width "
+                f"from {checkpoint_obs_dim} to {expected_obs_dim}; "
+                "new observation columns are zero-initialized before the action-mask tail."
+            )
+            checkpoint_obs_dim = expected_obs_dim
+        else:
+            raise ValueError(
+                f"recurrent init checkpoint {path} obs_dim={checkpoint_obs_dim} does not match "
+                f"current training obs_dim={expected_obs_dim}; check map/observation flags"
+            )
     model = MAPPORecurrentActor(
         obs_dim=checkpoint_obs_dim,
         action_dim=8,
@@ -4212,7 +8600,7 @@ def load_recurrent_actor_checkpoint(
         comm_token_limit=cfg.comm_token_limit,
         comm_vocab_size=cfg.comm_vocab_size,
     ).to(device)
-    model.load_state_dict(state)
+    _load_recurrent_actor_state(model, state)
     return model
 
 
@@ -4259,6 +8647,7 @@ def _bootstrap_recurrent_value(
         prev_msg_lens=prev_msg_lens,
         info=info,
         env=env,
+        obs=obs,
     )
     obs_tensor = torch.tensor(
         _build_recurrent_obs_batch(obs, len(obs), cfg, feedback=feedback),
@@ -4294,6 +8683,8 @@ def _collect_recurrent_rl_rollout(
     total_collected_steps = 0
     redundant_target_scan_count = 0
     redundant_target_scan_penalty_sum = 0.0
+    wrong_target_scan_count = 0
+    wrong_target_scan_penalty_sum = 0.0
 
     train_map_sizes = _training_map_sizes(cfg)
     balanced = bool(cfg.rl_balanced_rollouts and len(train_map_sizes) > 1)
@@ -4343,6 +8734,7 @@ def _collect_recurrent_rl_rollout(
                 prev_msg_lens=prev_msg_lens,
                 info=last_info,
                 env=env,
+                obs=obs,
             )
             obs_batch = _build_recurrent_obs_batch(obs, num_agents, active_cfg, feedback=feedback)
             obs_tensor = torch.tensor(obs_batch, dtype=torch.float32, device=device)
@@ -4406,6 +8798,7 @@ def _collect_recurrent_rl_rollout(
 
             redundant_target_agents = _redundant_target_scan_agents(env, actions)
             next_obs, rewards, done, truncated, info = env.step(actions)
+            next_info = info or {}
             redundant_target_scan_count += len(redundant_target_agents)
             _, penalty_sum = _apply_redundant_target_scan_penalty(
                 rewards,
@@ -4413,7 +8806,14 @@ def _collect_recurrent_rl_rollout(
                 cfg.rl_redundant_target_scan_penalty,
             )
             redundant_target_scan_penalty_sum += penalty_sum
-            next_info = info or {}
+            wrong_target_agents = _wrong_target_scan_agents(next_info, num_agents)
+            wrong_target_scan_count += len(wrong_target_agents)
+            _, penalty_sum = _apply_wrong_target_scan_penalty(
+                rewards,
+                wrong_target_agents,
+                cfg.rl_wrong_target_scan_penalty,
+            )
+            wrong_target_scan_penalty_sum += penalty_sum
             next_prev_actions = {aid: int(action["action"]) for aid, action in actions.items()}
             next_prev_msg_lens = _message_lengths(actions)
             segment_end = local_t == int(segment["steps"]) - 1
@@ -4505,6 +8905,8 @@ def _collect_recurrent_rl_rollout(
         "balanced": balanced,
         "redundant_target_scan_count": redundant_target_scan_count,
         "redundant_target_scan_penalty_sum": redundant_target_scan_penalty_sum,
+        "wrong_target_scan_count": wrong_target_scan_count,
+        "wrong_target_scan_penalty_sum": wrong_target_scan_penalty_sum,
     }
 
 
@@ -4612,6 +9014,8 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
         map_step_counts = rollout["map_step_counts"]
         redundant_target_scan_count = int(rollout.get("redundant_target_scan_count", 0))
         redundant_target_scan_penalty_sum = float(rollout.get("redundant_target_scan_penalty_sum", 0.0))
+        wrong_target_scan_count = int(rollout.get("wrong_target_scan_count", 0))
+        wrong_target_scan_penalty_sum = float(rollout.get("wrong_target_scan_penalty_sum", 0.0))
 
         # GAE
         values = torch.stack(val_buf)
@@ -4637,6 +9041,7 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
         # PPO update — process in sequential chunks to maintain hidden state
         T = len(obs_buf)
         redundant_target_scan_rate = redundant_target_scan_count / max(1, T * N)
+        wrong_target_scan_rate = wrong_target_scan_count / max(1, T * N)
         adv_flat = advantages.reshape(T * N).to(device)
         adv_flat = (adv_flat - adv_flat.mean()) / (adv_flat.std() + 1e-8)
         ret_flat = returns.reshape(T * N).to(device)
@@ -4784,7 +9189,7 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
             f"v {total_value_loss / denom:.3f} | kl {total_kl / denom:.4f} | "
             f"comm_kl {total_comm_kl / denom:.4f} | "
             f"ent {total_entropy / denom:.3f} | ret {mean_ret:.2f} | len {mean_len:.1f} | "
-            f"red_scan {redundant_target_scan_count}"
+            f"red_scan {redundant_target_scan_count} | wrong_scan {wrong_target_scan_count}"
         )
 
         if wandb_run is not None:
@@ -4813,6 +9218,9 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
                 "rollout/redundant_target_scans": redundant_target_scan_count,
                 "rollout/redundant_target_scan_rate": redundant_target_scan_rate,
                 "rollout/redundant_target_scan_penalty": redundant_target_scan_penalty_sum,
+                "rollout/wrong_target_scans": wrong_target_scan_count,
+                "rollout/wrong_target_scan_rate": wrong_target_scan_rate,
+                "rollout/wrong_target_scan_penalty": wrong_target_scan_penalty_sum,
                 "rollout/balanced": int(bool(rollout["balanced"])),
                 "rollout/steps": int(T),
                 "update": update,
@@ -4940,6 +9348,9 @@ def main():
     p.add_argument("--obs-signal-features", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--obs-signal-sync-feedback", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--obs-signal-scan-state", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--obs-signal-negative-memory", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--obs-signal-negative-memory-window", type=int, default=64)
+    p.add_argument("--obs-signal-inferred-target-features", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--obs-signal-target-match-features", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--pipeline-shaping", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--pipeline-shaping-scale", type=float, default=0.1)
@@ -4952,6 +9363,9 @@ def main():
     p.add_argument("--signal-colocation-bonus", type=float, default=0.0)
     p.add_argument("--signal-colocation-radius", type=int, default=2)
     p.add_argument("--signal-comm-utility", type=float, default=0.0)
+    p.add_argument("--signal-target-visit-bonus", type=float, default=0.0)
+    p.add_argument("--signal-decoy-visit-penalty", type=float, default=0.0)
+    p.add_argument("--signal-unique-target-scan-bonus", type=float, default=0.0)
     p.add_argument("--hidden-dim", type=int, default=128)
     p.add_argument("--comm", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--comm-token-limit", type=int, default=8)
@@ -4963,6 +9377,10 @@ def main():
     p.add_argument("--bc-epochs", type=int, default=30)
     p.add_argument("--bc-lr", type=float, default=1e-3)
     p.add_argument("--bc-seq-len", type=int, default=32)
+    p.add_argument("--bc-eval-every-epochs", type=int, default=0)
+    p.add_argument("--bc-eval-episodes", type=int, default=0)
+    p.add_argument("--bc-eval-seed-count", type=int, default=1)
+    p.add_argument("--bc-restore-best-eval-epoch", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--bc-equal-episode-weight", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--bc-comm-loss-weight", type=float, default=0.1)
     p.add_argument("--bc-comm-send-pos-weight", type=float, default=0.0)
@@ -4986,10 +9404,59 @@ def main():
     p.add_argument("--bc-signal-target-interact-weight", type=float, default=1.0)
     p.add_argument("--bc-signal-redundant-target-interact-weight", type=float, default=1.0)
     p.add_argument("--bc-signal-target-pursuit-weight", type=float, default=1.0)
+    p.add_argument("--bc-signal-target-pursuit-action-weight", type=float, default=0.0)
     p.add_argument("--bc-signal-sync-response-weight", type=float, default=1.0)
+    p.add_argument("--bc-signal-sync-response-action-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-signal-target-match-action-weight", type=float, default=0.0)
+    p.add_argument(
+        "--bc-signal-first-target-scan-action-weight",
+        type=float,
+        default=0.0,
+        help="Extra positive interact loss weight for first true-target scan labels",
+    )
+    p.add_argument(
+        "--bc-signal-refresh-target-scan-action-weight",
+        type=float,
+        default=0.0,
+        help="Extra positive interact loss weight for refresh true-target scan labels",
+    )
+    p.add_argument(
+        "--bc-signal-joint-target-scan-action-weight",
+        type=float,
+        default=0.0,
+        help="Extra positive interact loss weight for joint-completion true-target scan labels",
+    )
+    p.add_argument(
+        "--bc-signal-target-opportunity-action-weight",
+        type=float,
+        default=0.0,
+        help="Opt-in positive interact loss weight for observation-safe true-target scan opportunities",
+    )
+    p.add_argument("--bc-signal-redundant-target-wait-action-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-signal-scan-decision-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-signal-scan-decision-pos-weight", type=float, default=1.0)
+    p.add_argument("--bc-signal-scan-decision-neg-weight", type=float, default=1.0)
+    p.add_argument("--bc-signal-scan-gate-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-signal-scan-gate-pos-weight", type=float, default=1.0)
+    p.add_argument("--bc-signal-scan-gate-neg-weight", type=float, default=1.0)
+    p.add_argument("--bc-signal-target-validity-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-signal-target-validity-pos-weight", type=float, default=1.0)
+    p.add_argument("--bc-signal-target-validity-neg-weight", type=float, default=1.0)
+    p.add_argument("--bc-signal-target-decision-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-signal-target-decision-pos-weight", type=float, default=1.0)
+    p.add_argument("--bc-signal-target-decision-neg-weight", type=float, default=1.0)
+    p.add_argument(
+        "--bc-signal-target-aux-weight",
+        type=float,
+        default=0.0,
+        help="Opt-in BC auxiliary loss that predicts the Signal Hunt true-target coordinate from recurrent state",
+    )
     p.add_argument("--bc-signal-rejected-target-interact-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-signal-rejected-target-interact-action-loss-weight", type=float, default=0.0)
     p.add_argument("--bc-signal-bad-redundant-target-interact-loss-weight", type=float, default=0.0)
     p.add_argument("--bc-signal-decoy-drift-action-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-signal-decoy-scan-action-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-signal-rejected-target-drift-action-loss-weight", type=float, default=0.0)
     p.add_argument("--dagger-rounds", type=int, default=0)
     p.add_argument("--dagger-episodes", type=int, default=20)
     p.add_argument("--dagger-retrain-from-scratch", action=argparse.BooleanOptionalAction, default=True)
@@ -5001,7 +9468,8 @@ def main():
         default=(
             "decoy_scan,solo_target_scan,rejected_target_scan,"
             "bad_redundant_target_scan,target_interact_miss,target_pursuit_miss,"
-            "target_decoy_drift_miss,target_discovery_miss,target_handoff_miss"
+            "target_decoy_drift_miss,target_discovery_miss,target_handoff_miss,"
+            "movement_stall_miss"
         ),
     )
     p.add_argument("--dagger-focus-error-weight", type=float, default=3.0)
@@ -5010,6 +9478,9 @@ def main():
     p.add_argument("--dagger-target-interact-focus-weight", type=float, default=5.0)
     p.add_argument("--dagger-target-discovery-min-map-size", type=int, default=16)
     p.add_argument("--dagger-target-discovery-focus-weight", type=float, default=3.0)
+    p.add_argument("--dagger-movement-stall-min-map-size", type=int, default=16)
+    p.add_argument("--dagger-movement-stall-window", type=int, default=6)
+    p.add_argument("--dagger-movement-stall-focus-weight", type=float, default=4.0)
     p.add_argument("--dagger-target-decoy-drift-focus-weight", type=float, default=5.0)
     p.add_argument("--dagger-solo-target-team-weight", type=float, default=1.0)
     p.add_argument("--dagger-early-stop-patience", type=int, default=0)
@@ -5037,12 +9508,64 @@ def main():
         default="",
         help="Comma-separated event names whose replay snippets are kept only from successful parent rollouts",
     )
+    p.add_argument(
+        "--dagger-replay-priority-events",
+        default="",
+        help="Comma-separated replay event names to prioritize before ordinary snippets",
+    )
+    p.add_argument(
+        "--dagger-replay-balance-positive-events",
+        default="",
+        help="Positive replay events that anchor opt-in positive/negative replay balancing",
+    )
+    p.add_argument(
+        "--dagger-replay-balance-negative-events",
+        default="",
+        help="Negative replay events capped by --dagger-replay-max-negative-per-positive",
+    )
+    p.add_argument(
+        "--dagger-replay-max-negative-per-positive",
+        type=float,
+        default=-1.0,
+        help="If >=0, cap balanced negative replay snippets to ceil(positive_count * this value)",
+    )
     p.add_argument("--dagger-max-replay-snippets-per-episode", type=int, default=4)
+    p.add_argument(
+        "--dagger-expert-max-replay-snippets-per-episode",
+        type=int,
+        default=-1,
+        help=(
+            "Optional cap for expert_positive_replay snippets only; negative reuses "
+            "--dagger-max-replay-snippets-per-episode"
+        ),
+    )
     p.add_argument(
         "--dagger-solo-target-team-success-only",
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Defer solo-target teammate upweights and apply them only to successful parent rollouts",
+    )
+    p.add_argument("--dagger-positive-target-pursuit-min-map-size", type=int, default=16)
+    p.add_argument(
+        "--dagger-redundant-target-wait-labels",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Convert repeated true-target scan labels into wait labels while the previous scan is still active",
+    )
+    p.add_argument(
+        "--dagger-target-scan-broadcast-labels",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Label confirmed true-target scanners to broadcast exact target coordinates for teammate handoff",
+    )
+    p.add_argument(
+        "--dagger-oracle-message-rollin-rate",
+        type=float,
+        default=0.0,
+        help=(
+            "During DAgger collection, replace each model message with the oracle message at this "
+            "per-agent probability while keeping model physical actions"
+        ),
     )
     p.add_argument("--rl-updates", type=int, default=3000)
     p.add_argument("--rollout-steps", type=int, default=256)
@@ -5056,6 +9579,7 @@ def main():
         ),
     )
     p.add_argument("--rl-redundant-target-scan-penalty", type=float, default=0.0)
+    p.add_argument("--rl-wrong-target-scan-penalty", type=float, default=0.0)
     p.add_argument("--rl-epochs", type=int, default=2)
     p.add_argument("--minibatch-seqs", type=int, default=8)
     p.add_argument("--rl-lr", type=float, default=3e-5)
@@ -5084,6 +9608,15 @@ def main():
         default=False,
         help="Use --recurrent-init as the starting model for BC/DAgger instead of skipping to RL",
     )
+    p.add_argument(
+        "--recurrent-init-allow-obs-dim-mismatch",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Allow loading a smaller recurrent-init observation width by zero-padding newly added "
+            "columns before the action-mask tail"
+        ),
+    )
     p.add_argument("--device", default="auto")
     p.add_argument("--seed", type=int, default=0,
                    help="Seed Python, NumPy, and Torch RNGs (default: 0)")
@@ -5093,6 +9626,93 @@ def main():
     p.add_argument("--eval-seed-count", type=int, default=1)
     p.add_argument("--eval-map-sizes", default="")
     p.add_argument("--eval-send-threshold", type=float, default=0.25)
+    p.add_argument(
+        "--eval-signal-target-scan-threshold",
+        type=float,
+        default=-1.0,
+        help=(
+            "Optional Signal Hunt decode calibration: if >=0, force interact on an observation-safe "
+            "center target when the interact probability reaches this threshold"
+        ),
+    )
+    p.add_argument(
+        "--eval-signal-scan-gate-threshold",
+        type=float,
+        default=-1.0,
+        help="Optional Signal Hunt scan-gate threshold; if >=0, the recurrent scan gate controls center-target interact",
+    )
+    p.add_argument(
+        "--eval-signal-scan-gate-suppress",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="When the scan gate is enabled, suppress center-target interact below the gate threshold",
+    )
+    p.add_argument(
+        "--eval-signal-target-validity-threshold",
+        type=float,
+        default=-1.0,
+        help="Optional Signal Hunt target-validity threshold; if >=0, suppress center-target interact below it",
+    )
+    p.add_argument(
+        "--eval-signal-target-decision-threshold",
+        type=float,
+        default=-1.0,
+        help="Optional Signal Hunt unified target-decision threshold; if >=0, control center-target interact",
+    )
+    p.add_argument(
+        "--eval-signal-target-decision-suppress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="When target-decision decoding is enabled, suppress center-target interact below the threshold",
+    )
+    p.add_argument(
+        "--eval-signal-scan-sync-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use scan-state feedback to join teammate scans and wait while own true-target scan is active",
+    )
+    p.add_argument(
+        "--eval-signal-scan-sync-force-first",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="With scan-sync assist enabled, force first/refresh scans on compatible center target candidates",
+    )
+    p.add_argument(
+        "--eval-signal-scan-broadcast-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use scan-state feedback to broadcast the remembered true-target scan position",
+    )
+    p.add_argument(
+        "--eval-signal-exact-target-message-guard",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Drop exact Signal Hunt target messages unless backed by an own exact hint or active scan state",
+    )
+    p.add_argument(
+        "--eval-signal-exact-target-navigation-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use trusted exact Signal Hunt target messages to force greedy target navigation/interact",
+    )
+    p.add_argument(
+        "--eval-signal-exact-target-memory-steps",
+        type=int,
+        default=0,
+        help="Steps to retain trusted exact Signal Hunt target messages for opt-in navigation/message assist",
+    )
+    p.add_argument(
+        "--eval-signal-scan-refresh-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use scan-state feedback to refresh an own true-target scan as it is about to expire",
+    )
+    p.add_argument(
+        "--eval-signal-scan-refresh-threshold",
+        type=float,
+        default=0.5,
+        help="Remaining scan-window fraction at or below which refresh assist forces interact",
+    )
     p.add_argument("--wandb", action="store_true")
     p.add_argument("--wandb-project", default="syncorsink")
     p.add_argument("--wandb-run", default=None)
@@ -5122,6 +9742,9 @@ def main():
         obs_signal_features=args.obs_signal_features,
         obs_signal_sync_feedback=args.obs_signal_sync_feedback,
         obs_signal_scan_state=args.obs_signal_scan_state,
+        obs_signal_negative_memory=args.obs_signal_negative_memory,
+        obs_signal_negative_memory_window=args.obs_signal_negative_memory_window,
+        obs_signal_inferred_target_features=args.obs_signal_inferred_target_features,
         obs_signal_target_match_features=args.obs_signal_target_match_features,
         pipeline_shaping=args.pipeline_shaping,
         pipeline_shaping_scale=args.pipeline_shaping_scale,
@@ -5134,6 +9757,9 @@ def main():
         signal_colocation_bonus=args.signal_colocation_bonus,
         signal_colocation_radius=args.signal_colocation_radius,
         signal_comm_utility=args.signal_comm_utility,
+        signal_target_visit_bonus=args.signal_target_visit_bonus,
+        signal_decoy_visit_penalty=args.signal_decoy_visit_penalty,
+        signal_unique_target_scan_bonus=args.signal_unique_target_scan_bonus,
         hidden_dim=args.hidden_dim,
         comm=args.comm,
         comm_token_limit=args.comm_token_limit,
@@ -5145,6 +9771,10 @@ def main():
         bc_epochs=args.bc_epochs,
         bc_lr=args.bc_lr,
         bc_seq_len=args.bc_seq_len,
+        bc_eval_every_epochs=args.bc_eval_every_epochs,
+        bc_eval_episodes=args.bc_eval_episodes,
+        bc_eval_seed_count=args.bc_eval_seed_count,
+        bc_restore_best_eval_epoch=args.bc_restore_best_eval_epoch,
         bc_equal_episode_weight=args.bc_equal_episode_weight,
         bc_comm_loss_weight=args.bc_comm_loss_weight,
         bc_comm_send_pos_weight=args.bc_comm_send_pos_weight,
@@ -5158,12 +9788,40 @@ def main():
         bc_signal_target_interact_weight=args.bc_signal_target_interact_weight,
         bc_signal_redundant_target_interact_weight=args.bc_signal_redundant_target_interact_weight,
         bc_signal_target_pursuit_weight=args.bc_signal_target_pursuit_weight,
+        bc_signal_target_pursuit_action_weight=args.bc_signal_target_pursuit_action_weight,
         bc_signal_sync_response_weight=args.bc_signal_sync_response_weight,
+        bc_signal_sync_response_action_loss_weight=args.bc_signal_sync_response_action_loss_weight,
+        bc_signal_target_match_action_weight=args.bc_signal_target_match_action_weight,
+        bc_signal_first_target_scan_action_weight=args.bc_signal_first_target_scan_action_weight,
+        bc_signal_refresh_target_scan_action_weight=args.bc_signal_refresh_target_scan_action_weight,
+        bc_signal_joint_target_scan_action_weight=args.bc_signal_joint_target_scan_action_weight,
+        bc_signal_target_opportunity_action_weight=args.bc_signal_target_opportunity_action_weight,
+        bc_signal_redundant_target_wait_action_loss_weight=args.bc_signal_redundant_target_wait_action_loss_weight,
+        bc_signal_scan_decision_loss_weight=args.bc_signal_scan_decision_loss_weight,
+        bc_signal_scan_decision_pos_weight=args.bc_signal_scan_decision_pos_weight,
+        bc_signal_scan_decision_neg_weight=args.bc_signal_scan_decision_neg_weight,
+        bc_signal_scan_gate_loss_weight=args.bc_signal_scan_gate_loss_weight,
+        bc_signal_scan_gate_pos_weight=args.bc_signal_scan_gate_pos_weight,
+        bc_signal_scan_gate_neg_weight=args.bc_signal_scan_gate_neg_weight,
+        bc_signal_target_validity_loss_weight=args.bc_signal_target_validity_loss_weight,
+        bc_signal_target_validity_pos_weight=args.bc_signal_target_validity_pos_weight,
+        bc_signal_target_validity_neg_weight=args.bc_signal_target_validity_neg_weight,
+        bc_signal_target_decision_loss_weight=args.bc_signal_target_decision_loss_weight,
+        bc_signal_target_decision_pos_weight=args.bc_signal_target_decision_pos_weight,
+        bc_signal_target_decision_neg_weight=args.bc_signal_target_decision_neg_weight,
+        bc_signal_target_aux_weight=args.bc_signal_target_aux_weight,
         bc_signal_rejected_target_interact_loss_weight=args.bc_signal_rejected_target_interact_loss_weight,
+        bc_signal_rejected_target_interact_action_loss_weight=(
+            args.bc_signal_rejected_target_interact_action_loss_weight
+        ),
         bc_signal_bad_redundant_target_interact_loss_weight=(
             args.bc_signal_bad_redundant_target_interact_loss_weight
         ),
         bc_signal_decoy_drift_action_loss_weight=args.bc_signal_decoy_drift_action_loss_weight,
+        bc_signal_decoy_scan_action_loss_weight=args.bc_signal_decoy_scan_action_loss_weight,
+        bc_signal_rejected_target_drift_action_loss_weight=(
+            args.bc_signal_rejected_target_drift_action_loss_weight
+        ),
         dagger_rounds=args.dagger_rounds,
         dagger_episodes=args.dagger_episodes,
         dagger_retrain_from_scratch=args.dagger_retrain_from_scratch,
@@ -5177,6 +9835,9 @@ def main():
         dagger_target_interact_focus_weight=args.dagger_target_interact_focus_weight,
         dagger_target_discovery_min_map_size=args.dagger_target_discovery_min_map_size,
         dagger_target_discovery_focus_weight=args.dagger_target_discovery_focus_weight,
+        dagger_movement_stall_min_map_size=args.dagger_movement_stall_min_map_size,
+        dagger_movement_stall_window=args.dagger_movement_stall_window,
+        dagger_movement_stall_focus_weight=args.dagger_movement_stall_focus_weight,
         dagger_target_decoy_drift_focus_weight=args.dagger_target_decoy_drift_focus_weight,
         dagger_solo_target_team_weight=args.dagger_solo_target_team_weight,
         dagger_early_stop_patience=args.dagger_early_stop_patience,
@@ -5188,13 +9849,23 @@ def main():
         dagger_replay_event_weights=args.dagger_replay_event_weights,
         dagger_replay_event_caps=args.dagger_replay_event_caps,
         dagger_replay_success_only_events=args.dagger_replay_success_only_events,
+        dagger_replay_priority_events=args.dagger_replay_priority_events,
+        dagger_replay_balance_positive_events=args.dagger_replay_balance_positive_events,
+        dagger_replay_balance_negative_events=args.dagger_replay_balance_negative_events,
+        dagger_replay_max_negative_per_positive=args.dagger_replay_max_negative_per_positive,
         dagger_max_replay_snippets_per_episode=args.dagger_max_replay_snippets_per_episode,
+        dagger_expert_max_replay_snippets_per_episode=args.dagger_expert_max_replay_snippets_per_episode,
         dagger_solo_target_team_success_only=args.dagger_solo_target_team_success_only,
+        dagger_positive_target_pursuit_min_map_size=args.dagger_positive_target_pursuit_min_map_size,
+        dagger_redundant_target_wait_labels=args.dagger_redundant_target_wait_labels,
+        dagger_target_scan_broadcast_labels=args.dagger_target_scan_broadcast_labels,
+        dagger_oracle_message_rollin_rate=args.dagger_oracle_message_rollin_rate,
         rl_updates=args.rl_updates,
         rollout_steps=args.rollout_steps,
         rl_balanced_rollouts=args.rl_balanced_rollouts,
         rl_rollout_map_steps=args.rl_rollout_map_steps,
         rl_redundant_target_scan_penalty=args.rl_redundant_target_scan_penalty,
+        rl_wrong_target_scan_penalty=args.rl_wrong_target_scan_penalty,
         rl_epochs=args.rl_epochs,
         minibatch_seqs=args.minibatch_seqs,
         rl_lr=args.rl_lr,
@@ -5214,6 +9885,7 @@ def main():
         rl_best_save=args.rl_best_save,
         recurrent_init=args.recurrent_init,
         recurrent_init_for_dagger=args.recurrent_init_for_dagger,
+        recurrent_init_allow_obs_dim_mismatch=args.recurrent_init_allow_obs_dim_mismatch,
         device=args.device,
         seed=args.seed,
         save=args.save,
@@ -5222,6 +9894,20 @@ def main():
         eval_seed_count=args.eval_seed_count,
         eval_map_sizes=args.eval_map_sizes,
         eval_send_threshold=args.eval_send_threshold,
+        eval_signal_target_scan_threshold=args.eval_signal_target_scan_threshold,
+        eval_signal_scan_gate_threshold=args.eval_signal_scan_gate_threshold,
+        eval_signal_scan_gate_suppress=args.eval_signal_scan_gate_suppress,
+        eval_signal_target_validity_threshold=args.eval_signal_target_validity_threshold,
+        eval_signal_target_decision_threshold=args.eval_signal_target_decision_threshold,
+        eval_signal_target_decision_suppress=args.eval_signal_target_decision_suppress,
+        eval_signal_scan_sync_assist=args.eval_signal_scan_sync_assist,
+        eval_signal_scan_sync_force_first=args.eval_signal_scan_sync_force_first,
+        eval_signal_scan_broadcast_assist=args.eval_signal_scan_broadcast_assist,
+        eval_signal_exact_target_message_guard=args.eval_signal_exact_target_message_guard,
+        eval_signal_exact_target_navigation_assist=args.eval_signal_exact_target_navigation_assist,
+        eval_signal_exact_target_memory_steps=args.eval_signal_exact_target_memory_steps,
+        eval_signal_scan_refresh_assist=args.eval_signal_scan_refresh_assist,
+        eval_signal_scan_refresh_threshold=args.eval_signal_scan_refresh_threshold,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run=args.wandb_run,
@@ -5279,6 +9965,36 @@ def main():
                     "demo/replay_episodes": int(demo_replay_episodes),
                     "demo/transitions": int(_episode_count_transitions(episodes)),
                     "demo/effective_transitions": float(_episode_count_effective_transitions(episodes)),
+                    "demo/target_match_action_labels": int(
+                        _episode_count_label_mask(episodes, "signal_target_match_action_mask")
+                    ),
+                    "demo/target_opportunity_action_labels": int(
+                        _episode_count_label_mask(
+                            episodes,
+                            "signal_target_opportunity_action_mask",
+                        )
+                    ),
+                    "demo/redundant_target_wait_action_aux_labels": int(
+                        _episode_count_label_mask(
+                            episodes,
+                            "signal_redundant_target_wait_action_mask",
+                        )
+                    ),
+                    "demo/target_pursuit_action_labels": int(
+                        _episode_count_label_mask(
+                            episodes,
+                            "signal_target_pursuit_action_mask",
+                        )
+                    ),
+                    "demo/sync_response_action_labels": int(
+                        _episode_count_label_mask(
+                            episodes,
+                            "signal_sync_response_action_mask",
+                        )
+                    ),
+                    "demo/target_aux_labels": int(
+                        _episode_count_label_mask(episodes, "signal_target_aux_mask")
+                    ),
                     **{
                         f"demo/map_{map_size}/episodes": int(count)
                         for map_size, count in _episode_map_size_counts(episodes).items()

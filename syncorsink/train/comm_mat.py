@@ -46,6 +46,9 @@ class CommMATTrainConfig:
     signal_colocation_bonus: float = 0.0
     signal_colocation_radius: int = 2
     signal_comm_utility: float = 0.0
+    signal_target_visit_bonus: float = 0.0
+    signal_decoy_visit_penalty: float = 0.0
+    signal_unique_target_scan_bonus: float = 0.0
     comm_send_target: float = 0.0
     comm_send_target_coeff: float = 0.0
     # PPO hyperparameters
@@ -245,6 +248,9 @@ def train_comm_mat(cfg: CommMATTrainConfig):
         signal_colocation_bonus=cfg.signal_colocation_bonus,
         signal_colocation_radius=cfg.signal_colocation_radius,
         signal_comm_utility=cfg.signal_comm_utility,
+        signal_target_visit_bonus=cfg.signal_target_visit_bonus,
+        signal_decoy_visit_penalty=cfg.signal_decoy_visit_penalty,
+        signal_unique_target_scan_bonus=cfg.signal_unique_target_scan_bonus,
     )
     env = SyncOrSinkEnv(env_cfg)
     N = env.num_agents
@@ -618,6 +624,9 @@ def main():
     p.add_argument("--signal-colocation-bonus", type=float, default=0.0)
     p.add_argument("--signal-colocation-radius", type=int, default=2)
     p.add_argument("--signal-comm-utility", type=float, default=0.0)
+    p.add_argument("--signal-target-visit-bonus", type=float, default=0.0)
+    p.add_argument("--signal-decoy-visit-penalty", type=float, default=0.0)
+    p.add_argument("--signal-unique-target-scan-bonus", type=float, default=0.0)
     p.add_argument("--comm-send-target", type=float, default=0.0,
                    help="Optional target send probability for communication curriculum")
     p.add_argument("--comm-send-target-coeff", type=float, default=0.0,
@@ -683,6 +692,9 @@ def main():
         signal_colocation_bonus=args.signal_colocation_bonus,
         signal_colocation_radius=args.signal_colocation_radius,
         signal_comm_utility=args.signal_comm_utility,
+        signal_target_visit_bonus=args.signal_target_visit_bonus,
+        signal_decoy_visit_penalty=args.signal_decoy_visit_penalty,
+        signal_unique_target_scan_bonus=args.signal_unique_target_scan_bonus,
         comm_send_target=args.comm_send_target,
         comm_send_target_coeff=args.comm_send_target_coeff,
         updates=args.updates,

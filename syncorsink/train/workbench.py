@@ -39,6 +39,9 @@ class TrainEvalWorkbenchConfig:
     signal_colocation_bonus: float = 0.0
     signal_colocation_radius: int = 2
     signal_comm_utility: float = 0.0
+    signal_target_visit_bonus: float = 0.0
+    signal_decoy_visit_penalty: float = 0.0
+    signal_unique_target_scan_bonus: float = 0.0
     critic_mode: str = "central"
     shared_actor: bool = False
     hidden_dim: int = 32
@@ -97,6 +100,9 @@ def run_train_eval_workbench(cfg: TrainEvalWorkbenchConfig) -> dict[str, Any]:
         signal_colocation_bonus=cfg.signal_colocation_bonus,
         signal_colocation_radius=cfg.signal_colocation_radius,
         signal_comm_utility=cfg.signal_comm_utility,
+        signal_target_visit_bonus=cfg.signal_target_visit_bonus,
+        signal_decoy_visit_penalty=cfg.signal_decoy_visit_penalty,
+        signal_unique_target_scan_bonus=cfg.signal_unique_target_scan_bonus,
         critic_mode=cfg.critic_mode,
         shared_actor=cfg.shared_actor,
         hidden_dim=cfg.hidden_dim,
@@ -138,6 +144,9 @@ def run_train_eval_workbench(cfg: TrainEvalWorkbenchConfig) -> dict[str, Any]:
         signal_colocation_bonus=cfg.signal_colocation_bonus,
         signal_colocation_radius=cfg.signal_colocation_radius,
         signal_comm_utility=cfg.signal_comm_utility,
+        signal_target_visit_bonus=cfg.signal_target_visit_bonus,
+        signal_decoy_visit_penalty=cfg.signal_decoy_visit_penalty,
+        signal_unique_target_scan_bonus=cfg.signal_unique_target_scan_bonus,
     )
     env = SyncOrSinkEnv(env_config)
     policy = load_mappo_checkpoint_policy(

@@ -20,6 +20,7 @@ from syncorsink.eval.trajectory_audit import (
     make_mappo_checkpoint_policy_factory,
     make_oracle_policy_factory,
     make_recurrent_checkpoint_policy_factory,
+    recurrent_checkpoint_env_config,
     run_trajectory_audit,
 )
 
@@ -60,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=3000)
     parser.add_argument("--device", default="cpu", choices=["auto", "cpu", "cuda", "mps"])
+    parser.add_argument("--signal-trace", action=argparse.BooleanOptionalAction, default=False)
 
     parser.add_argument("--oracle", action="append", default=[],
                         choices=[
@@ -77,6 +79,51 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--recurrent-checkpoint", action="append", default=[])
     parser.add_argument("--recurrent-label", action="append", default=None)
     parser.add_argument("--recurrent-send-threshold", type=float, default=0.25)
+    parser.add_argument("--recurrent-signal-scan-gate-threshold", type=float, default=None)
+    parser.add_argument(
+        "--recurrent-signal-scan-gate-suppress",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--recurrent-signal-target-validity-threshold", type=float, default=None)
+    parser.add_argument("--recurrent-signal-target-decision-threshold", type=float, default=None)
+    parser.add_argument(
+        "--recurrent-signal-target-decision-suppress",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-signal-scan-sync-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-signal-scan-sync-force-first",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-signal-scan-broadcast-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-signal-exact-target-message-guard",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-signal-exact-target-navigation-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--recurrent-signal-exact-target-memory-steps", type=int, default=None)
+    parser.add_argument(
+        "--recurrent-signal-scan-refresh-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--recurrent-signal-scan-refresh-threshold", type=float, default=None)
 
     parser.add_argument("--mappo-deterministic", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--mappo-action-mode", default="sample", choices=["argmax", "sample"])
@@ -92,13 +139,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-name", default=None)
 
     args = parser.parse_args(argv)
-    policy_specs = _policy_specs(args)
-    if not policy_specs:
-        parser.error(
-            "provide at least one --oracle, --bc-checkpoint, --mappo-checkpoint, "
-            "or --recurrent-checkpoint"
-        )
-
     env_config = SyncOrSinkConfig(
         scenario=args.scenario,
         map_size=args.map_size,
@@ -126,11 +166,18 @@ def main(argv: list[str] | None = None) -> int:
         signal_colocation_radius=args.signal_colocation_radius,
         signal_comm_utility=args.signal_comm_utility,
     )
+    policy_specs = _policy_specs(args, env_config)
+    if not policy_specs:
+        parser.error(
+            "provide at least one --oracle, --bc-checkpoint, --mappo-checkpoint, "
+            "or --recurrent-checkpoint"
+        )
     result = run_trajectory_audit(
         env_config,
         policy_specs,
         episodes=args.episodes,
         seed=args.seed,
+        include_signal_trace=args.signal_trace,
     )
     run_dir = _run_dir(args)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -147,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
                 "summary": policy["summary"],
                 "failure_type_counts": policy["diagnostics"]["failure_type_counts"],
                 "signal": policy["diagnostics"].get("signal"),
+                "signal_lifecycle": policy["diagnostics"].get("signal_lifecycle"),
             }
             for policy in result["policies"]
         ],
@@ -154,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _policy_specs(args) -> list[AuditPolicySpec]:
+def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
     specs: list[AuditPolicySpec] = []
     oracle_labels = _labels(args.oracle_label, args.oracle, "oracle")
     for label, oracle_type in zip(oracle_labels, args.oracle):
@@ -208,11 +256,42 @@ def _policy_specs(args) -> list[AuditPolicySpec]:
                 checkpoint,
                 device=args.device,
                 eval_send_threshold=args.recurrent_send_threshold,
+                eval_signal_scan_gate_threshold=args.recurrent_signal_scan_gate_threshold,
+                eval_signal_scan_gate_suppress=args.recurrent_signal_scan_gate_suppress,
+                eval_signal_target_validity_threshold=args.recurrent_signal_target_validity_threshold,
+                eval_signal_target_decision_threshold=args.recurrent_signal_target_decision_threshold,
+                eval_signal_target_decision_suppress=args.recurrent_signal_target_decision_suppress,
+                eval_signal_scan_sync_assist=args.recurrent_signal_scan_sync_assist,
+                eval_signal_scan_sync_force_first=args.recurrent_signal_scan_sync_force_first,
+                eval_signal_scan_broadcast_assist=args.recurrent_signal_scan_broadcast_assist,
+                eval_signal_exact_target_message_guard=args.recurrent_signal_exact_target_message_guard,
+                eval_signal_exact_target_navigation_assist=(
+                    args.recurrent_signal_exact_target_navigation_assist
+                ),
+                eval_signal_exact_target_memory_steps=args.recurrent_signal_exact_target_memory_steps,
+                eval_signal_scan_refresh_assist=args.recurrent_signal_scan_refresh_assist,
+                eval_signal_scan_refresh_threshold=args.recurrent_signal_scan_refresh_threshold,
             ),
+            env_config=recurrent_checkpoint_env_config(checkpoint, env_config),
             metadata={
                 "kind": "recurrent",
                 "checkpoint": checkpoint,
                 "eval_send_threshold": args.recurrent_send_threshold,
+                "eval_signal_scan_gate_threshold": args.recurrent_signal_scan_gate_threshold,
+                "eval_signal_scan_gate_suppress": args.recurrent_signal_scan_gate_suppress,
+                "eval_signal_target_validity_threshold": args.recurrent_signal_target_validity_threshold,
+                "eval_signal_target_decision_threshold": args.recurrent_signal_target_decision_threshold,
+                "eval_signal_target_decision_suppress": args.recurrent_signal_target_decision_suppress,
+                "eval_signal_scan_sync_assist": args.recurrent_signal_scan_sync_assist,
+                "eval_signal_scan_sync_force_first": args.recurrent_signal_scan_sync_force_first,
+                "eval_signal_scan_broadcast_assist": args.recurrent_signal_scan_broadcast_assist,
+                "eval_signal_exact_target_message_guard": args.recurrent_signal_exact_target_message_guard,
+                "eval_signal_exact_target_navigation_assist": (
+                    args.recurrent_signal_exact_target_navigation_assist
+                ),
+                "eval_signal_exact_target_memory_steps": args.recurrent_signal_exact_target_memory_steps,
+                "eval_signal_scan_refresh_assist": args.recurrent_signal_scan_refresh_assist,
+                "eval_signal_scan_refresh_threshold": args.recurrent_signal_scan_refresh_threshold,
             },
         ))
     return specs
