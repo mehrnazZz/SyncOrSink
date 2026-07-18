@@ -111,6 +111,9 @@ class RecurrentCurriculumConfig:
 
     dagger_rounds: int = 1
     dagger_episodes: int = 16
+    dagger_seed_base: int = 10000
+    dagger_seed_stride: int = 1000
+    dagger_seed_list: str = ""
     dagger_retrain_from_scratch: bool = False
     dagger_failed_episode_weight: float = 0.25
     dagger_focus_error_weight: float = 3.0
@@ -487,6 +490,9 @@ def _stage_recurrent_config(
         ),
         dagger_rounds=cfg.dagger_rounds,
         dagger_episodes=cfg.dagger_episodes,
+        dagger_seed_base=cfg.dagger_seed_base,
+        dagger_seed_stride=cfg.dagger_seed_stride,
+        dagger_seed_list=cfg.dagger_seed_list,
         dagger_retrain_from_scratch=(
             False if has_initial_model and cfg.carry_model_between_stages else cfg.dagger_retrain_from_scratch
         ),
@@ -676,6 +682,16 @@ def main() -> None:
     parser.add_argument("--bc-signal-rejected-target-drift-action-loss-weight", type=float, default=0.0)
     parser.add_argument("--dagger-rounds", type=int, default=1)
     parser.add_argument("--dagger-episodes", type=int, default=16)
+    parser.add_argument("--dagger-seed-base", type=int, default=10000)
+    parser.add_argument("--dagger-seed-stride", type=int, default=1000)
+    parser.add_argument(
+        "--dagger-seed-list",
+        default="",
+        help=(
+            "Optional comma-separated environment reset seeds for DAgger collection; "
+            "when set, episodes cycle through this explicit list"
+        ),
+    )
     parser.add_argument("--dagger-focus-error-weight", type=float, default=3.0)
     parser.add_argument("--dagger-focus-recovery-weight", type=float, default=2.0)
     parser.add_argument("--dagger-focus-window", type=int, default=1)
@@ -793,6 +809,9 @@ def main() -> None:
         bc_signal_rejected_target_drift_action_loss_weight=args.bc_signal_rejected_target_drift_action_loss_weight,
         dagger_rounds=args.dagger_rounds,
         dagger_episodes=args.dagger_episodes,
+        dagger_seed_base=args.dagger_seed_base,
+        dagger_seed_stride=args.dagger_seed_stride,
+        dagger_seed_list=args.dagger_seed_list,
         dagger_focus_error_weight=args.dagger_focus_error_weight,
         dagger_focus_recovery_weight=args.dagger_focus_recovery_weight,
         dagger_focus_window=args.dagger_focus_window,

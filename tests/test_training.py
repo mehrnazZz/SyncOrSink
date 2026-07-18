@@ -433,6 +433,9 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         dagger_focus_error_weight=4.0,
         dagger_focus_recovery_weight=2.5,
         dagger_focus_window=3,
+        dagger_seed_base=3000,
+        dagger_seed_stride=17,
+        dagger_seed_list="3002,3003,3020",
         dagger_target_discovery_min_map_size=8,
         dagger_target_discovery_focus_weight=4.25,
         dagger_movement_stall_min_map_size=8,
@@ -484,6 +487,9 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["dagger_focus_error_weight"] == pytest.approx(4.0)
     assert result["config"]["dagger_focus_recovery_weight"] == pytest.approx(2.5)
     assert result["config"]["dagger_focus_window"] == 3
+    assert result["config"]["dagger_seed_base"] == 3000
+    assert result["config"]["dagger_seed_stride"] == 17
+    assert result["config"]["dagger_seed_list"] == "3002,3003,3020"
     assert result["config"]["dagger_movement_stall_min_map_size"] == 8
     assert result["config"]["dagger_movement_stall_window"] == 4
     assert result["config"]["dagger_movement_stall_focus_weight"] == pytest.approx(5.5)
@@ -549,6 +555,9 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.dagger_focus_error_weight == pytest.approx(4.0)
     assert stage_cfg.dagger_focus_recovery_weight == pytest.approx(2.5)
     assert stage_cfg.dagger_focus_window == 3
+    assert stage_cfg.dagger_seed_base == 3000
+    assert stage_cfg.dagger_seed_stride == 17
+    assert stage_cfg.dagger_seed_list == "3002,3003,3020"
     assert stage_cfg.dagger_target_discovery_min_map_size == 8
     assert stage_cfg.dagger_target_discovery_focus_weight == pytest.approx(4.25)
     assert stage_cfg.dagger_movement_stall_min_map_size == 8
@@ -573,6 +582,43 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         eval_send_threshold=0.41,
     )
     assert _resolve_initial_eval_send_threshold(override_cfg) == pytest.approx(0.41)
+
+
+def test_recurrent_dagger_collection_seed_schedule():
+    from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _dagger_collection_seed
+
+    default_cfg = RecurrentConfig(dagger_episodes=3)
+    assert [_dagger_collection_seed(default_cfg, 0, ep) for ep in range(3)] == [10000, 10001, 10002]
+    assert [_dagger_collection_seed(default_cfg, 1, ep) for ep in range(3)] == [11000, 11001, 11002]
+
+    offset_cfg = RecurrentConfig(
+        dagger_episodes=2,
+        dagger_seed_base=3000,
+        dagger_seed_stride=17,
+    )
+    assert [_dagger_collection_seed(offset_cfg, 0, ep) for ep in range(2)] == [3000, 3001]
+    assert [_dagger_collection_seed(offset_cfg, 1, ep) for ep in range(2)] == [3017, 3018]
+
+    explicit_cfg = RecurrentConfig(
+        dagger_episodes=4,
+        dagger_seed_list="3002,3003,3020",
+    )
+    assert [_dagger_collection_seed(explicit_cfg, 0, ep) for ep in range(4)] == [
+        3002,
+        3003,
+        3020,
+        3002,
+    ]
+    assert [_dagger_collection_seed(explicit_cfg, 1, ep) for ep in range(4)] == [
+        3003,
+        3020,
+        3002,
+        3003,
+    ]
+
+    invalid_cfg = RecurrentConfig(dagger_seed_list="3002,-1")
+    with pytest.raises(ValueError, match="dagger_seed_list"):
+        _dagger_collection_seed(invalid_cfg, 0, 0)
 
 
 def test_recurrent_dagger_caps_and_weights_failed_rollouts():
@@ -629,6 +675,9 @@ def test_recurrent_dagger_caps_and_weights_failed_rollouts():
     assert summary["oracle_message_rollin_steps"] == 0
     assert summary["oracle_message_rollin_agents"] == 0
     assert summary["oracle_message_rollin_tokens"] == 0
+    assert summary["seed_base"] == 10000
+    assert summary["seed_stride"] == 1000
+    assert summary["seed_list"] == []
     assert dagger_episodes[0]["source"] == "dagger"
     assert dagger_episodes[0]["obs"].shape[0] <= 2
     if not dagger_episodes[0]["success"]:
@@ -1717,7 +1766,15 @@ def test_recurrent_signal_target_interact_label_weighting():
 
 def test_recurrent_signal_target_pursuit_label_weighting():
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
-    from syncorsink.envs.maps import TILE_BEACON, TILE_TARGET
+    from syncorsink.envs.maps import (
+        TILE_BEACON,
+        TILE_CLUE,
+        TILE_EMPTY,
+        TILE_TARGET,
+        TILE_UNKNOWN,
+        TILE_WALL,
+        TILE_WATER,
+    )
     from syncorsink.train.recurrent_bc_rl import (
         RecurrentConfig,
         _append_labeled_step,
@@ -1733,6 +1790,7 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         _signal_decoy_pursuit_agents,
         _signal_decoy_drift_action_loss,
         _signal_movement_stall_miss_agents,
+        _signal_navigation_action_from_obs,
         _signal_observation_allows_target,
         _signal_positive_target_pursuit_agents,
         _signal_rejected_target_drift_agents,
@@ -2141,6 +2199,59 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         scan_state=remembered_scan_state,
     )
     assert remembered_nav.tolist() == [large_env.ACTION_STAY, large_env.ACTION_RIGHT]
+    detour_obs = {
+        "self_pos": np.array([9, 7], dtype=np.int16),
+        "local_grid": np.array(
+            [
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_CLUE, TILE_EMPTY, TILE_EMPTY, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_EMPTY, TILE_UNKNOWN, TILE_UNKNOWN, TILE_WALL, TILE_UNKNOWN],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_WALL, TILE_TARGET, TILE_WALL, TILE_WATER, TILE_WALL, TILE_WALL],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_WALL, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_WALL],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_WALL, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_WALL],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_WALL, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_WALL],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_WALL, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_WALL],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_WALL, TILE_WALL, TILE_WALL, TILE_WALL, TILE_WALL],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN],
+            ],
+            dtype=np.int16,
+        ),
+        "action_mask": np.array([1, 1, 0, 1, 1, 0, 0, 0], dtype=np.float32),
+    }
+    assert _signal_navigation_action_from_obs(detour_obs, (6, 7)) == large_env.ACTION_UP
+    reverse_detour_obs = {
+        "self_pos": np.array([9, 5], dtype=np.int16),
+        "local_grid": np.array(
+            [
+                [TILE_UNKNOWN, TILE_WALL, TILE_WALL, TILE_WALL, TILE_WALL, TILE_WALL, TILE_WALL, TILE_UNKNOWN, TILE_UNKNOWN],
+                [TILE_EMPTY, TILE_WALL, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_WALL, TILE_WALL, TILE_UNKNOWN],
+                [TILE_UNKNOWN, TILE_EMPTY, TILE_EMPTY, TILE_CLUE, TILE_EMPTY, TILE_EMPTY, TILE_CLUE, TILE_WALL, TILE_UNKNOWN],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_WALL, TILE_TARGET, TILE_WALL, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_WALL, TILE_EMPTY, TILE_EMPTY, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_WALL, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_UNKNOWN],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_WALL],
+                [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_EMPTY, TILE_WALL],
+            ],
+            dtype=np.int16,
+        ),
+        "action_mask": np.array([1, 1, 0, 0, 1, 1, 0, 0], dtype=np.float32),
+        "goal_hint": np.array([26, 6, 7, -1, -1, -1, -1, -1], dtype=np.int16),
+        "messages_tokens": np.array([[26, 6, 7, -1, -1, -1, -1, -1]], dtype=np.int16),
+    }
+    reverse_scan_state = {
+        "step": 5,
+        "scan_window": 3,
+        "scan_log": {1: 4},
+        "scan_pos": {1: [6, 7]},
+        "prev_positions": {0: [9, 6]},
+    }
+    reverse_detour_nav = _apply_signal_exact_target_navigation_assist(
+        nav_cfg,
+        {0: reverse_detour_obs, 1: {}},
+        torch.tensor([large_env.ACTION_STAY, large_env.ACTION_STAY], dtype=torch.long),
+        scan_state=reverse_scan_state,
+    )
+    assert reverse_detour_nav.tolist() == [large_env.ACTION_UP, large_env.ACTION_STAY]
     nav_obs[1]["self_pos"] = np.array([large_target[0], large_target[1]], dtype=np.int16)
     nav_obs[1]["action_mask"] = np.asarray(nav_obs[1]["action_mask"], dtype=np.float32).copy()
     nav_obs[1]["action_mask"][large_env.ACTION_INTERACT] = 1.0
@@ -2151,6 +2262,45 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         scan_state=trusted_scan_state,
     )
     assert trusted_interact.tolist() == [large_env.ACTION_STAY, large_env.ACTION_INTERACT]
+    scanner_obs = {
+        0: dict(nav_obs[0]),
+        1: dict(nav_obs[1]),
+    }
+    scanner_obs[0]["self_pos"] = np.array([large_target[0], large_target[1]], dtype=np.int16)
+    scanner_obs[0]["goal_hint"] = np.array(
+        [26, large_target[0], large_target[1], -1, -1, -1, -1, -1],
+        dtype=np.int16,
+    )
+    scanner_obs[0]["messages_tokens"] = np.array(
+        [[26, large_target[0], large_target[1], -1, -1, -1, -1, -1]],
+        dtype=np.int16,
+    )
+    scanner_obs[0]["action_mask"] = np.asarray(scanner_obs[0]["action_mask"], dtype=np.float32).copy()
+    scanner_obs[0]["action_mask"][large_env.ACTION_STAY] = 1.0
+    scanner_obs[0]["action_mask"][large_env.ACTION_INTERACT] = 1.0
+    active_scan_nav = _apply_signal_exact_target_navigation_assist(
+        nav_cfg,
+        scanner_obs,
+        torch.tensor([large_env.ACTION_INTERACT, large_env.ACTION_STAY], dtype=torch.long),
+        scan_state=trusted_scan_state,
+    )
+    assert active_scan_nav.tolist() == [large_env.ACTION_STAY, large_env.ACTION_INTERACT]
+    joint_scan_state = {
+        "step": 6,
+        "scan_window": 3,
+        "scan_log": {0: 5, 1: 6},
+        "scan_pos": {
+            0: [large_target[0], large_target[1]],
+            1: [large_target[0], large_target[1]],
+        },
+    }
+    joint_scan_nav = _apply_signal_exact_target_navigation_assist(
+        nav_cfg,
+        scanner_obs,
+        torch.tensor([large_env.ACTION_STAY, large_env.ACTION_STAY], dtype=torch.long),
+        scan_state=joint_scan_state,
+    )
+    assert joint_scan_nav.tolist() == [large_env.ACTION_INTERACT, large_env.ACTION_INTERACT]
 
     large_env.agent_positions[0] = (8, 8)
     large_env.agent_positions[1] = tuple(int(v) for v in large_env.agent_positions[1])

@@ -36,6 +36,7 @@ from syncorsink.envs.maps import (
     TILE_STATION,
     TILE_TARGET,
     TILE_WATER,
+    TILE_WALL,
 )
 from syncorsink.eval.metrics import EpisodeStats, summarize
 from syncorsink.eval.success import episode_success
@@ -155,6 +156,9 @@ class RecurrentConfig:
     bc_signal_rejected_target_drift_action_loss_weight: float = 0.0
     dagger_rounds: int = 0
     dagger_episodes: int = 20
+    dagger_seed_base: int = 10000
+    dagger_seed_stride: int = 1000
+    dagger_seed_list: str = ""
     dagger_retrain_from_scratch: bool = True
     dagger_max_steps_per_episode: int = 0
     dagger_success_episode_weight: float = 1.0
@@ -302,6 +306,22 @@ def _parse_map_sizes(raw_value: str, default_size: int, *, field_name: str) -> l
             raise ValueError(f"{field_name} must contain positive integers, got {size}")
         sizes.append(size)
     return sizes or [int(default_size)]
+
+
+def _parse_seed_list(raw_value: str, *, field_name: str) -> list[int]:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return []
+    seeds: list[int] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        seed = int(item)
+        if seed < 0:
+            raise ValueError(f"{field_name} must contain non-negative integers, got {seed}")
+        seeds.append(seed)
+    return seeds
 
 
 def _parse_map_step_overrides(raw_value: str, *, field_name: str) -> dict[int, int]:
@@ -3533,6 +3553,14 @@ def _dagger_positive_replay_events(cfg: RecurrentConfig) -> set[str]:
     }
 
 
+def _dagger_collection_seed(cfg: RecurrentConfig, round_idx: int, episode_idx: int) -> int:
+    ordinal = max(0, int(round_idx)) * max(0, int(cfg.dagger_episodes)) + max(0, int(episode_idx))
+    explicit_seeds = _parse_seed_list(cfg.dagger_seed_list, field_name="dagger_seed_list")
+    if explicit_seeds:
+        return int(explicit_seeds[ordinal % len(explicit_seeds)])
+    return int(cfg.dagger_seed_base) + max(0, int(round_idx)) * int(cfg.dagger_seed_stride) + int(episode_idx)
+
+
 def _dagger_replay_success_only_events(cfg: RecurrentConfig) -> set[str]:
     return {
         item.strip()
@@ -6172,7 +6200,7 @@ def collect_recurrent_dagger_episodes(
     oracle_message_rollin_rate = min(1.0, max(0.0, float(cfg.dagger_oracle_message_rollin_rate)))
 
     for ep in range(cfg.dagger_episodes):
-        seed = 10000 + round_idx * 1000 + ep
+        seed = _dagger_collection_seed(cfg, round_idx, ep)
         rng = np.random.default_rng(seed + 7919)
         env, episode_cfg = _build_training_env(cfg, round_idx * cfg.dagger_episodes + ep)
         oracle_fn = _make_oracle_policy(env, episode_cfg)
@@ -6801,6 +6829,9 @@ def collect_recurrent_dagger_episodes(
         "effective_transitions": _episode_count_effective_transitions(episodes),
         "failed_episode_weight": float(cfg.dagger_failed_episode_weight),
         "success_episode_weight": float(cfg.dagger_success_episode_weight),
+        "seed_base": int(cfg.dagger_seed_base),
+        "seed_stride": int(cfg.dagger_seed_stride),
+        "seed_list": _parse_seed_list(cfg.dagger_seed_list, field_name="dagger_seed_list"),
         "focus_events": focus_event_counts,
         "non_focus_events": non_focus_event_counts,
         "positive_replay_events": positive_replay_event_counts,
@@ -7611,7 +7642,145 @@ def _update_signal_exact_target_memory(
         memory[aid] = {"pos": [int(target[0]), int(target[1])], "step": current_step}
 
 
-def _signal_navigation_action_from_obs(obs_agent: dict, target: tuple[int, int]) -> int | None:
+_SIGNAL_NAV_ACTION_DELTAS = (
+    (int(SyncOrSinkEnv.ACTION_UP), 0, -1),
+    (int(SyncOrSinkEnv.ACTION_DOWN), 0, 1),
+    (int(SyncOrSinkEnv.ACTION_LEFT), -1, 0),
+    (int(SyncOrSinkEnv.ACTION_RIGHT), 1, 0),
+)
+
+
+def _signal_navigation_action_order(pos: tuple[int, int], target: tuple[int, int]) -> list[int]:
+    x, y = int(pos[0]), int(pos[1])
+    tx, ty = int(target[0]), int(target[1])
+    dx, dy = tx - x, ty - y
+    ordered: list[int] = []
+    if abs(dx) >= abs(dy):
+        if dx > 0:
+            ordered.append(int(SyncOrSinkEnv.ACTION_RIGHT))
+        elif dx < 0:
+            ordered.append(int(SyncOrSinkEnv.ACTION_LEFT))
+        if dy > 0:
+            ordered.append(int(SyncOrSinkEnv.ACTION_DOWN))
+        elif dy < 0:
+            ordered.append(int(SyncOrSinkEnv.ACTION_UP))
+    else:
+        if dy > 0:
+            ordered.append(int(SyncOrSinkEnv.ACTION_DOWN))
+        elif dy < 0:
+            ordered.append(int(SyncOrSinkEnv.ACTION_UP))
+        if dx > 0:
+            ordered.append(int(SyncOrSinkEnv.ACTION_RIGHT))
+        elif dx < 0:
+            ordered.append(int(SyncOrSinkEnv.ACTION_LEFT))
+
+    base_rank = {
+        int(SyncOrSinkEnv.ACTION_UP): 0,
+        int(SyncOrSinkEnv.ACTION_DOWN): 1,
+        int(SyncOrSinkEnv.ACTION_LEFT): 2,
+        int(SyncOrSinkEnv.ACTION_RIGHT): 3,
+    }
+    action_deltas = {
+        int(action_id): (int(mx), int(my))
+        for action_id, mx, my in _SIGNAL_NAV_ACTION_DELTAS
+    }
+    remaining = [
+        int(action_id)
+        for action_id, _mx, _my in _SIGNAL_NAV_ACTION_DELTAS
+        if int(action_id) not in ordered
+    ]
+    remaining.sort(
+        key=lambda action_id: (
+            abs(tx - (x + action_deltas[int(action_id)][0]))
+            + abs(ty - (y + action_deltas[int(action_id)][1])),
+            base_rank[int(action_id)],
+        )
+    )
+    ordered.extend(remaining)
+    return ordered
+
+
+def _signal_local_navigation_action_from_obs(
+    obs_agent: dict,
+    target: tuple[int, int],
+    *,
+    blocked_actions: set[int] | None = None,
+) -> int | None:
+    blocked = {int(action_id) for action_id in (blocked_actions or set())}
+    local_ids = _recurrent_local_grid_ids(obs_agent.get("local_grid", np.zeros((1, 1), dtype=np.int16)))
+    if local_ids.ndim != 2 or local_ids.size == 0:
+        return None
+    pos_arr = np.asarray(obs_agent.get("self_pos", np.zeros((2,), dtype=np.int16)), dtype=np.int64).reshape(-1)
+    if pos_arr.size < 2:
+        return None
+    sx, sy = int(pos_arr[0]), int(pos_arr[1])
+    tx, ty = int(target[0]), int(target[1])
+    h, w = int(local_ids.shape[0]), int(local_ids.shape[1])
+    cx, cy = w // 2, h // 2
+    target_lx = cx + (tx - sx)
+    target_ly = cy + (ty - sy)
+    current_dist = abs(tx - sx) + abs(ty - sy)
+    if current_dist <= 0:
+        return int(SyncOrSinkEnv.ACTION_INTERACT)
+
+    action_order = _signal_navigation_action_order((sx, sy), target)
+    action_rank = {int(action_id): rank for rank, action_id in enumerate(action_order)}
+    ordered_deltas = sorted(
+        _SIGNAL_NAV_ACTION_DELTAS,
+        key=lambda row: action_rank.get(int(row[0]), len(action_rank)),
+    )
+    visited = {(cx, cy)}
+    queue: list[tuple[int, int, int | None, int]] = [(cx, cy, None, 0)]
+    index = 0
+    best: tuple[tuple[int, int, int, int], int] | None = None
+
+    while index < len(queue):
+        lx, ly, first_action, depth = queue[index]
+        index += 1
+        gx = sx + (int(lx) - cx)
+        gy = sy + (int(ly) - cy)
+        dist = abs(tx - gx) + abs(ty - gy)
+        if first_action is not None:
+            reached_projection = int(lx) == int(target_lx) and int(ly) == int(target_ly)
+            score = (
+                dist,
+                0 if reached_projection else 1,
+                int(depth),
+                action_rank.get(int(first_action), len(action_rank)),
+            )
+            if best is None or score < best[0]:
+                best = (score, int(first_action))
+
+        for action_id, mx, my in ordered_deltas:
+            nx, ny = int(lx) + int(mx), int(ly) + int(my)
+            if not (0 <= nx < w and 0 <= ny < h) or (nx, ny) in visited:
+                continue
+            tile_id = int(local_ids[ny, nx])
+            if tile_id in (int(TILE_WALL), int(TILE_DOOR)):
+                continue
+            next_first = int(first_action) if first_action is not None else int(action_id)
+            if first_action is None and next_first in blocked:
+                continue
+            if first_action is None and not _action_allowed_from_obs(obs_agent, next_first):
+                continue
+            visited.add((nx, ny))
+            queue.append((nx, ny, next_first, int(depth) + 1))
+
+    if best is None:
+        return None
+    target_projection_reached = best[0][0] == 0
+    if target_projection_reached or int(best[0][0]) < current_dist:
+        return int(best[1])
+    return None
+
+
+def _signal_navigation_action_from_obs(
+    obs_agent: dict,
+    target: tuple[int, int],
+    *,
+    blocked_actions: set[int] | None = None,
+) -> int | None:
+    blocked = {int(action_id) for action_id in (blocked_actions or set())}
     pos_arr = np.asarray(obs_agent.get("self_pos", np.zeros((2,), dtype=np.int16)), dtype=np.int64).reshape(-1)
     if pos_arr.size < 2:
         return None
@@ -7619,29 +7788,110 @@ def _signal_navigation_action_from_obs(obs_agent: dict, target: tuple[int, int])
     tx, ty = int(target[0]), int(target[1])
     if (x, y) == (tx, ty):
         return int(SyncOrSinkEnv.ACTION_INTERACT)
-    candidates: list[tuple[int, int]] = []
-    if abs(tx - x) >= abs(ty - y):
-        if tx > x:
-            candidates.append((int(SyncOrSinkEnv.ACTION_RIGHT), abs(tx - x)))
-        elif tx < x:
-            candidates.append((int(SyncOrSinkEnv.ACTION_LEFT), abs(tx - x)))
-        if ty > y:
-            candidates.append((int(SyncOrSinkEnv.ACTION_DOWN), abs(ty - y)))
-        elif ty < y:
-            candidates.append((int(SyncOrSinkEnv.ACTION_UP), abs(ty - y)))
-    else:
-        if ty > y:
-            candidates.append((int(SyncOrSinkEnv.ACTION_DOWN), abs(ty - y)))
-        elif ty < y:
-            candidates.append((int(SyncOrSinkEnv.ACTION_UP), abs(ty - y)))
-        if tx > x:
-            candidates.append((int(SyncOrSinkEnv.ACTION_RIGHT), abs(tx - x)))
-        elif tx < x:
-            candidates.append((int(SyncOrSinkEnv.ACTION_LEFT), abs(tx - x)))
-    for action_id, _distance in candidates:
+    local_action = _signal_local_navigation_action_from_obs(
+        obs_agent,
+        target,
+        blocked_actions=blocked,
+    )
+    if local_action is not None and _action_allowed_from_obs(obs_agent, int(local_action)):
+        return int(local_action)
+    for action_id in _signal_navigation_action_order((x, y), target):
+        if int(action_id) in blocked:
+            continue
         if _action_allowed_from_obs(obs_agent, action_id):
             return int(action_id)
     return None
+
+
+def _signal_navigation_destination(pos: tuple[int, int], action_id: int) -> tuple[int, int] | None:
+    for candidate_action, dx, dy in _SIGNAL_NAV_ACTION_DELTAS:
+        if int(candidate_action) == int(action_id):
+            return int(pos[0]) + int(dx), int(pos[1]) + int(dy)
+    return None
+
+
+def _signal_memory_adjusted_navigation_action(
+    obs_agent: dict,
+    target: tuple[int, int],
+    action_id: int,
+    scan_state: Mapping[str, Any] | None,
+    agent_id: int,
+) -> int:
+    pos = _signal_xy(obs_agent.get("self_pos"))
+    if pos is None or scan_state is None or not isinstance(scan_state, MutableMapping):
+        return int(action_id)
+    nav_memory = scan_state.get("exact_target_navigation")
+    if not isinstance(nav_memory, MutableMapping):
+        nav_memory = {}
+        scan_state["exact_target_navigation"] = nav_memory
+    row = nav_memory.get(int(agent_id), nav_memory.get(str(int(agent_id))))
+    adjusted = int(action_id)
+    dest = _signal_navigation_destination(pos, int(action_id))
+    previous_pos = None
+    previous_target_matches = False
+    if dest is not None and isinstance(row, Mapping):
+        previous_target = _signal_xy(row.get("target"))
+        row_previous_pos = _signal_xy(row.get("pos"))
+        if previous_target == tuple(target) and row_previous_pos is not None:
+            previous_pos = row_previous_pos
+            previous_target_matches = True
+    if previous_pos is None:
+        prev_positions = scan_state.get("prev_positions")
+        if isinstance(prev_positions, Mapping):
+            previous_pos = _signal_xy(prev_positions.get(int(agent_id), prev_positions.get(str(int(agent_id)))))
+    if dest is not None and previous_pos == dest and dest != tuple(target):
+        order = _signal_navigation_action_order(pos, target)
+        primary_blocked = bool(order) and not _action_allowed_from_obs(obs_agent, int(order[0]))
+        if previous_target_matches or primary_blocked:
+            alternative = _signal_navigation_action_from_obs(
+                obs_agent,
+                target,
+                blocked_actions={int(action_id)},
+            )
+            if alternative is not None:
+                adjusted = int(alternative)
+    nav_memory[int(agent_id)] = {
+        "target": [int(target[0]), int(target[1])],
+        "pos": [int(pos[0]), int(pos[1])],
+        "action": int(adjusted),
+        "step": int(scan_state.get("step", 0)),
+    }
+    return int(adjusted)
+
+
+def _signal_scan_activity_at_position(
+    cfg: RecurrentConfig,
+    scan_state: Mapping[str, Any] | None,
+    *,
+    agent_id: int,
+    num_agents: int,
+    pos: tuple[int, int],
+) -> tuple[bool, bool]:
+    if scan_state is None:
+        return False, False
+    scan_log = scan_state.get("scan_log") or {}
+    scan_positions = scan_state.get("scan_pos") or {}
+    if not isinstance(scan_log, Mapping) or not isinstance(scan_positions, Mapping):
+        return False, False
+    current_step = int(scan_state.get("step", 0))
+    scan_window = int(scan_state.get("scan_window", getattr(cfg, "scan_window", 3)))
+    self_active = False
+    teammate_active = False
+    for other_id in range(int(num_agents)):
+        last_scan = _scan_log_value(dict(scan_log), int(other_id))
+        if last_scan is None:
+            continue
+        age = current_step - int(last_scan)
+        if age < 0 or age > scan_window:
+            continue
+        scan_pos = _signal_xy(scan_positions.get(int(other_id), scan_positions.get(str(int(other_id)))))
+        if scan_pos != tuple(pos):
+            continue
+        if int(other_id) == int(agent_id):
+            self_active = True
+        else:
+            teammate_active = True
+    return self_active, teammate_active
 
 
 def _signal_active_scan_positions(
@@ -7713,9 +7963,35 @@ def _apply_signal_exact_target_navigation_assist(
         candidate_targets = sorted(exact_targets & trusted_targets)
         if len(candidate_targets) != 1:
             continue
-        action_id = _signal_navigation_action_from_obs(obs_agent, candidate_targets[0])
+        target = candidate_targets[0]
+        action_id = _signal_navigation_action_from_obs(obs_agent, target)
         if action_id is None or not _action_allowed_from_obs(obs_agent, action_id):
             continue
+        if int(action_id) != int(SyncOrSinkEnv.ACTION_INTERACT):
+            action_id = _signal_memory_adjusted_navigation_action(
+                obs_agent,
+                target,
+                int(action_id),
+                scan_state,
+                int(aid),
+            )
+            if not _action_allowed_from_obs(obs_agent, int(action_id)):
+                continue
+        if int(action_id) == int(SyncOrSinkEnv.ACTION_INTERACT):
+            self_active, teammate_active = _signal_scan_activity_at_position(
+                cfg,
+                scan_state,
+                agent_id=int(aid),
+                num_agents=int(acts.shape[0]),
+                pos=target,
+            )
+            if (
+                self_active
+                and not teammate_active
+                and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY)
+            ):
+                corrected[aid] = int(SyncOrSinkEnv.ACTION_STAY)
+                continue
         corrected[aid] = int(action_id)
     return corrected
 
@@ -8376,6 +8652,11 @@ class RecurrentCheckpointPolicy:
         if self.hidden is None:
             self.hidden = self.model.init_hidden(len(obs), self.device)
         self._update_scan_state_from_info(info or {}, len(obs))
+        if isinstance(self.scan_state, MutableMapping):
+            self.scan_state["prev_positions"] = {
+                int(aid): [int(pos[0]), int(pos[1])]
+                for aid, pos in self.prev_positions.items()
+            }
         feedback = _feedback_matrix(
             self.cfg,
             len(obs),
@@ -9459,6 +9740,16 @@ def main():
     p.add_argument("--bc-signal-rejected-target-drift-action-loss-weight", type=float, default=0.0)
     p.add_argument("--dagger-rounds", type=int, default=0)
     p.add_argument("--dagger-episodes", type=int, default=20)
+    p.add_argument("--dagger-seed-base", type=int, default=10000)
+    p.add_argument("--dagger-seed-stride", type=int, default=1000)
+    p.add_argument(
+        "--dagger-seed-list",
+        default="",
+        help=(
+            "Optional comma-separated environment reset seeds for DAgger collection; "
+            "when set, episodes cycle through this explicit list"
+        ),
+    )
     p.add_argument("--dagger-retrain-from-scratch", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--dagger-max-steps-per-episode", type=int, default=0)
     p.add_argument("--dagger-success-episode-weight", type=float, default=1.0)
@@ -9824,6 +10115,9 @@ def main():
         ),
         dagger_rounds=args.dagger_rounds,
         dagger_episodes=args.dagger_episodes,
+        dagger_seed_base=args.dagger_seed_base,
+        dagger_seed_stride=args.dagger_seed_stride,
+        dagger_seed_list=args.dagger_seed_list,
         dagger_retrain_from_scratch=args.dagger_retrain_from_scratch,
         dagger_max_steps_per_episode=args.dagger_max_steps_per_episode,
         dagger_success_episode_weight=args.dagger_success_episode_weight,
