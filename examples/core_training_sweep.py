@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -157,9 +158,35 @@ def build_command(
     if case.energy_preset is not None:
         cmd.extend(["--energy-preset", case.energy_preset])
     if algorithm == "mappo":
-        cmd.extend(["--comm", "--critic-mode", args.mappo_critic_mode])
+        cmd.extend([
+            "--comm",
+            "--critic-mode",
+            args.mappo_critic_mode,
+            "--backbone",
+            args.mappo_backbone,
+            "--eval-action-mode",
+            args.mappo_eval_action_mode,
+            "--eval-action-temperature",
+            str(args.mappo_eval_action_temperature),
+            "--eval-send-mode",
+            args.mappo_eval_send_mode,
+            "--eval-send-threshold",
+            str(args.mappo_eval_send_threshold),
+            "--eval-token-mode",
+            args.mappo_eval_token_mode,
+            "--eval-token-temperature",
+            str(args.mappo_eval_token_temperature),
+            "--eval-length-mode",
+            args.mappo_eval_length_mode,
+            "--eval-length-temperature",
+            str(args.mappo_eval_length_temperature),
+        ])
         if args.mappo_shared_actor:
             cmd.append("--shared-actor")
+        if args.mappo_obs_exploration_memory:
+            cmd.append("--obs-exploration-memory")
+        if args.mappo_obs_exploration_age:
+            cmd.append("--obs-exploration-age")
     cmd.extend(_learning_profile_args(args.learning_profile, algorithm, case))
     if args.wandb:
         cmd.append("--wandb")
@@ -254,10 +281,23 @@ def run_suite(args) -> dict:
             "device": args.device,
             "seeds": args.seeds,
             "learning_profile": args.learning_profile,
+            "mappo_backbone": args.mappo_backbone,
             "wandb": args.wandb,
             "wandb_mode": args.wandb_mode,
             "wandb_project": args.wandb_project,
             "strict_wandb": args.strict_wandb,
+            "mappo_critic_mode": args.mappo_critic_mode,
+            "mappo_shared_actor": args.mappo_shared_actor,
+            "mappo_obs_exploration_memory": args.mappo_obs_exploration_memory,
+            "mappo_obs_exploration_age": args.mappo_obs_exploration_age,
+            "mappo_eval_action_mode": args.mappo_eval_action_mode,
+            "mappo_eval_action_temperature": args.mappo_eval_action_temperature,
+            "mappo_eval_send_mode": args.mappo_eval_send_mode,
+            "mappo_eval_send_threshold": args.mappo_eval_send_threshold,
+            "mappo_eval_token_mode": args.mappo_eval_token_mode,
+            "mappo_eval_token_temperature": args.mappo_eval_token_temperature,
+            "mappo_eval_length_mode": args.mappo_eval_length_mode,
+            "mappo_eval_length_temperature": args.mappo_eval_length_temperature,
         },
         "cases": [asdict(case) for case in cases],
         "runs": [asdict(record) for record in records],
@@ -332,7 +372,13 @@ def _run_one(
 
     stdout_tail = _tail_lines(stdout_path)
     stderr_tail = _tail_lines(stderr_path)
-    wandb = _parse_wandb_record(stdout_path, stderr_path, requested=wandb_requested, mode=wandb_mode)
+    wandb = _parse_wandb_record(
+        stdout_path,
+        stderr_path,
+        requested=wandb_requested,
+        mode=wandb_mode,
+        run_dir=run_dir,
+    )
     status = "complete" if proc.returncode == 0 and checkpoint_path.exists() else "failed"
     if strict_wandb and wandb.get("status") == "failed":
         status = "failed"
@@ -415,7 +461,14 @@ def _prepare_wandb_dirs(run_dir: Path) -> Path:
     return wandb_dir
 
 
-def _parse_wandb_record(stdout_path: Path, stderr_path: Path, *, requested: bool, mode: str) -> dict:
+def _parse_wandb_record(
+    stdout_path: Path,
+    stderr_path: Path,
+    *,
+    requested: bool,
+    mode: str,
+    run_dir: Path | None = None,
+) -> dict:
     if not requested:
         return _wandb_record(requested=False, mode=mode, status="not_requested", error_lines=[])
     stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
@@ -427,6 +480,8 @@ def _parse_wandb_record(stdout_path: Path, stderr_path: Path, *, requested: bool
         if "wandb init failed" in line.lower()
         or "wandb-core exited" in line.lower()
         or "serve() returned error" in line.lower()
+        or "wandb log failed, disabling wandb" in line.lower()
+        or "wandb scalar retry failed" in line.lower()
     ]
     if failed:
         return _wandb_record(requested=True, mode=mode, status="failed", error_lines=failed[-5:])
@@ -434,16 +489,58 @@ def _parse_wandb_record(stdout_path: Path, stderr_path: Path, *, requested: bool
         status = "disabled"
     else:
         status = "initialized"
-    return _wandb_record(requested=True, mode=mode, status=status, error_lines=[])
+    return _wandb_record(
+        requested=True,
+        mode=mode,
+        status=status,
+        error_lines=[],
+        **_find_wandb_run_info(run_dir),
+    )
 
 
-def _wandb_record(*, requested: bool, mode: str, status: str, error_lines: list[str]) -> dict:
-    return {
+def _wandb_record(
+    *,
+    requested: bool,
+    mode: str,
+    status: str,
+    error_lines: list[str],
+    **extra,
+) -> dict:
+    record = {
         "requested": requested,
         "mode": mode,
         "status": status,
         "error_lines": error_lines,
     }
+    record.update({key: value for key, value in extra.items() if value is not None})
+    return record
+
+
+def _find_wandb_run_info(run_dir: Path | None) -> dict[str, str]:
+    if run_dir is None:
+        return {}
+    wandb_root = Path(run_dir) / "wandb" / "wandb"
+    if not wandb_root.exists():
+        return {}
+    run_dirs = sorted(path for path in wandb_root.glob("run-*-*") if path.is_dir())
+    if not run_dirs:
+        return {}
+    run_dir_path = run_dirs[-1]
+    run_id = run_dir_path.name.rsplit("-", 1)[-1]
+    info = {
+        "run_id": run_id,
+        "local_run_dir": str(run_dir_path),
+    }
+    debug_log = run_dir_path / "logs" / "debug.log"
+    if debug_log.exists():
+        text = debug_log.read_text(encoding="utf-8", errors="replace")
+        match = re.search(r"finishing run ([^\s/]+)/([^\s/]+)/([^\s]+)", text)
+        if match:
+            entity, project, parsed_run_id = match.groups()
+            info["run_id"] = parsed_run_id
+            info["run_path"] = f"{entity}/{project}/{parsed_run_id}"
+            info["url"] = f"https://wandb.ai/{entity}/{project}/runs/{parsed_run_id}"
+    return info
 
 
 def _tail_lines(path: Path, limit: int = 20) -> list[str]:
@@ -500,6 +597,17 @@ def parse_args(argv: list[str] | None = None):
     )
     parser.add_argument("--mappo-critic-mode", default="central", choices=["local", "central"])
     parser.add_argument("--mappo-shared-actor", action="store_true")
+    parser.add_argument("--mappo-backbone", default="mlp", choices=["mlp", "transformer"])
+    parser.add_argument("--mappo-obs-exploration-memory", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--mappo-obs-exploration-age", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--mappo-eval-action-mode", default="argmax", choices=["argmax", "sample"])
+    parser.add_argument("--mappo-eval-action-temperature", type=float, default=1.0)
+    parser.add_argument("--mappo-eval-send-mode", default="threshold", choices=["threshold", "sample"])
+    parser.add_argument("--mappo-eval-send-threshold", type=float, default=0.5)
+    parser.add_argument("--mappo-eval-token-mode", default="argmax", choices=["argmax", "sample"])
+    parser.add_argument("--mappo-eval-token-temperature", type=float, default=1.0)
+    parser.add_argument("--mappo-eval-length-mode", default="argmax", choices=["argmax", "sample"])
+    parser.add_argument("--mappo-eval-length-temperature", type=float, default=1.0)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-mode", default="offline", choices=["online", "offline", "disabled"])
     parser.add_argument("--wandb-project", default="syncorsink-core-training")

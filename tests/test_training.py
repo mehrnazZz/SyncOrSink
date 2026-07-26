@@ -26,6 +26,33 @@ def test_mappo_ctde_with_comm():
     train_mappo(cfg)
 
 
+def test_mappo_wandb_log_retries_scalar_subset():
+    from syncorsink.train.mappo import _safe_wandb_log
+
+    class FakeRun:
+        def __init__(self):
+            self.logged = []
+            self.finished = False
+
+        def log(self, payload):
+            self.logged.append(dict(payload))
+            if "histogram" in payload:
+                raise RuntimeError("optional histogram backend unavailable")
+
+        def finish(self):
+            self.finished = True
+
+    run = FakeRun()
+    result = _safe_wandb_log(run, {"loss": 1.0, "histogram": object()})
+
+    assert result is run
+    assert len(run.logged) == 2
+    assert run.logged[0]["loss"] == 1.0
+    assert "histogram" in run.logged[0]
+    assert run.logged[1] == {"loss": 1.0}
+    assert run.finished is False
+
+
 def test_mappo_train_save_load_eval_workbench(tmp_path):
     from syncorsink.train.workbench import TrainEvalWorkbenchConfig, run_train_eval_workbench
 
@@ -38,10 +65,15 @@ def test_mappo_train_save_load_eval_workbench(tmp_path):
         comm=True,
         comm_token_limit=4,
         comm_vocab_size=8,
+        comm_send_target=0.25,
+        comm_send_target_coeff=0.01,
+        obs_exploration_memory=True,
+        obs_exploration_age=True,
         updates=1,
         rollout_steps=8,
         epochs=1,
         minibatch=8,
+        eval_send_threshold=0.25,
         eval_episodes=1,
         output_dir=str(tmp_path / "workbench"),
         run_name="smoke",
@@ -59,10 +91,14 @@ def test_mappo_train_save_load_eval_workbench(tmp_path):
     assert result["eval"]["episodes"] == 1
     assert result["checkpoint_path"] == str(checkpoint)
     assert "wandb" in result
+    assert result["policy_metadata"]["send_threshold"] == pytest.approx(0.25)
 
     payload = torch.load(checkpoint, map_location="cpu")
     assert payload["algorithm"] == "mappo"
     assert payload["config"]["comm"] is True
+    assert payload["config"]["comm_send_target"] == pytest.approx(0.25)
+    assert payload["config"]["obs_exploration_memory"] is True
+    assert payload["config"]["obs_exploration_age"] is True
     assert payload["obs_dim"] > 0
 
 
@@ -421,6 +457,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         bc_signal_target_decision_loss_weight=0.4,
         bc_signal_target_decision_pos_weight=2.5,
         bc_signal_target_decision_neg_weight=1.75,
+        bc_signal_frontier_exploration_action_weight=0.65,
+        bc_signal_frontier_exploration_min_map_size=12,
         eval_signal_target_validity_threshold=0.55,
         eval_signal_target_decision_threshold=0.6,
         eval_signal_target_decision_suppress=False,
@@ -448,6 +486,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         dagger_replay_balance_positive_events="first_target_scan,joint_target_scan",
         dagger_replay_balance_negative_events="decoy_scan,rejected_target_scan",
         dagger_replay_max_negative_per_positive=0.5,
+        dagger_max_failed_parent_replay_snippets_per_episode=2,
+        dagger_failed_parent_replay_weight_scale=0.25,
         dagger_expert_max_replay_snippets_per_episode=3,
         output_dir=str(tmp_path),
         run_name="recurrent_dry",
@@ -465,6 +505,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["bc_signal_rejected_target_interact_action_loss_weight"] == pytest.approx(0.7)
     assert result["config"]["bc_signal_target_validity_loss_weight"] == pytest.approx(0.6)
     assert result["config"]["bc_signal_target_decision_loss_weight"] == pytest.approx(0.4)
+    assert result["config"]["bc_signal_frontier_exploration_action_weight"] == pytest.approx(0.65)
+    assert result["config"]["bc_signal_frontier_exploration_min_map_size"] == 12
     assert result["config"]["eval_signal_target_validity_threshold"] == pytest.approx(0.55)
     assert result["config"]["eval_signal_target_decision_threshold"] == pytest.approx(0.6)
     assert result["config"]["eval_signal_target_decision_suppress"] is False
@@ -502,6 +544,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         "decoy_scan,rejected_target_scan"
     )
     assert result["config"]["dagger_replay_max_negative_per_positive"] == pytest.approx(0.5)
+    assert result["config"]["dagger_max_failed_parent_replay_snippets_per_episode"] == 2
+    assert result["config"]["dagger_failed_parent_replay_weight_scale"] == pytest.approx(0.25)
     assert result["config"]["dagger_expert_max_replay_snippets_per_episode"] == 3
     assert result["planned_stages"][0]["train_map_sizes"] == [8]
     assert result["planned_stages"][1]["train_map_sizes"] == [8, 16]
@@ -543,6 +587,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.bc_signal_target_decision_loss_weight == pytest.approx(0.4)
     assert stage_cfg.bc_signal_target_decision_pos_weight == pytest.approx(2.5)
     assert stage_cfg.bc_signal_target_decision_neg_weight == pytest.approx(1.75)
+    assert stage_cfg.bc_signal_frontier_exploration_action_weight == pytest.approx(0.65)
+    assert stage_cfg.bc_signal_frontier_exploration_min_map_size == 12
     assert stage_cfg.eval_signal_target_validity_threshold == pytest.approx(0.55)
     assert stage_cfg.eval_signal_target_decision_threshold == pytest.approx(0.6)
     assert stage_cfg.eval_signal_target_decision_suppress is False
@@ -570,6 +616,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.dagger_replay_balance_positive_events == "first_target_scan,joint_target_scan"
     assert stage_cfg.dagger_replay_balance_negative_events == "decoy_scan,rejected_target_scan"
     assert stage_cfg.dagger_replay_max_negative_per_positive == pytest.approx(0.5)
+    assert stage_cfg.dagger_max_failed_parent_replay_snippets_per_episode == 2
+    assert stage_cfg.dagger_failed_parent_replay_weight_scale == pytest.approx(0.25)
     assert stage_cfg.dagger_expert_max_replay_snippets_per_episode == 3
 
     threshold_checkpoint = tmp_path / "threshold.pt"
@@ -585,7 +633,11 @@ def test_recurrent_curriculum_dry_run(tmp_path):
 
 
 def test_recurrent_dagger_collection_seed_schedule():
-    from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _dagger_collection_seed
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _dagger_collection_map_ordinal,
+        _dagger_collection_seed,
+    )
 
     default_cfg = RecurrentConfig(dagger_episodes=3)
     assert [_dagger_collection_seed(default_cfg, 0, ep) for ep in range(3)] == [10000, 10001, 10002]
@@ -616,9 +668,145 @@ def test_recurrent_dagger_collection_seed_schedule():
         3003,
     ]
 
+    mixed_cfg = RecurrentConfig(
+        map_size=16,
+        train_map_sizes="16,32",
+        dagger_episodes=4,
+        dagger_seed_list="16:160,161+32:320,321,322",
+    )
+    assert [_dagger_collection_seed(mixed_cfg, 0, ep) for ep in range(4)] == [
+        160,
+        320,
+        161,
+        321,
+    ]
+    assert [_dagger_collection_seed(mixed_cfg, 1, ep) for ep in range(4)] == [
+        160,
+        322,
+        161,
+        320,
+    ]
+    assert [_dagger_collection_map_ordinal(mixed_cfg, ep, 32) for ep in range(1, 8, 2)] == [
+        0,
+        1,
+        2,
+        3,
+    ]
+
     invalid_cfg = RecurrentConfig(dagger_seed_list="3002,-1")
     with pytest.raises(ValueError, match="dagger_seed_list"):
         _dagger_collection_seed(invalid_cfg, 0, 0)
+
+    missing_map_cfg = RecurrentConfig(
+        map_size=16,
+        train_map_sizes="16,32",
+        dagger_episodes=2,
+        dagger_seed_list="16:160,161",
+    )
+    with pytest.raises(ValueError, match="map_size=32"):
+        _dagger_collection_seed(missing_map_cfg, 0, 1)
+
+
+def test_recurrent_skip_bc_stage_requires_checkpoint_and_no_dagger():
+    from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _should_run_recurrent_bc_stage
+
+    assert _should_run_recurrent_bc_stage(RecurrentConfig()) is True
+    assert _should_run_recurrent_bc_stage(
+        RecurrentConfig(recurrent_init="checkpoint.pt", recurrent_init_for_dagger=False)
+    ) is False
+    assert _should_run_recurrent_bc_stage(
+        RecurrentConfig(
+            recurrent_init="checkpoint.pt",
+            recurrent_init_for_dagger=True,
+            skip_bc=True,
+            rl_updates=1,
+        )
+    ) is False
+
+    with pytest.raises(ValueError, match="requires --recurrent-init"):
+        _should_run_recurrent_bc_stage(RecurrentConfig(skip_bc=True))
+
+    with pytest.raises(ValueError, match="--dagger-rounds"):
+        _should_run_recurrent_bc_stage(
+            RecurrentConfig(
+                recurrent_init="checkpoint.pt",
+                skip_bc=True,
+                dagger_rounds=1,
+            )
+        )
+
+
+def test_recurrent_rollout_eval_decoding_updates_actions_and_comm_tensors():
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_TARGET
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_recurrent_rollout_eval_decoding,
+        _comm_tensors_from_actions,
+        _feedback_dim,
+        _initial_signal_scan_state,
+    )
+
+    env = SyncOrSinkEnv(SyncOrSinkConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        num_agents=2,
+        fov_preset="easy",
+        max_steps=20,
+    ))
+    obs, _ = env.reset(seed=0)
+    target_pos = tuple(env.agent_positions[0])
+    obs[0]["self_pos"] = np.asarray(target_pos, dtype=np.int16)
+    obs[0]["local_grid"][obs[0]["local_grid"].shape[0] // 2, obs[0]["local_grid"].shape[1] // 2] = TILE_TARGET
+    obs[0]["action_mask"] = np.ones((8,), dtype=np.float32)
+
+    cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        comm=True,
+        comm_token_limit=4,
+        comm_vocab_size=32,
+        obs_feedback=True,
+        obs_signal_scan_state=True,
+        rl_rollout_eval_decoding=True,
+        eval_signal_scan_sync_assist=True,
+        eval_signal_scan_broadcast_assist=True,
+    )
+    feedback = np.zeros((2, _feedback_dim(cfg)), dtype=np.float32)
+    scan_offset = 12
+    feedback[0, scan_offset] = 1.0
+    feedback[0, scan_offset + 2] = 1.0
+    scan_state = _initial_signal_scan_state(cfg)
+    scan_state["scan_log"] = {0: 0}
+    scan_state["scan_pos"] = {0: target_pos}
+    scan_state["step"] = 0
+    logits = torch.zeros((2, 8), dtype=torch.float32)
+    acts = torch.tensor([env.ACTION_INTERACT, env.ACTION_STAY], dtype=torch.long)
+    actions = {
+        0: {"action": env.ACTION_INTERACT, "message_tokens": []},
+        1: {"action": env.ACTION_STAY, "message_tokens": []},
+    }
+    hidden = (torch.zeros((2, 4), dtype=torch.float32), torch.zeros((2, 4), dtype=torch.float32))
+
+    decoded_acts, decoded_actions = _apply_recurrent_rollout_eval_decoding(
+        cfg,
+        object(),
+        obs,
+        logits,
+        acts,
+        actions,
+        hidden,
+        feedback,
+        scan_state,
+    )
+
+    assert int(decoded_acts[0].item()) == env.ACTION_STAY
+    assert decoded_actions[0]["message_tokens"] == [26, int(target_pos[0]), int(target_pos[1])]
+    send, tokens, lengths = _comm_tensors_from_actions(decoded_actions, cfg, torch.device("cpu"))
+    assert send.tolist() == [1.0, 0.0]
+    assert lengths.tolist() == [3, 0]
+    assert tokens[0, :3].tolist() == [26, int(target_pos[0]), int(target_pos[1])]
 
 
 def test_recurrent_dagger_caps_and_weights_failed_rollouts():
@@ -963,6 +1151,44 @@ def test_recurrent_dagger_focus_step_weight_helpers():
         "decoy_scan",
         "joint_target_scan",
     ]
+    conservative_failed_parent_cfg = RecurrentConfig(
+        **{
+            **vars(controlled_cfg),
+            "dagger_replay_event_weights": "",
+            "dagger_replay_event_caps": "",
+            "dagger_max_replay_snippets_per_episode": 3,
+            "dagger_max_failed_parent_replay_snippets_per_episode": 1,
+            "dagger_failed_parent_replay_weight_scale": 0.25,
+        }
+    )
+    conservative_failed_parent_replay = _focus_replay_episodes(
+        episode,
+        [
+            {"event": "target_discovery_miss", "step": 0, "agents": [0], "kind": "focus"},
+            {"event": "target_handoff", "step": 1, "agents": [1], "kind": "positive"},
+            {"event": "target_pursuit_miss", "step": 2, "agents": [0], "kind": "focus"},
+        ],
+        conservative_failed_parent_cfg,
+    )
+    assert [snippet["trigger_event"] for snippet in conservative_failed_parent_replay] == [
+        "target_discovery_miss",
+    ]
+    assert conservative_failed_parent_replay[0]["weight"] == pytest.approx(0.5)
+    successful_parent_replay = _focus_replay_episodes(
+        successful_episode,
+        [
+            {"event": "target_discovery_miss", "step": 0, "agents": [0], "kind": "focus"},
+            {"event": "target_handoff", "step": 1, "agents": [1], "kind": "positive"},
+            {"event": "target_pursuit_miss", "step": 2, "agents": [0], "kind": "focus"},
+        ],
+        conservative_failed_parent_cfg,
+    )
+    assert [snippet["trigger_event"] for snippet in successful_parent_replay] == [
+        "target_discovery_miss",
+        "target_handoff",
+        "target_pursuit_miss",
+    ]
+    assert [snippet["weight"] for snippet in successful_parent_replay] == [2.0, 2.0, 2.0]
     expert_replay = _focus_replay_episodes(
         episode,
         [{"event": "joint_target_scan", "step": 2, "agents": [0, 1], "kind": "positive"}],
@@ -1789,6 +2015,7 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         _new_episode_sequence,
         _signal_decoy_pursuit_agents,
         _signal_decoy_drift_action_loss,
+        _signal_frontier_exploration_action_label_mask,
         _signal_movement_stall_miss_agents,
         _signal_navigation_action_from_obs,
         _signal_observation_allows_target,
@@ -1918,6 +2145,104 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         pursuit_action_id,
         np.array([large_env.ACTION_RIGHT, -1], dtype=np.int64),
     )
+    frontier_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=16,
+        agents=2,
+        obs_exploration_memory=True,
+        bc_signal_frontier_exploration_action_weight=0.5,
+        bc_signal_frontier_exploration_min_map_size=16,
+    )
+    frontier_obs = {
+        aid: {
+            key: value.copy() if hasattr(value, "copy") else value
+            for key, value in large_obs[aid].items()
+        }
+        for aid in range(2)
+    }
+    frontier_obs[0]["self_pos"] = np.array([8, 8], dtype=np.int16)
+    frontier_obs[0]["goal_hint"] = np.full_like(frontier_obs[0]["goal_hint"], -1)
+    frontier_obs[0]["messages_tokens"] = np.full_like(frontier_obs[0]["messages_tokens"], -1)
+    frontier_obs[0]["local_grid"] = np.zeros_like(frontier_obs[0]["local_grid"], dtype=np.int16)
+    frontier_obs[0]["action_mask"] = np.ones_like(frontier_obs[0]["action_mask"], dtype=np.float32)
+    explored = np.ones((16, 16), dtype=np.int8)
+    explored[8, 9] = 0
+    frontier_obs[0]["explored_mask"] = explored
+    frontier_obs[1]["explored_mask"] = np.ones((16, 16), dtype=np.int8)
+    frontier_mask, frontier_action_id = _signal_frontier_exploration_action_label_mask(
+        large_env,
+        frontier_obs,
+        frontier_cfg,
+    )
+    np.testing.assert_allclose(frontier_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(
+        frontier_action_id,
+        np.array([large_env.ACTION_RIGHT, -1], dtype=np.int64),
+    )
+    target_frontier_obs = {
+        aid: {
+            key: value.copy() if hasattr(value, "copy") else value
+            for key, value in frontier_obs[aid].items()
+        }
+        for aid in range(2)
+    }
+    target_frontier_obs[0]["goal_hint"] = np.array([
+        26,
+        large_target[0],
+        large_target[1],
+        26,
+        large_decoy[0],
+        large_decoy[1],
+        -1,
+        -1,
+    ], dtype=np.int16)
+    target_frontier_pursuit_mask, target_frontier_pursuit_action_id = (
+        _signal_target_pursuit_action_label_mask(
+            large_env,
+            target_frontier_obs,
+            frontier_cfg,
+        )
+    )
+    np.testing.assert_allclose(
+        target_frontier_pursuit_mask,
+        np.array([1.0, 0.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        target_frontier_pursuit_action_id,
+        np.array([large_env.ACTION_RIGHT, -1], dtype=np.int64),
+    )
+    target_frontier_mask, target_frontier_action_id = (
+        _signal_frontier_exploration_action_label_mask(
+            large_env,
+            target_frontier_obs,
+            frontier_cfg,
+        )
+    )
+    np.testing.assert_allclose(
+        target_frontier_mask,
+        np.array([0.0, 0.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        target_frontier_action_id,
+        np.array([-1, -1], dtype=np.int64),
+    )
+    clue_obs = {
+        aid: {
+            key: value.copy() if hasattr(value, "copy") else value
+            for key, value in frontier_obs[aid].items()
+        }
+        for aid in range(2)
+    }
+    clue_obs[0]["local_grid"] = np.zeros_like(frontier_obs[0]["local_grid"], dtype=np.int16)
+    cy, cx = clue_obs[0]["local_grid"].shape[0] // 2, clue_obs[0]["local_grid"].shape[1] // 2
+    clue_obs[0]["local_grid"][cy, cx] = TILE_CLUE
+    clue_mask, clue_action_id = _signal_frontier_exploration_action_label_mask(
+        large_env,
+        clue_obs,
+        frontier_cfg,
+    )
+    np.testing.assert_allclose(clue_mask, np.array([0.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(clue_action_id, np.array([-1, -1], dtype=np.int64))
     decoy_match_mask, decoy_match_action_id = _signal_target_match_action_label_mask(
         large_env,
         large_obs,
@@ -2309,6 +2634,30 @@ def test_recurrent_signal_target_pursuit_label_weighting():
     large_cfg = RecurrentConfig(scenario="signal_hunt", map_size=16, agents=2)
     large_ep_data = _new_episode_sequence()
     _append_labeled_step(large_ep_data, large_obs, large_oracle, large_env, large_cfg)
+    frontier_ep_data = _new_episode_sequence()
+    _append_labeled_step(
+        frontier_ep_data,
+        frontier_obs,
+        {
+            0: {"action": large_env.ACTION_RIGHT, "message_tokens": []},
+            1: {"action": large_env.ACTION_STAY, "message_tokens": []},
+        },
+        large_env,
+        frontier_cfg,
+    )
+    target_frontier_ep_data = _new_episode_sequence()
+    _append_labeled_step(
+        target_frontier_ep_data,
+        target_frontier_obs,
+        {
+            0: {"action": large_env.ACTION_RIGHT, "message_tokens": []},
+            1: {"action": large_env.ACTION_STAY, "message_tokens": []},
+        },
+        large_env,
+        frontier_cfg,
+    )
+    assert target_frontier_ep_data["signal_target_pursuit_action_mask"] == [1.0, 0.0]
+    assert target_frontier_ep_data["signal_frontier_exploration_action_mask"] == [0.0, 0.0]
     assert _label_latest_signal_decoy_drift_actions(
         large_ep_data,
         num_agents=2,
@@ -2376,6 +2725,15 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         large_episode["signal_rejected_target_drift_action_id"],
         np.array([[large_env.ACTION_LEFT, -1]], dtype=np.int64),
     )
+    frontier_episode = _finalize_episode_sequence(frontier_ep_data, large_env, frontier_cfg)
+    np.testing.assert_allclose(
+        frontier_episode["signal_frontier_exploration_action_mask"],
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        frontier_episode["signal_frontier_exploration_action_id"],
+        np.array([[large_env.ACTION_RIGHT, -1]], dtype=np.int64),
+    )
     large_replay = _slice_recurrent_episode(large_episode, 0, 1)
     np.testing.assert_allclose(
         large_replay["signal_decoy_drift_action_mask"],
@@ -2424,6 +2782,15 @@ def test_recurrent_signal_target_pursuit_label_weighting():
     np.testing.assert_array_equal(
         large_replay["signal_rejected_target_drift_action_id"],
         large_episode["signal_rejected_target_drift_action_id"],
+    )
+    frontier_replay = _slice_recurrent_episode(frontier_episode, 0, 1)
+    np.testing.assert_allclose(
+        frontier_replay["signal_frontier_exploration_action_mask"],
+        frontier_episode["signal_frontier_exploration_action_mask"],
+    )
+    np.testing.assert_array_equal(
+        frontier_replay["signal_frontier_exploration_action_id"],
+        frontier_episode["signal_frontier_exploration_action_id"],
     )
     bad_high_logits = torch.zeros((2, 8), dtype=torch.float32)
     bad_low_logits = torch.zeros((2, 8), dtype=torch.float32)
@@ -3082,8 +3449,18 @@ def test_recurrent_dagger_best_round_uses_eval_score(monkeypatch):
         },
     ]
 
-    def fake_evaluate_recurrent_policy_multi_seed(cfg, model, device, *, seed_count):
+    def fake_evaluate_recurrent_policy_multi_seed(
+        cfg,
+        model,
+        device,
+        *,
+        seed_count,
+        seed_list="",
+        seed_list_field_name="rl_eval_seed_list",
+    ):
         del cfg, model, device
+        assert seed_list == ""
+        assert seed_list_field_name == "eval_seed_list"
         seen_seed_counts.append(seed_count)
         result = eval_results[eval_calls["count"]]
         eval_calls["count"] += 1
@@ -3134,8 +3511,18 @@ def test_recurrent_dagger_can_start_from_initial_model(monkeypatch):
             return model
         return torch.nn.Linear(1, 1, bias=False)
 
-    def fake_evaluate_recurrent_policy_multi_seed(cfg, model, device, *, seed_count):
+    def fake_evaluate_recurrent_policy_multi_seed(
+        cfg,
+        model,
+        device,
+        *,
+        seed_count,
+        seed_list="",
+        seed_list_field_name="rl_eval_seed_list",
+    ):
         del cfg, model, device
+        assert seed_list == ""
+        assert seed_list_field_name == "eval_seed_list"
         assert seed_count == 2
         return {
             "episodes": 2,
@@ -3212,8 +3599,18 @@ def test_recurrent_dagger_early_stop_skips_extra_collection(monkeypatch):
         },
     ]
 
-    def fake_evaluate_recurrent_policy_multi_seed(cfg, model, device, *, seed_count):
+    def fake_evaluate_recurrent_policy_multi_seed(
+        cfg,
+        model,
+        device,
+        *,
+        seed_count,
+        seed_list="",
+        seed_list_field_name="rl_eval_seed_list",
+    ):
         del cfg, model, device
+        assert seed_list == ""
+        assert seed_list_field_name == "eval_seed_list"
         seen_seed_counts.append(seed_count)
         result = eval_results[eval_calls["count"]]
         eval_calls["count"] += 1
@@ -3983,6 +4380,56 @@ def test_recurrent_eval_multi_seed_aggregates_per_map_metrics(monkeypatch):
     assert result["eval_map_sizes"]["16"]["avg_return"] == pytest.approx(2.0)
 
 
+def test_recurrent_eval_multi_seed_accepts_map_seed_schedule(monkeypatch):
+    import syncorsink.train.recurrent_bc_rl as recurrent
+    from syncorsink.train.recurrent_bc_rl import RecurrentConfig
+
+    seen = []
+
+    def fake_single_map_eval(cfg, model, device):
+        del model, device
+        seen.append((int(cfg.map_size), int(cfg.eval_seed)))
+        success_rate = 1.0 if (int(cfg.map_size), int(cfg.eval_seed)) in {(16, 3000), (32, 7000)} else 0.0
+        return {
+            "episodes": int(cfg.eval_episodes),
+            "success_rate": success_rate,
+            "avg_return": float(cfg.map_size),
+            "avg_steps": float(cfg.eval_seed % 100),
+            "avg_comm_tokens": 0.0,
+        }
+
+    monkeypatch.setattr(recurrent, "_evaluate_recurrent_policy_single_map", fake_single_map_eval)
+
+    result = recurrent.evaluate_recurrent_policy_multi_seed(
+        RecurrentConfig(eval_map_sizes="16,32", eval_episodes=2),
+        model=object(),
+        device=torch.device("cpu"),
+        seed_count=99,
+        seed_list="16:3000,13000+32:7000",
+    )
+
+    assert seen == [(16, 3000), (16, 13000), (32, 7000)]
+    assert result["episodes"] == 6
+    assert result["eval_seed_count"] == 3
+    assert result["eval_seeds"] == [3000, 7000, 13000]
+    assert result["eval_seed_lists"] == {"16": [3000, 13000], "32": [7000]}
+    assert result["success_rate"] == pytest.approx(2 / 3)
+    assert result["eval_map_sizes"]["16"]["episodes"] == 4
+    assert result["eval_map_sizes"]["16"]["success_rate"] == pytest.approx(0.5)
+    assert result["eval_map_sizes"]["32"]["episodes"] == 2
+    assert result["eval_map_sizes"]["32"]["eval_seeds"] == [7000]
+
+    with pytest.raises(ValueError, match="missing seed lists"):
+        recurrent.evaluate_recurrent_policy_multi_seed(
+            RecurrentConfig(eval_map_sizes="16,32", eval_episodes=1),
+            model=object(),
+            device=torch.device("cpu"),
+            seed_count=1,
+            seed_list="16:3000",
+            seed_list_field_name="eval_seed_list",
+        )
+
+
 def test_recurrent_rl_balanced_rollout_collects_each_train_map_size():
     from syncorsink.policies.mappo_models import MAPPOCritic, MAPPORecurrentActor
     from syncorsink.train.recurrent_bc_rl import (
@@ -4490,9 +4937,10 @@ def test_recurrent_comm_feedback_ppo_smoke(tmp_path):
         oracle_type="signal_hint_comm",
         obs_exploration_memory=True,
         obs_feedback=True,
+        obs_signal_scan_state=True,
         comm=True,
-        comm_token_limit=4,
-        comm_vocab_size=8,
+        comm_token_limit=8,
+        comm_vocab_size=32,
         demo_episodes=2,
         bc_epochs=1,
         bc_seq_len=8,
@@ -4500,12 +4948,18 @@ def test_recurrent_comm_feedback_ppo_smoke(tmp_path):
         bc_comm_send_pos_weight=-1,
         rl_updates=1,
         rollout_steps=4,
+        rl_rollout_eval_decoding=True,
         rl_epochs=1,
         rl_eval_every=1,
         rl_eval_episodes=1,
         rl_eval_seed=4000,
         rl_restore_best=True,
         rl_save_best=True,
+        eval_signal_scan_sync_assist=True,
+        eval_signal_scan_broadcast_assist=True,
+        eval_signal_exact_target_message_guard=True,
+        eval_signal_exact_target_navigation_assist=True,
+        eval_signal_exact_target_memory_steps=8,
         hidden_dim=32,
         eval_episodes=1,
         save=str(tmp_path / "recurrent_rl.pt"),

@@ -168,6 +168,62 @@ All three support:
 - periodic training logs (`loss`, `policy_loss`, `value_loss`, `entropy`, rollout stats)
 - periodic eval logs (`eval/mean_return`, `eval/mean_steps`, `eval/success_rate`)
 
+### Recurrent BC/DAgger/PPO trainer
+
+`python -m syncorsink.train.recurrent_bc_rl` supports W&B logging for oracle
+demos, recurrent BC, DAgger collection/eval, and PPO fine-tuning. Useful
+scalars include:
+
+- `bc/*` losses, accuracies, auxiliary Signal Hunt action heads, send rates,
+  and learning rate
+- `bc/signal_frontier_exploration_*` labels and action-match metrics for the
+  opt-in large-map search fallback auxiliary, active only when no true-target
+  candidate is decoded from the observation
+- `dagger/collect_*` model-visited rollout stats, focus event counts, replay
+  snippets, oracle-message roll-in, and per-map dataset diagnostics
+- `dagger/eval/*`, `init/eval/*`, and `rl/eval/*` success/return/step metrics,
+  including per-map metrics when `--eval-map-sizes` is set
+- `rollout/*` PPO reward, communication, KL, action histogram, learning rate,
+  and optional guided-decoding indicators
+
+Seed schedules:
+
+- `--dagger-seed-list 3000,3001,3002` cycles global DAgger collection seeds.
+- `--dagger-seed-list 16:3000,13000+32:7000,17000` cycles collection seeds
+  separately per training map size.
+- `--eval-seed-list 16:3000,13000+32:7000,17000` applies the same map-specific
+  schedule to recurrent init, BC, and DAgger eval.
+- `--rl-eval-seed-list ...` overrides `--eval-seed-list` for PPO eval only.
+
+Conservative replay controls:
+
+- `--dagger-max-replay-snippets-per-episode` caps snippets cut from each parent
+  rollout.
+- `--dagger-max-failed-parent-replay-snippets-per-episode` optionally applies a
+  stricter cap to snippets from failed model-visited rollouts.
+- `--dagger-failed-parent-replay-weight-scale` downweights those failed-parent
+  snippets without changing successful-parent or expert replay snippets.
+- `--dagger-failed-episode-weight` controls the full failed parent rollout
+  weight itself.
+
+Large-map Signal Hunt search auxiliary:
+
+- `--bc-signal-frontier-exploration-action-weight` enables an additional BC
+  action loss for states with exploration memory, no visible clue/target, and
+  no unique known target. The label points to the nearest memory frontier or an
+  immediately adjacent unexplored cell.
+- `--bc-signal-frontier-exploration-min-map-size` defaults to `16`, keeping the
+  auxiliary focused on larger maps where no-clue/no-target timeouts dominate.
+
+Checkpoint workflow:
+
+- Use `--recurrent-init CHECKPOINT --recurrent-init-for-dagger` to continue
+  BC/DAgger from an existing recurrent actor checkpoint.
+- Use `--skip-bc --recurrent-init CHECKPOINT` for pure PPO fine-tuning from a
+  checkpoint.
+- Checkpoints should stay out of git; store public model files in an external
+  artifact store and reference them from result artifacts.
+
 `examples/core_training_sweep.py` launches the public training CLIs across the
 core 8x8 cases and writes one manifest:
 
@@ -183,6 +239,17 @@ sets `WANDB_MODE` for them. Use `--wandb-mode disabled` for a pure local
 checkpoint pipeline smoke, `offline` for local W&B runs, and `online` after
 `wandb login`. Add `--strict-wandb` when a requested W&B run must fail fast if
 the W&B process cannot initialize.
+
+For MAPPO runs, `examples/core_training_sweep.py` also forwards architecture,
+exploration-memory, and eval-decoding controls through `--mappo-*` flags. Use
+`--mappo-obs-exploration-memory` for Signal Hunt memory baselines and record
+send-gate choices with `--mappo-eval-send-mode` / `--mappo-eval-send-threshold`.
+
+`examples/train_eval_workbench.py` is the single-run MAPPO checkpoint
+round-trip smoke. It exposes the MAPPO trainer's communication send-rate
+curriculum knobs, observation-memory flags, backbone choice, and final eval
+decoding modes; the saved `summary.json` records the train config and loaded
+policy metadata used for evaluation.
 
 ## Benchmark/spec configuration
 

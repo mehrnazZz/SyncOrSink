@@ -42,8 +42,11 @@ class TrainEvalWorkbenchConfig:
     signal_target_visit_bonus: float = 0.0
     signal_decoy_visit_penalty: float = 0.0
     signal_unique_target_scan_bonus: float = 0.0
+    comm_send_target: float = 0.0
+    comm_send_target_coeff: float = 0.0
     critic_mode: str = "central"
     shared_actor: bool = False
+    backbone: str = "mlp"
     hidden_dim: int = 32
     updates: int = 2
     rollout_steps: int = 16
@@ -54,6 +57,16 @@ class TrainEvalWorkbenchConfig:
     seed: int = 0
     train_eval_every: int = 0
     train_eval_episodes: int = 5
+    eval_action_mode: str = "argmax"
+    eval_action_temperature: float = 1.0
+    eval_send_mode: str = "threshold"
+    eval_send_threshold: float = 0.5
+    eval_token_mode: str = "argmax"
+    eval_token_temperature: float = 1.0
+    eval_length_mode: str = "argmax"
+    eval_length_temperature: float = 1.0
+    obs_exploration_memory: bool = False
+    obs_exploration_age: bool = False
     eval_episodes: int = 2
     eval_seed: int = 1000
     output_dir: str = "logs/workbench"
@@ -103,8 +116,11 @@ def run_train_eval_workbench(cfg: TrainEvalWorkbenchConfig) -> dict[str, Any]:
         signal_target_visit_bonus=cfg.signal_target_visit_bonus,
         signal_decoy_visit_penalty=cfg.signal_decoy_visit_penalty,
         signal_unique_target_scan_bonus=cfg.signal_unique_target_scan_bonus,
+        comm_send_target=cfg.comm_send_target,
+        comm_send_target_coeff=cfg.comm_send_target_coeff,
         critic_mode=cfg.critic_mode,
         shared_actor=cfg.shared_actor,
+        backbone=cfg.backbone,
         hidden_dim=cfg.hidden_dim,
         updates=cfg.updates,
         rollout_steps=cfg.rollout_steps,
@@ -115,6 +131,16 @@ def run_train_eval_workbench(cfg: TrainEvalWorkbenchConfig) -> dict[str, Any]:
         seed=cfg.seed,
         eval_every=cfg.train_eval_every,
         eval_episodes=cfg.train_eval_episodes,
+        eval_action_mode=cfg.eval_action_mode,
+        eval_action_temperature=cfg.eval_action_temperature,
+        eval_send_mode=cfg.eval_send_mode,
+        eval_send_threshold=cfg.eval_send_threshold,
+        eval_token_mode=cfg.eval_token_mode,
+        eval_token_temperature=cfg.eval_token_temperature,
+        eval_length_mode=cfg.eval_length_mode,
+        eval_length_temperature=cfg.eval_length_temperature,
+        obs_exploration_memory=cfg.obs_exploration_memory,
+        obs_exploration_age=cfg.obs_exploration_age,
         save=str(checkpoint_path),
         save_every=max(1, cfg.updates),
     )
@@ -147,13 +173,29 @@ def run_train_eval_workbench(cfg: TrainEvalWorkbenchConfig) -> dict[str, Any]:
         signal_target_visit_bonus=cfg.signal_target_visit_bonus,
         signal_decoy_visit_penalty=cfg.signal_decoy_visit_penalty,
         signal_unique_target_scan_bonus=cfg.signal_unique_target_scan_bonus,
+        obs_exploration_memory=cfg.obs_exploration_memory,
+        obs_exploration_age=cfg.obs_exploration_age,
     )
     env = SyncOrSinkEnv(env_config)
+    deterministic_eval = (
+        cfg.eval_action_mode == "argmax"
+        and cfg.eval_send_mode == "threshold"
+        and cfg.eval_token_mode == "argmax"
+        and cfg.eval_length_mode == "argmax"
+    )
     policy = load_mappo_checkpoint_policy(
         checkpoint_path,
         env,
         cfg=train_cfg,
-        deterministic=True,
+        deterministic=deterministic_eval,
+        send_threshold=cfg.eval_send_threshold,
+        action_mode=cfg.eval_action_mode,
+        action_temperature=cfg.eval_action_temperature,
+        send_mode=cfg.eval_send_mode,
+        token_mode=cfg.eval_token_mode,
+        token_temperature=cfg.eval_token_temperature,
+        length_mode=cfg.eval_length_mode,
+        length_temperature=cfg.eval_length_temperature,
         device=cfg.device,
         sample_seed=cfg.eval_seed,
     )
@@ -166,6 +208,7 @@ def run_train_eval_workbench(cfg: TrainEvalWorkbenchConfig) -> dict[str, Any]:
         "summary_path": str(summary_path),
         "workbench_config": asdict(cfg),
         "train_config": asdict(train_cfg),
+        "policy_metadata": policy.metadata(),
         "eval": asdict(summary),
         "episodes": [asdict(ep) for ep in episodes],
         "wandb": wandb_info,

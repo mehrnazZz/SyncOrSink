@@ -96,6 +96,17 @@ def test_core_training_sweep_comm_curriculum_profile_adds_training_aids(tmp_path
         "0",
         "--learning-profile",
         "comm_curriculum",
+        "--mappo-backbone",
+        "transformer",
+        "--mappo-shared-actor",
+        "--mappo-obs-exploration-memory",
+        "--mappo-obs-exploration-age",
+        "--mappo-eval-action-mode",
+        "sample",
+        "--mappo-eval-send-mode",
+        "sample",
+        "--mappo-eval-send-threshold",
+        "0.25",
         "--output-dir",
         str(tmp_path / "runs"),
         "--run-name",
@@ -110,6 +121,13 @@ def test_core_training_sweep_comm_curriculum_profile_adds_training_aids(tmp_path
     }
 
     assert payload["config"]["learning_profile"] == "comm_curriculum"
+    assert payload["config"]["mappo_backbone"] == "transformer"
+    assert payload["config"]["mappo_shared_actor"] is True
+    assert payload["config"]["mappo_obs_exploration_memory"] is True
+    assert payload["config"]["mappo_obs_exploration_age"] is True
+    assert payload["config"]["mappo_eval_action_mode"] == "sample"
+    assert payload["config"]["mappo_eval_send_mode"] == "sample"
+    assert payload["config"]["mappo_eval_send_threshold"] == 0.25
     assert "--signal-shaping" in commands[("mappo", "signal_hunt")]
     assert "--energy-shaping" in commands[("comm_mat", "energy_grid")]
     assert "--pipeline-shaping" in commands[("tarmac", "pipeline_assembly")]
@@ -118,6 +136,16 @@ def test_core_training_sweep_comm_curriculum_profile_adds_training_aids(tmp_path
     assert "--comm-send-target" not in commands[("tarmac", "signal_hunt")]
     assert "--attn-entropy-coeff" in commands[("tarmac", "signal_hunt")]
     assert commands[("mappo", "signal_hunt")].count("--comm-cost") == 1
+    assert "--backbone" in commands[("mappo", "signal_hunt")]
+    assert "--shared-actor" in commands[("mappo", "signal_hunt")]
+    assert "--obs-exploration-memory" in commands[("mappo", "signal_hunt")]
+    assert "--obs-exploration-age" in commands[("mappo", "signal_hunt")]
+    assert "--eval-action-mode" in commands[("mappo", "signal_hunt")]
+    assert "--eval-send-mode" in commands[("mappo", "signal_hunt")]
+    assert "--eval-send-threshold" in commands[("mappo", "signal_hunt")]
+    assert "--backbone" not in commands[("comm_mat", "signal_hunt")]
+    assert "--obs-exploration-memory" not in commands[("comm_mat", "signal_hunt")]
+    assert "--eval-action-mode" not in commands[("tarmac", "signal_hunt")]
 
 
 def test_core_training_sweep_parses_wandb_failures(tmp_path):
@@ -125,7 +153,11 @@ def test_core_training_sweep_parses_wandb_failures(tmp_path):
 
     stdout = tmp_path / "stdout.log"
     stderr = tmp_path / "stderr.log"
-    stdout.write_text("wandb init failed, continuing without wandb: wandb-core exited with code 1\n", encoding="utf-8")
+    stdout.write_text(
+        "wandb init failed, continuing without wandb: wandb-core exited with code 1\n"
+        "wandb log failed, disabling wandb for this run: optional backend unavailable\n",
+        encoding="utf-8",
+    )
     stderr.write_text("ERROR main: Serve() returned error\n", encoding="utf-8")
 
     record = _parse_wandb_record(stdout, stderr, requested=True, mode="offline")
@@ -134,3 +166,31 @@ def test_core_training_sweep_parses_wandb_failures(tmp_path):
     assert record["mode"] == "offline"
     assert record["status"] == "failed"
     assert record["error_lines"]
+
+
+def test_core_training_sweep_parses_wandb_run_url(tmp_path):
+    from examples.core_training_sweep import _parse_wandb_record
+
+    stdout = tmp_path / "stdout.log"
+    stderr = tmp_path / "stderr.log"
+    stdout.write_text("", encoding="utf-8")
+    stderr.write_text("", encoding="utf-8")
+    run_logs = tmp_path / "wandb" / "wandb" / "run-20260726_120000-abc123" / "logs"
+    run_logs.mkdir(parents=True)
+    (run_logs / "debug.log").write_text(
+        "2026 INFO finishing run orion8/syncorsink-core-training/abc123\n",
+        encoding="utf-8",
+    )
+
+    record = _parse_wandb_record(
+        stdout,
+        stderr,
+        requested=True,
+        mode="online",
+        run_dir=tmp_path,
+    )
+
+    assert record["status"] == "initialized"
+    assert record["run_id"] == "abc123"
+    assert record["run_path"] == "orion8/syncorsink-core-training/abc123"
+    assert record["url"] == "https://wandb.ai/orion8/syncorsink-core-training/runs/abc123"

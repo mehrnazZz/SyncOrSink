@@ -105,6 +105,7 @@ class RecurrentConfig:
     comm_len_cost: float = 0.0
     comm_cost: float = 0.01
     # BC
+    skip_bc: bool = False
     demo_episodes: int = 200
     bc_epochs: int = 30
     bc_lr: float = 1e-3
@@ -154,6 +155,8 @@ class RecurrentConfig:
     bc_signal_decoy_drift_action_loss_weight: float = 0.0
     bc_signal_decoy_scan_action_loss_weight: float = 0.0
     bc_signal_rejected_target_drift_action_loss_weight: float = 0.0
+    bc_signal_frontier_exploration_action_weight: float = 0.0
+    bc_signal_frontier_exploration_min_map_size: int = 16
     dagger_rounds: int = 0
     dagger_episodes: int = 20
     dagger_seed_base: int = 10000
@@ -194,6 +197,8 @@ class RecurrentConfig:
     dagger_replay_balance_negative_events: str = ""
     dagger_replay_max_negative_per_positive: float = -1.0
     dagger_max_replay_snippets_per_episode: int = 4
+    dagger_max_failed_parent_replay_snippets_per_episode: int = -1
+    dagger_failed_parent_replay_weight_scale: float = 1.0
     dagger_expert_max_replay_snippets_per_episode: int = -1
     dagger_solo_target_team_success_only: bool = False
     dagger_positive_target_pursuit_min_map_size: int = 16
@@ -205,6 +210,7 @@ class RecurrentConfig:
     rollout_steps: int = 256
     rl_balanced_rollouts: bool = False
     rl_rollout_map_steps: str = ""
+    rl_rollout_eval_decoding: bool = False
     rl_redundant_target_scan_penalty: float = 0.0
     rl_wrong_target_scan_penalty: float = 0.0
     rl_epochs: int = 2
@@ -222,6 +228,7 @@ class RecurrentConfig:
     rl_eval_episodes: int = 20
     rl_eval_seed: int = 10000
     rl_eval_seed_count: int = 1
+    rl_eval_seed_list: str = ""
     rl_restore_best: bool = True
     rl_save_best: bool = True
     rl_best_save: Optional[str] = None
@@ -236,6 +243,7 @@ class RecurrentConfig:
     eval_episodes: int = 100
     eval_seed: int = 3000
     eval_seed_count: int = 1
+    eval_seed_list: str = ""
     eval_map_sizes: str = ""
     eval_send_threshold: float = 0.25
     eval_signal_target_scan_threshold: float = -1.0
@@ -322,6 +330,31 @@ def _parse_seed_list(raw_value: str, *, field_name: str) -> list[int]:
             raise ValueError(f"{field_name} must contain non-negative integers, got {seed}")
         seeds.append(seed)
     return seeds
+
+
+def _parse_eval_seed_schedule(raw_value: str, *, field_name: str) -> tuple[dict[int, list[int]], list[int]]:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return {}, []
+    if ":" not in raw:
+        return {}, _parse_seed_list(raw, field_name=field_name)
+
+    seed_map: dict[int, list[int]] = {}
+    for item in raw.replace("+", ";").split(";"):
+        item = item.strip()
+        if not item:
+            continue
+        if ":" not in item:
+            raise ValueError(f"{field_name} entries must be map_size:seed,seed pairs, got {item!r}")
+        raw_size, raw_seeds = item.split(":", 1)
+        map_size = int(raw_size.strip())
+        if map_size <= 0:
+            raise ValueError(f"{field_name} entries must contain positive map sizes, got {item!r}")
+        seeds = _parse_seed_list(raw_seeds, field_name=f"{field_name}[{map_size}]")
+        if not seeds:
+            raise ValueError(f"{field_name} entry for map_size={map_size} must include at least one seed")
+        seed_map[map_size] = seeds
+    return seed_map, []
 
 
 def _parse_map_step_overrides(raw_value: str, *, field_name: str) -> dict[int, int]:
@@ -2693,6 +2726,8 @@ def _new_episode_sequence() -> dict:
         "signal_decoy_scan_action_id": [],
         "signal_rejected_target_drift_action_mask": [],
         "signal_rejected_target_drift_action_id": [],
+        "signal_frontier_exploration_action_mask": [],
+        "signal_frontier_exploration_action_id": [],
     }
 
 
@@ -2812,6 +2847,136 @@ def _signal_target_decision_label_mask(
     return mask, labels
 
 
+def _signal_visible_search_goal(obs_agent: dict) -> bool:
+    local_ids = _recurrent_local_grid_ids(
+        obs_agent.get("local_grid", np.zeros((1, 1), dtype=np.int16))
+    )
+    if local_ids.ndim != 2 or local_ids.size == 0:
+        return False
+    return bool(np.isin(local_ids, [int(TILE_CLUE), int(TILE_TARGET)]).any())
+
+
+def _signal_unique_known_target(obs_agent: dict, cfg: RecurrentConfig, observed_map_size: int) -> bool:
+    exact_targets = _signal_exact_targets_from_observation(obs_agent, observed_map_size)
+    if len(exact_targets) == 1:
+        return True
+    inferred_targets = set(_signal_inferred_constraint_targets(obs_agent, observed_map_size))
+    return len(inferred_targets) == 1
+
+
+def _signal_nearest_frontier_cell(
+    explored_mask: np.ndarray,
+    pos: tuple[int, int],
+    *,
+    exclude_self: bool = True,
+) -> tuple[int, int] | None:
+    mask = np.asarray(explored_mask).astype(bool)
+    if mask.ndim != 2 or mask.size == 0:
+        return None
+    sx, sy = int(pos[0]), int(pos[1])
+    height, width = int(mask.shape[0]), int(mask.shape[1])
+    best: tuple[int, int] | None = None
+    best_score: tuple[int, int, int] | None = None
+    for y in range(height):
+        for x in range(width):
+            if not mask[y, x]:
+                continue
+            if exclude_self and (x, y) == (sx, sy):
+                continue
+            is_frontier = False
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < width and 0 <= ny < height and not mask[ny, nx]:
+                    is_frontier = True
+                    break
+            if not is_frontier:
+                continue
+            score = (abs(x - sx) + abs(y - sy), y, x)
+            if best_score is None or score < best_score:
+                best_score = score
+                best = (x, y)
+    return best
+
+
+def _signal_frontier_exploration_action_label_mask(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    cfg: RecurrentConfig,
+) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    action_ids = np.full((env.num_agents,), -1, dtype=np.int64)
+    if (
+        getattr(env.config, "scenario", None) != "signal_hunt"
+        or not bool(getattr(cfg, "obs_exploration_memory", False))
+        or int(env.map_size) < int(getattr(cfg, "bc_signal_frontier_exploration_min_map_size", 16))
+    ):
+        return mask, action_ids
+
+    true_target: tuple[int, int] | None = None
+    target = env.scenario_state.data.get("target") if env.scenario_state is not None else None
+    if target is not None:
+        true_target = (int(target[0]), int(target[1]))
+
+    for aid in range(env.num_agents):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        if _signal_visible_search_goal(obs_agent):
+            continue
+        explored = obs_agent.get("explored_mask")
+        if explored is None:
+            continue
+        explored_mask = np.asarray(explored).astype(bool)
+        if explored_mask.ndim != 2 or explored_mask.size == 0:
+            continue
+        pos = _signal_xy(obs_agent.get("self_pos"))
+        if pos is None:
+            continue
+        sx, sy = int(pos[0]), int(pos[1])
+        height, width = int(explored_mask.shape[0]), int(explored_mask.shape[1])
+        if not (0 <= sx < width and 0 <= sy < height):
+            continue
+
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        if _signal_unique_known_target(obs_agent, cfg, observed_map_size):
+            continue
+        if true_target is not None and _signal_target_decoding_candidate(
+            obs_agent,
+            cfg,
+            true_target,
+        ):
+            continue
+
+        action_id: int | None = None
+        for candidate_action, dx, dy in _SIGNAL_NAV_ACTION_DELTAS:
+            nx, ny = sx + int(dx), sy + int(dy)
+            if not (0 <= nx < width and 0 <= ny < height):
+                continue
+            if explored_mask[ny, nx]:
+                continue
+            if _action_allowed_from_obs(obs_agent, int(candidate_action)):
+                action_id = int(candidate_action)
+                break
+        if action_id is None:
+            frontier = _signal_nearest_frontier_cell(explored_mask, (sx, sy), exclude_self=True)
+            if frontier is None:
+                continue
+            action_id = _signal_navigation_action_from_obs(obs_agent, frontier)
+
+        if action_id is None or int(action_id) not in {
+            int(SyncOrSinkEnv.ACTION_UP),
+            int(SyncOrSinkEnv.ACTION_DOWN),
+            int(SyncOrSinkEnv.ACTION_LEFT),
+            int(SyncOrSinkEnv.ACTION_RIGHT),
+        }:
+            continue
+        if not _action_allowed_from_obs(obs_agent, int(action_id)):
+            continue
+        mask[int(aid)] = 1.0
+        action_ids[int(aid)] = int(action_id)
+    return mask, action_ids
+
+
 def _append_labeled_step(
     ep_data: dict,
     obs: dict,
@@ -2881,6 +3046,9 @@ def _append_labeled_step(
         target_opportunity_kind_id=target_opportunity_kind_id,
     )
     target_aux_mask, target_aux_xy = _signal_target_aux_label(env)
+    frontier_exploration_action_mask, frontier_exploration_action_id = (
+        _signal_frontier_exploration_action_label_mask(env, obs, cfg)
+    )
     for aid in range(env.num_agents):
         fb = feedback[aid] if feedback is not None else None
         ep_data["obs"].append(_flatten_recurrent_obs(obs[aid], cfg, fb))
@@ -2919,6 +3087,12 @@ def _append_labeled_step(
         ep_data["signal_decoy_scan_action_id"].append(-1)
         ep_data["signal_rejected_target_drift_action_mask"].append(0.0)
         ep_data["signal_rejected_target_drift_action_id"].append(-1)
+        ep_data["signal_frontier_exploration_action_mask"].append(
+            float(frontier_exploration_action_mask[aid])
+        )
+        ep_data["signal_frontier_exploration_action_id"].append(
+            int(frontier_exploration_action_id[aid])
+        )
 
 
 def _finalize_episode_sequence(
@@ -3047,6 +3221,20 @@ def _finalize_episode_sequence(
         ).reshape(-1, env.num_agents),
         "signal_rejected_target_drift_action_id": np.array(
             ep_data.get("signal_rejected_target_drift_action_id", []),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "signal_frontier_exploration_action_mask": np.array(
+            ep_data.get(
+                "signal_frontier_exploration_action_mask",
+                [0.0 for _ in ep_data["actions"]],
+            ),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_frontier_exploration_action_id": np.array(
+            ep_data.get(
+                "signal_frontier_exploration_action_id",
+                [-1 for _ in ep_data["actions"]],
+            ),
             dtype=np.int64,
         ).reshape(-1, env.num_agents),
     }
@@ -3378,6 +3566,25 @@ def _slice_recurrent_episode(episode: dict, start: int, end: int, **metadata) ->
             -1,
             dtype=np.int64,
         )
+    if "signal_frontier_exploration_action_mask" in episode:
+        sliced["signal_frontier_exploration_action_mask"] = episode[
+            "signal_frontier_exploration_action_mask"
+        ][start:end].copy()
+    else:
+        sliced["signal_frontier_exploration_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_frontier_exploration_action_id" in episode:
+        sliced["signal_frontier_exploration_action_id"] = episode[
+            "signal_frontier_exploration_action_id"
+        ][start:end].copy()
+    else:
+        sliced["signal_frontier_exploration_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
     sliced.update(metadata)
     return sliced
 
@@ -3396,6 +3603,11 @@ def _focus_replay_episodes(
         expert_max = int(getattr(cfg, "dagger_expert_max_replay_snippets_per_episode", -1))
         if expert_max >= 0:
             max_snippets = expert_max
+    parent_success = bool(episode.get("success", False))
+    if source == "dagger_focus_replay" and not parent_success:
+        failed_parent_max = int(getattr(cfg, "dagger_max_failed_parent_replay_snippets_per_episode", -1))
+        if failed_parent_max >= 0:
+            max_snippets = min(max_snippets, failed_parent_max)
     max_snippets = max(0, max_snippets)
     if max_snippets <= 0:
         return []
@@ -3416,7 +3628,7 @@ def _focus_replay_episodes(
     )
     success_only_events = _dagger_replay_success_only_events(cfg)
     priority_events = _dagger_replay_priority_events(cfg)
-    parent_success = bool(episode.get("success", False))
+    failed_parent_weight_scale = max(0.0, float(getattr(cfg, "dagger_failed_parent_replay_weight_scale", 1.0)))
     balance_positive_events = _dagger_replay_balance_positive_events(cfg)
     balance_negative_events = _dagger_replay_balance_negative_events(cfg)
     balance_ratio = float(getattr(cfg, "dagger_replay_max_negative_per_positive", -1.0))
@@ -3447,6 +3659,8 @@ def _focus_replay_episodes(
         if event_cap is not None and event_counts.get(event, 0) >= event_cap:
             continue
         record_weight = float(event_weights.get(event, replay_weight))
+        if source == "dagger_focus_replay" and not parent_success:
+            record_weight *= failed_parent_weight_scale
         if record_weight <= 0.0:
             continue
         step = int(record["step"])
@@ -3553,12 +3767,48 @@ def _dagger_positive_replay_events(cfg: RecurrentConfig) -> set[str]:
     }
 
 
-def _dagger_collection_seed(cfg: RecurrentConfig, round_idx: int, episode_idx: int) -> int:
+def _dagger_collection_map_ordinal(cfg: RecurrentConfig, total_episode_idx: int, map_size: int) -> int:
+    schedule = _training_map_schedule(cfg)
+    if not schedule:
+        return max(0, int(total_episode_idx))
+    map_size = int(map_size)
+    total_episode_idx = max(0, int(total_episode_idx))
+    full_cycles, slot = divmod(total_episode_idx, len(schedule))
+    per_cycle_count = sum(1 for size in schedule if int(size) == map_size)
+    ordinal = full_cycles * per_cycle_count
+    ordinal += sum(1 for size in schedule[:slot] if int(size) == map_size)
+    return int(ordinal)
+
+
+def _dagger_collection_seed(
+    cfg: RecurrentConfig,
+    round_idx: int,
+    episode_idx: int,
+    *,
+    map_size: int | None = None,
+) -> int:
     ordinal = max(0, int(round_idx)) * max(0, int(cfg.dagger_episodes)) + max(0, int(episode_idx))
-    explicit_seeds = _parse_seed_list(cfg.dagger_seed_list, field_name="dagger_seed_list")
+    seed_map, explicit_seeds = _parse_eval_seed_schedule(cfg.dagger_seed_list, field_name="dagger_seed_list")
+    if seed_map:
+        episode_map_size = int(map_size) if map_size is not None else int(_cfg_for_training_episode(cfg, ordinal).map_size)
+        seeds = seed_map.get(episode_map_size)
+        if not seeds:
+            raise ValueError(f"dagger_seed_list missing seed list for map_size={episode_map_size}")
+        map_ordinal = _dagger_collection_map_ordinal(cfg, ordinal, episode_map_size)
+        return int(seeds[map_ordinal % len(seeds)])
     if explicit_seeds:
         return int(explicit_seeds[ordinal % len(explicit_seeds)])
     return int(cfg.dagger_seed_base) + max(0, int(round_idx)) * int(cfg.dagger_seed_stride) + int(episode_idx)
+
+
+def _should_run_recurrent_bc_stage(cfg: RecurrentConfig) -> bool:
+    if not bool(cfg.skip_bc):
+        return (not bool(cfg.recurrent_init)) or bool(cfg.recurrent_init_for_dagger)
+    if not cfg.recurrent_init:
+        raise ValueError("--skip-bc requires --recurrent-init")
+    if int(cfg.dagger_rounds) > 0:
+        raise ValueError("--skip-bc cannot be combined with --dagger-rounds > 0")
+    return False
 
 
 def _dagger_replay_success_only_events(cfg: RecurrentConfig) -> set[str]:
@@ -4619,6 +4869,11 @@ def train_recurrent_bc(
         rejected_target_drift_action_count = 0
         rejected_target_drift_pred_bad_action_count = 0
         rejected_target_drift_bad_action_prob_sum = 0.0
+        frontier_exploration_action_loss_sum = 0.0
+        frontier_exploration_action_loss_steps = 0
+        frontier_exploration_action_count = 0
+        frontier_exploration_pred_action_count = 0
+        frontier_exploration_action_prob_sum = 0.0
         loss_den = 0.0
         chunks = 0
 
@@ -4870,6 +5125,31 @@ def train_recurrent_bc(
                 )
             else:
                 rejected_target_drift_action_id_seq = torch.full_like(
+                    act_seq,
+                    -1,
+                    dtype=torch.long,
+                    device=device,
+                )
+            if "signal_frontier_exploration_action_mask" in ep_data:
+                frontier_exploration_action_mask_seq = torch.tensor(
+                    ep_data["signal_frontier_exploration_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                frontier_exploration_action_mask_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "signal_frontier_exploration_action_id" in ep_data:
+                frontier_exploration_action_id_seq = torch.tensor(
+                    ep_data["signal_frontier_exploration_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                frontier_exploration_action_id_seq = torch.full_like(
                     act_seq,
                     -1,
                     dtype=torch.long,
@@ -5128,6 +5408,46 @@ def train_recurrent_bc(
                                 torch.softmax(logits, dim=-1)
                                 .gather(1, target_action_ids.unsqueeze(1))
                                 .squeeze(1)[target_pursuit_bool]
+                                .sum()
+                                .item()
+                            )
+                    frontier_exploration_action_mask = frontier_exploration_action_mask_seq[t]
+                    frontier_exploration_action_id = frontier_exploration_action_id_seq[t]
+                    frontier_exploration_action_weight = float(
+                        cfg.bc_signal_frontier_exploration_action_weight
+                    )
+                    if frontier_exploration_action_weight > 0.0:
+                        frontier_exploration_loss = _signal_target_match_action_loss(
+                            logits,
+                            frontier_exploration_action_id,
+                            frontier_exploration_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + frontier_exploration_action_weight * frontier_exploration_loss
+                        frontier_exploration_action_loss_sum += float(
+                            frontier_exploration_loss.item()
+                        )
+                        frontier_exploration_action_loss_steps += 1
+                    with torch.no_grad():
+                        frontier_exploration_bool = frontier_exploration_action_mask > 0.0
+                        frontier_exploration_count = int(frontier_exploration_bool.sum().item())
+                        if frontier_exploration_count > 0:
+                            frontier_exploration_action_count += frontier_exploration_count
+                            frontier_action_ids = frontier_exploration_action_id.clamp(
+                                0,
+                                logits.shape[-1] - 1,
+                            )
+                            frontier_exploration_pred_action_count += int(
+                                (logits.argmax(dim=-1) == frontier_action_ids)[
+                                    frontier_exploration_bool
+                                ]
+                                .sum()
+                                .item()
+                            )
+                            frontier_exploration_action_prob_sum += float(
+                                torch.softmax(logits, dim=-1)
+                                .gather(1, frontier_action_ids.unsqueeze(1))
+                                .squeeze(1)[frontier_exploration_bool]
                                 .sum()
                                 .item()
                             )
@@ -5618,6 +5938,17 @@ def train_recurrent_bc(
         target_pursuit_action_loss_mean = (
             target_pursuit_action_loss_sum / max(target_pursuit_action_loss_steps, 1)
         )
+        frontier_exploration_action_den = max(frontier_exploration_action_count, 1)
+        frontier_exploration_pred_action_rate = (
+            frontier_exploration_pred_action_count / frontier_exploration_action_den
+        )
+        frontier_exploration_mean_action_prob = (
+            frontier_exploration_action_prob_sum / frontier_exploration_action_den
+        )
+        frontier_exploration_action_loss_mean = (
+            frontier_exploration_action_loss_sum
+            / max(frontier_exploration_action_loss_steps, 1)
+        )
         sync_response_action_den = max(sync_response_action_count, 1)
         sync_response_pred_action_rate = (
             sync_response_pred_action_count / sync_response_action_den
@@ -5720,6 +6051,7 @@ def train_recurrent_bc(
             f"scan_dec {scan_decision_positive_rate:.3f}/{scan_decision_negative_rate:.3f} | "
             f"scan_gate {scan_gate_positive_rate:.3f}/{scan_gate_negative_rate:.3f} | "
             f"pursuit_act {target_pursuit_pred_action_rate:.3f} | "
+            f"frontier_act {frontier_exploration_pred_action_rate:.3f} | "
             f"sync_act {sync_response_pred_action_rate:.3f} | "
             f"match_act {target_match_pred_action_rate:.3f} | "
             f"valid {target_validity_positive_pred_rate:.3f}/{target_validity_negative_pred_rate:.3f} | "
@@ -5937,6 +6269,24 @@ def train_recurrent_bc(
                     f"{log_prefix}/signal_target_pursuit_action_weight": float(
                         cfg.bc_signal_target_pursuit_action_weight
                     ),
+                    f"{log_prefix}/signal_frontier_exploration_action_count": int(
+                        frontier_exploration_action_count
+                    ),
+                    f"{log_prefix}/signal_frontier_exploration_action_loss": float(
+                        frontier_exploration_action_loss_mean
+                    ),
+                    f"{log_prefix}/signal_frontier_exploration_pred_action_rate": float(
+                        frontier_exploration_pred_action_rate
+                    ),
+                    f"{log_prefix}/signal_frontier_exploration_mean_action_prob": float(
+                        frontier_exploration_mean_action_prob
+                    ),
+                    f"{log_prefix}/signal_frontier_exploration_action_weight": float(
+                        cfg.bc_signal_frontier_exploration_action_weight
+                    ),
+                    f"{log_prefix}/signal_frontier_exploration_min_map_size": int(
+                        cfg.bc_signal_frontier_exploration_min_map_size
+                    ),
                     f"{log_prefix}/signal_sync_response_action_count": int(
                         sync_response_action_count
                     ),
@@ -6084,6 +6434,8 @@ def train_recurrent_bc(
                 model,
                 device,
                 seed_count=bc_eval_seed_count,
+                seed_list=cfg.eval_seed_list,
+                seed_list_field_name="eval_seed_list",
             )
             eval_score = _recurrent_eval_score(eval_result)
             is_best_epoch = best_epoch_score is None or eval_score > best_epoch_score
@@ -6200,9 +6552,9 @@ def collect_recurrent_dagger_episodes(
     oracle_message_rollin_rate = min(1.0, max(0.0, float(cfg.dagger_oracle_message_rollin_rate)))
 
     for ep in range(cfg.dagger_episodes):
-        seed = _dagger_collection_seed(cfg, round_idx, ep)
-        rng = np.random.default_rng(seed + 7919)
         env, episode_cfg = _build_training_env(cfg, round_idx * cfg.dagger_episodes + ep)
+        seed = _dagger_collection_seed(cfg, round_idx, ep, map_size=episode_cfg.map_size)
+        rng = np.random.default_rng(seed + 7919)
         oracle_fn = _make_oracle_policy(env, episode_cfg)
         obs, info = env.reset(seed=seed)
         hidden = model.init_hidden(env.num_agents, device)
@@ -6815,6 +7167,21 @@ def collect_recurrent_dagger_episodes(
             successes += 1
 
     model.train()
+    dagger_seed_map, dagger_seed_list = _parse_eval_seed_schedule(
+        cfg.dagger_seed_list,
+        field_name="dagger_seed_list",
+    )
+    focus_replay_episodes = [ep for ep in episodes if ep.get("source") == "dagger_focus_replay"]
+    failed_parent_replay_episodes = [
+        ep
+        for ep in focus_replay_episodes
+        if ep.get("parent_success") is False
+    ]
+    successful_parent_replay_episodes = [
+        ep
+        for ep in focus_replay_episodes
+        if ep.get("parent_success") is True
+    ]
     summary = {
         "episodes": len(episodes),
         "base_episodes": base_episodes,
@@ -6831,7 +7198,8 @@ def collect_recurrent_dagger_episodes(
         "success_episode_weight": float(cfg.dagger_success_episode_weight),
         "seed_base": int(cfg.dagger_seed_base),
         "seed_stride": int(cfg.dagger_seed_stride),
-        "seed_list": _parse_seed_list(cfg.dagger_seed_list, field_name="dagger_seed_list"),
+        "seed_list": dagger_seed_list,
+        "seed_map": {str(size): seeds for size, seeds in sorted(dagger_seed_map.items())},
         "focus_events": focus_event_counts,
         "non_focus_events": non_focus_event_counts,
         "positive_replay_events": positive_replay_event_counts,
@@ -6856,6 +7224,10 @@ def collect_recurrent_dagger_episodes(
             episodes,
             "signal_target_pursuit_action_mask",
         ),
+        "frontier_exploration_action_labels": _episode_count_label_mask(
+            episodes,
+            "signal_frontier_exploration_action_mask",
+        ),
         "sync_response_action_labels": _episode_count_label_mask(
             episodes,
             "signal_sync_response_action_mask",
@@ -6878,14 +7250,24 @@ def collect_recurrent_dagger_episodes(
         "solo_target_team_weight": float(cfg.dagger_solo_target_team_weight),
         "focus_recovery_weight": float(cfg.dagger_focus_recovery_weight),
         "focus_replay_enabled": bool(cfg.dagger_focus_replay),
+        "max_failed_parent_replay_snippets_per_episode": int(
+            cfg.dagger_max_failed_parent_replay_snippets_per_episode
+        ),
+        "failed_parent_replay_weight_scale": max(0.0, float(cfg.dagger_failed_parent_replay_weight_scale)),
         "map_sizes": _episode_map_size_counts(episodes),
         "map_diagnostics": _episode_map_size_diagnostics(episodes),
         "replay_trigger_events": replay_trigger_counts,
-        "replay_transitions": _episode_count_transitions(
-            [ep for ep in episodes if ep.get("source") == "dagger_focus_replay"]
+        "replay_transitions": _episode_count_transitions(focus_replay_episodes),
+        "replay_effective_transitions": _episode_count_effective_transitions(focus_replay_episodes),
+        "failed_parent_replay_episodes": len(failed_parent_replay_episodes),
+        "failed_parent_replay_transitions": _episode_count_transitions(failed_parent_replay_episodes),
+        "failed_parent_replay_effective_transitions": _episode_count_effective_transitions(
+            failed_parent_replay_episodes
         ),
-        "replay_effective_transitions": _episode_count_effective_transitions(
-            [ep for ep in episodes if ep.get("source") == "dagger_focus_replay"]
+        "successful_parent_replay_episodes": len(successful_parent_replay_episodes),
+        "successful_parent_replay_transitions": _episode_count_transitions(successful_parent_replay_episodes),
+        "successful_parent_replay_effective_transitions": _episode_count_effective_transitions(
+            successful_parent_replay_episodes
         ),
     }
     return episodes, summary
@@ -6917,6 +7299,8 @@ def train_recurrent_bc_dagger(
             initial_model,
             device,
             seed_count=eval_seed_count,
+            seed_list=cfg.eval_seed_list,
+            seed_list_field_name="eval_seed_list",
         )
         best_score = _recurrent_eval_score(initial_eval)
         best_state = copy.deepcopy(initial_model.state_dict())
@@ -6971,6 +7355,8 @@ def train_recurrent_bc_dagger(
             model,
             device,
             seed_count=eval_seed_count,
+            seed_list=cfg.eval_seed_list,
+            seed_list_field_name="eval_seed_list",
         )
         eval_score = _recurrent_eval_score(eval_result)
         is_best = best_score is None or eval_score > best_score
@@ -7078,6 +7464,9 @@ def train_recurrent_bc_dagger(
                         "dagger/collect_target_pursuit_action_labels": int(
                             collect_summary.get("target_pursuit_action_labels", 0)
                         ),
+                        "dagger/collect_frontier_exploration_action_labels": int(
+                            collect_summary.get("frontier_exploration_action_labels", 0)
+                        ),
                         "dagger/collect_sync_response_action_labels": int(
                             collect_summary.get("sync_response_action_labels", 0)
                         ),
@@ -7119,6 +7508,27 @@ def train_recurrent_bc_dagger(
                         },
                         "dagger/collect_recovery_state_updates": int(collect_summary["recovery_state_updates"]),
                         "dagger/collect_replay_episodes": int(collect_summary["replay_episodes"]),
+                        "dagger/collect_failed_parent_replay_episodes": int(
+                            collect_summary.get("failed_parent_replay_episodes", 0)
+                        ),
+                        "dagger/collect_failed_parent_replay_transitions": int(
+                            collect_summary.get("failed_parent_replay_transitions", 0)
+                        ),
+                        "dagger/collect_failed_parent_replay_effective_transitions": float(
+                            collect_summary.get("failed_parent_replay_effective_transitions", 0.0)
+                        ),
+                        "dagger/collect_successful_parent_replay_episodes": int(
+                            collect_summary.get("successful_parent_replay_episodes", 0)
+                        ),
+                        "dagger/collect_successful_parent_replay_effective_transitions": float(
+                            collect_summary.get("successful_parent_replay_effective_transitions", 0.0)
+                        ),
+                        "dagger/collect_max_failed_parent_replay_snippets_per_episode": int(
+                            collect_summary.get("max_failed_parent_replay_snippets_per_episode", -1)
+                        ),
+                        "dagger/collect_failed_parent_replay_weight_scale": float(
+                            collect_summary.get("failed_parent_replay_weight_scale", 1.0)
+                        ),
                         **{
                             f"dagger/collect_positive_replay_event_{event}": int(count)
                             for event, count in sorted((collect_summary.get("positive_replay_events") or {}).items())
@@ -8095,6 +8505,115 @@ def _decode_recurrent_actions(
     return actions, hidden
 
 
+def _comm_tensors_from_actions(
+    actions: dict[int, dict],
+    cfg: RecurrentConfig,
+    device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    num_agents = len(actions)
+    token_limit = max(0, int(cfg.comm_token_limit))
+    vocab_size = max(1, int(cfg.comm_vocab_size))
+    send = torch.zeros((num_agents,), dtype=torch.float32, device=device)
+    tokens = torch.zeros((num_agents, token_limit), dtype=torch.long, device=device)
+    lengths = torch.zeros((num_agents,), dtype=torch.long, device=device)
+    for aid in range(num_agents):
+        raw_tokens = actions.get(aid, actions.get(str(aid), {})).get("message_tokens", [])
+        clipped = [
+            min(vocab_size - 1, max(0, int(token)))
+            for token in list(raw_tokens or [])[:token_limit]
+        ]
+        if clipped:
+            send[aid] = 1.0
+            lengths[aid] = int(len(clipped))
+            tokens[aid, : len(clipped)] = torch.tensor(clipped, dtype=torch.long, device=device)
+    return send, tokens, lengths
+
+
+def _recurrent_comm_logp(
+    send_dist,
+    token_dist,
+    len_dist,
+    send: torch.Tensor,
+    tokens: torch.Tensor,
+    lengths: torch.Tensor,
+    cfg: RecurrentConfig,
+) -> torch.Tensor:
+    token_mask = (
+        torch.arange(cfg.comm_token_limit, device=tokens.device)[None, :] < lengths[:, None]
+    ).float()
+    logp_tokens = (token_dist.log_prob(tokens) * token_mask).sum(dim=-1)
+    logp_len = len_dist.log_prob(lengths)
+    return send_dist.log_prob(send) + (logp_len + logp_tokens) * send
+
+
+def _apply_recurrent_rollout_eval_decoding(
+    cfg: RecurrentConfig,
+    model,
+    obs: dict,
+    logits: torch.Tensor,
+    acts: torch.Tensor,
+    actions: dict[int, dict],
+    hidden,
+    feedback: np.ndarray | None,
+    scan_state: Mapping[str, Any] | None,
+) -> tuple[torch.Tensor, dict[int, dict]]:
+    if not bool(getattr(cfg, "rl_rollout_eval_decoding", False)):
+        return acts, actions
+
+    corrected_acts = _apply_signal_target_scan_decoding(cfg, obs, logits, acts)
+    scan_gate_logits = None
+    if hasattr(model, "signal_scan_gate"):
+        with torch.no_grad():
+            scan_gate_logits = model.signal_scan_gate(hidden[0])
+    corrected_acts = _apply_signal_scan_gate_decoding(cfg, obs, corrected_acts, scan_gate_logits)
+
+    target_decision_logits = None
+    if hasattr(model, "signal_target_decision"):
+        with torch.no_grad():
+            target_decision_logits = model.signal_target_decision(hidden[0])
+    corrected_acts = _apply_signal_target_decision_decoding(
+        cfg,
+        obs,
+        corrected_acts,
+        target_decision_logits,
+    )
+    corrected_acts = _apply_signal_scan_sync_decoding(
+        cfg,
+        obs,
+        corrected_acts,
+        feedback,
+        scan_state=scan_state,
+    )
+    corrected_acts = _apply_signal_scan_refresh_decoding(cfg, obs, corrected_acts, feedback)
+    corrected_acts = _apply_signal_exact_target_navigation_assist(
+        cfg,
+        obs,
+        corrected_acts,
+        scan_state,
+    )
+
+    target_validity_logits = None
+    if hasattr(model, "signal_target_validity"):
+        with torch.no_grad():
+            target_validity_logits = model.signal_target_validity(hidden[0])
+    corrected_acts = _apply_signal_target_validity_decoding(
+        cfg,
+        obs,
+        corrected_acts,
+        target_validity_logits,
+    )
+
+    corrected_actions = {int(aid): dict(action) for aid, action in actions.items()}
+    for aid in range(int(corrected_acts.shape[0])):
+        corrected_actions.setdefault(int(aid), {"message_tokens": []})
+        corrected_actions[int(aid)]["action"] = int(corrected_acts[aid].item())
+        corrected_actions[int(aid)].setdefault("message_tokens", [])
+    if cfg.comm:
+        corrected_actions = _apply_signal_scan_broadcast_assist(cfg, corrected_actions, scan_state)
+        corrected_actions = _apply_signal_exact_target_message_guard(cfg, obs, corrected_actions, scan_state)
+    return corrected_acts, corrected_actions
+
+
 _SIGNAL_EVAL_METRIC_KEYS = (
     "decoy_scans",
     "clues_found",
@@ -8418,6 +8937,49 @@ def _aggregate_recurrent_eval_rows(rows: list[dict]) -> dict:
     return result
 
 
+def _evaluate_recurrent_policy_map_seed_schedule(
+    cfg: RecurrentConfig,
+    model,
+    device,
+    seed_map: dict[int, list[int]],
+    *,
+    field_name: str = "rl_eval_seed_list",
+) -> dict:
+    map_sizes = _eval_map_sizes(cfg)
+    missing_maps = sorted(set(map_sizes) - set(seed_map))
+    if missing_maps:
+        raise ValueError(f"{field_name} missing seed lists for map sizes: {missing_maps}")
+    unknown_maps = sorted(set(seed_map) - set(map_sizes))
+    if unknown_maps:
+        raise ValueError(f"{field_name} contains map sizes not present in eval_map_sizes: {unknown_maps}")
+
+    rows = []
+    for map_size in map_sizes:
+        for seed in seed_map[int(map_size)]:
+            row_cfg = replace(_cfg_for_map_size(cfg, int(map_size)), eval_seed=int(seed))
+            row = _evaluate_recurrent_policy_single_map(row_cfg, model, device)
+            row["map_size"] = int(map_size)
+            row["eval_seed"] = int(seed)
+            rows.append(row)
+
+    result = _aggregate_recurrent_metric_rows(rows)
+    result["eval_seed_count"] = int(sum(len(seeds) for seeds in seed_map.values()))
+    result["eval_seed_lists"] = {
+        str(map_size): [int(seed) for seed in seeds]
+        for map_size, seeds in sorted(seed_map.items())
+    }
+    result["eval_seeds"] = sorted({int(seed) for seeds in seed_map.values() for seed in seeds})
+    result["eval_map_sizes"] = {}
+    for map_size in map_sizes:
+        map_rows = [row for row in rows if int(row["map_size"]) == int(map_size)]
+        map_result = _aggregate_recurrent_metric_rows(map_rows)
+        map_result["map_size"] = int(map_size)
+        map_result["eval_seed_count"] = len(seed_map[int(map_size)])
+        map_result["eval_seeds"] = [int(seed) for seed in seed_map[int(map_size)]]
+        result["eval_map_sizes"][str(map_size)] = map_result
+    return result
+
+
 def evaluate_recurrent_policy(cfg: RecurrentConfig, model, device) -> dict:
     map_sizes = _eval_map_sizes(cfg)
     if len(map_sizes) == 1:
@@ -8440,7 +9002,46 @@ def evaluate_recurrent_policy_multi_seed(
     device,
     *,
     seed_count: int,
+    seed_list: str = "",
+    seed_list_field_name: str = "rl_eval_seed_list",
 ) -> dict:
+    seed_map, explicit_seeds = _parse_eval_seed_schedule(seed_list, field_name=seed_list_field_name)
+    if seed_map:
+        return _evaluate_recurrent_policy_map_seed_schedule(
+            cfg,
+            model,
+            device,
+            seed_map,
+            field_name=seed_list_field_name,
+        )
+    if explicit_seeds:
+        rows = []
+        for seed in explicit_seeds:
+            row = evaluate_recurrent_policy(replace(cfg, eval_seed=int(seed)), model, device)
+            row["eval_seed"] = int(seed)
+            rows.append(row)
+
+        result = _aggregate_recurrent_metric_rows(rows)
+        result["eval_seed_count"] = len(explicit_seeds)
+        result["eval_seeds"] = [int(seed) for seed in explicit_seeds]
+        map_sizes = sorted(
+            {str(size) for row in rows for size in (row.get("eval_map_sizes") or {}).keys()},
+            key=lambda value: int(value) if value.isdigit() else value,
+        )
+        if map_sizes:
+            result["eval_map_sizes"] = {}
+            for map_size in map_sizes:
+                map_rows = [
+                    row["eval_map_sizes"][map_size]
+                    for row in rows
+                    if map_size in (row.get("eval_map_sizes") or {})
+                ]
+                if map_rows:
+                    map_result = _aggregate_recurrent_metric_rows(map_rows)
+                    map_result["map_size"] = int(map_size) if map_size.isdigit() else map_size
+                    result["eval_map_sizes"][map_size] = map_result
+        return result
+
     seed_count = max(1, int(seed_count))
     if seed_count == 1:
         result = evaluate_recurrent_policy(cfg, model, device)
@@ -9003,11 +9604,22 @@ def _collect_recurrent_rl_rollout(
         prev_actions: dict[int, int] = {}
         prev_msg_lens: dict[int, int] = {}
         last_info: dict = {}
+        scan_state = _initial_signal_scan_state(active_cfg)
+        has_policy_step = False
+        prev_positions: dict[int, tuple[int, int]] = {}
         ep_ret, ep_step = 0.0, 0
         ep_comm_tokens = 0
         resets_in_segment = 0
 
         for local_t in range(int(segment["steps"])):
+            has_policy_step = _update_signal_scan_state_from_info(
+                active_cfg,
+                scan_state,
+                last_info,
+                num_agents,
+                prev_positions,
+                has_policy_step=has_policy_step,
+            )
             feedback = _feedback_matrix(
                 active_cfg,
                 num_agents,
@@ -9040,17 +9652,6 @@ def _collect_recurrent_rl_rollout(
                 token_samples = token_dist.sample()
                 len_samples = len_dist.sample()
 
-                token_mask = (
-                    torch.arange(cfg.comm_token_limit, device=device)[None, :] < len_samples[:, None]
-                ).float()
-                logp_tokens = (token_dist.log_prob(token_samples) * token_mask).sum(dim=-1)
-                logp_len = len_dist.log_prob(len_samples)
-                logp = (
-                    action_dist.log_prob(acts)
-                    + send_dist.log_prob(send)
-                    + (logp_len + logp_tokens) * send
-                )
-
                 actions = {}
                 for aid in range(num_agents):
                     if int(send[aid].item()) == 1 and int(len_samples[aid].item()) > 0:
@@ -9061,6 +9662,29 @@ def _collect_recurrent_rl_rollout(
                         "action": int(acts[aid].item()),
                         "message_tokens": [int(token) for token in msg],
                     }
+
+                acts, actions = _apply_recurrent_rollout_eval_decoding(
+                    active_cfg,
+                    model,
+                    obs,
+                    logits,
+                    acts,
+                    actions,
+                    new_hidden,
+                    feedback,
+                    scan_state,
+                )
+                if active_cfg.rl_rollout_eval_decoding:
+                    send, token_samples, len_samples = _comm_tensors_from_actions(actions, active_cfg, device)
+                logp = action_dist.log_prob(acts) + _recurrent_comm_logp(
+                    send_dist,
+                    token_dist,
+                    len_dist,
+                    send,
+                    token_samples,
+                    len_samples,
+                    active_cfg,
+                )
 
                 send_buf.append(send.cpu())
                 token_buf.append(token_samples.cpu())
@@ -9074,9 +9698,21 @@ def _collect_recurrent_rl_rollout(
             else:
                 dist = torch.distributions.Categorical(logits=logits)
                 acts = dist.sample()
-                logp = dist.log_prob(acts)
                 actions = {aid: {"action": int(acts[aid].item()), "message_tokens": []} for aid in range(num_agents)}
+                acts, actions = _apply_recurrent_rollout_eval_decoding(
+                    active_cfg,
+                    model,
+                    obs,
+                    logits,
+                    acts,
+                    actions,
+                    new_hidden,
+                    feedback,
+                    scan_state,
+                )
+                logp = dist.log_prob(acts)
 
+            prev_positions_for_events = _signal_positions_from_obs(obs)
             redundant_target_agents = _redundant_target_scan_agents(env, actions)
             next_obs, rewards, done, truncated, info = env.step(actions)
             next_info = info or {}
@@ -9151,6 +9787,9 @@ def _collect_recurrent_rl_rollout(
                     prev_actions = {}
                     prev_msg_lens = {}
                     last_info = {}
+                    scan_state = _initial_signal_scan_state(active_cfg)
+                    has_policy_step = False
+                    prev_positions = {}
                     ep_ret, ep_step = 0.0, 0
                     ep_comm_tokens = 0
             else:
@@ -9159,6 +9798,7 @@ def _collect_recurrent_rl_rollout(
                 last_info = next_info
                 prev_actions = next_prev_actions
                 prev_msg_lens = next_prev_msg_lens
+                prev_positions = prev_positions_for_events
 
     return {
         "obs_buf": obs_buf,
@@ -9224,12 +9864,16 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
         eval_seed=int(cfg.rl_eval_seed),
     )
     rl_eval_seed_count = max(1, int(cfg.rl_eval_seed_count))
+    rl_eval_seed_list = cfg.rl_eval_seed_list or cfg.eval_seed_list
+    rl_eval_seed_field = "rl_eval_seed_list" if cfg.rl_eval_seed_list else "eval_seed_list"
     best_path = _recurrent_rl_best_path(cfg)
     initial_eval = evaluate_recurrent_policy_multi_seed(
         eval_cfg,
         model,
         device,
         seed_count=rl_eval_seed_count,
+        seed_list=rl_eval_seed_list,
+        seed_list_field_name=rl_eval_seed_field,
     )
     best_eval = {"update": -1, "phase": "initial", **initial_eval}
     final_eval = dict(best_eval)
@@ -9503,6 +10147,7 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
                 "rollout/wrong_target_scan_rate": wrong_target_scan_rate,
                 "rollout/wrong_target_scan_penalty": wrong_target_scan_penalty_sum,
                 "rollout/balanced": int(bool(rollout["balanced"])),
+                "rollout/eval_decoding": int(bool(cfg.rl_rollout_eval_decoding)),
                 "rollout/steps": int(T),
                 "update": update,
             }
@@ -9521,6 +10166,8 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
                 model,
                 device,
                 seed_count=rl_eval_seed_count,
+                seed_list=rl_eval_seed_list,
+                seed_list_field_name=rl_eval_seed_field,
             )
             eval_row = {"update": update, "phase": "ppo", **eval_result}
             eval_score = _recurrent_eval_score(eval_result)
@@ -9654,6 +10301,11 @@ def main():
     p.add_argument("--comm-max-messages", type=int, default=8)
     p.add_argument("--comm-len-cost", type=float, default=0.0)
     p.add_argument("--comm-cost", type=float, default=0.01)
+    p.add_argument(
+        "--skip-bc",
+        action="store_true",
+        help="Skip oracle demo collection and BC/DAgger; requires --recurrent-init and is intended for pure PPO fine-tuning.",
+    )
     p.add_argument("--demo-episodes", type=int, default=200)
     p.add_argument("--bc-epochs", type=int, default=30)
     p.add_argument("--bc-lr", type=float, default=1e-3)
@@ -9738,6 +10390,21 @@ def main():
     p.add_argument("--bc-signal-decoy-drift-action-loss-weight", type=float, default=0.0)
     p.add_argument("--bc-signal-decoy-scan-action-loss-weight", type=float, default=0.0)
     p.add_argument("--bc-signal-rejected-target-drift-action-loss-weight", type=float, default=0.0)
+    p.add_argument(
+        "--bc-signal-frontier-exploration-action-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Opt-in action loss for Signal Hunt agents to move toward exploration-memory "
+            "frontiers when no local clue/target is visible"
+        ),
+    )
+    p.add_argument(
+        "--bc-signal-frontier-exploration-min-map-size",
+        type=int,
+        default=16,
+        help="Minimum Signal Hunt map size for frontier-exploration action labels",
+    )
     p.add_argument("--dagger-rounds", type=int, default=0)
     p.add_argument("--dagger-episodes", type=int, default=20)
     p.add_argument("--dagger-seed-base", type=int, default=10000)
@@ -9747,7 +10414,9 @@ def main():
         default="",
         help=(
             "Optional comma-separated environment reset seeds for DAgger collection; "
-            "when set, episodes cycle through this explicit list"
+            "when set, episodes cycle through this explicit list. For multi-map training, "
+            "use map_size:seed,seed entries separated by ';' or '+', e.g. "
+            "16:3000,13000+32:7000,17000."
         ),
     )
     p.add_argument("--dagger-retrain-from-scratch", action=argparse.BooleanOptionalAction, default=True)
@@ -9822,6 +10491,21 @@ def main():
     )
     p.add_argument("--dagger-max-replay-snippets-per-episode", type=int, default=4)
     p.add_argument(
+        "--dagger-max-failed-parent-replay-snippets-per-episode",
+        type=int,
+        default=-1,
+        help=(
+            "Optional cap for dagger_focus_replay snippets cut from failed parent rollouts; "
+            "negative reuses --dagger-max-replay-snippets-per-episode"
+        ),
+    )
+    p.add_argument(
+        "--dagger-failed-parent-replay-weight-scale",
+        type=float,
+        default=1.0,
+        help="Multiply dagger_focus_replay snippet weights from failed parent rollouts by this nonnegative scale",
+    )
+    p.add_argument(
         "--dagger-expert-max-replay-snippets-per-episode",
         type=int,
         default=-1,
@@ -9869,6 +10553,15 @@ def main():
             "for example 8:64,16:128,32:256"
         ),
     )
+    p.add_argument(
+        "--rl-rollout-eval-decoding",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Apply eval-time recurrent action/message decoder assists during PPO rollout collection. "
+            "This is an opt-in guided fine-tuning mode."
+        ),
+    )
     p.add_argument("--rl-redundant-target-scan-penalty", type=float, default=0.0)
     p.add_argument("--rl-wrong-target-scan-penalty", type=float, default=0.0)
     p.add_argument("--rl-epochs", type=int, default=2)
@@ -9885,6 +10578,14 @@ def main():
     p.add_argument("--rl-eval-episodes", type=int, default=20)
     p.add_argument("--rl-eval-seed", type=int, default=10000)
     p.add_argument("--rl-eval-seed-count", type=int, default=1)
+    p.add_argument(
+        "--rl-eval-seed-list",
+        default="",
+        help=(
+            "Optional PPO eval seed schedule. Use comma-separated seeds globally, or "
+            "map_size:seed,seed entries separated by ';' or '+', such as 16:3000,13000+32:7000,17000."
+        ),
+    )
     p.add_argument("--rl-restore-best", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--rl-save-best", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--rl-best-save", default=None)
@@ -9915,6 +10616,14 @@ def main():
     p.add_argument("--eval-episodes", type=int, default=100)
     p.add_argument("--eval-seed", type=int, default=3000)
     p.add_argument("--eval-seed-count", type=int, default=1)
+    p.add_argument(
+        "--eval-seed-list",
+        default="",
+        help=(
+            "Optional recurrent eval seed schedule. Use comma-separated seeds globally, or "
+            "map_size:seed,seed entries separated by ';' or '+', such as 16:3000,13000+32:7000,17000."
+        ),
+    )
     p.add_argument("--eval-map-sizes", default="")
     p.add_argument("--eval-send-threshold", type=float, default=0.25)
     p.add_argument(
@@ -10058,6 +10767,7 @@ def main():
         comm_max_messages=args.comm_max_messages,
         comm_len_cost=args.comm_len_cost,
         comm_cost=args.comm_cost,
+        skip_bc=args.skip_bc,
         demo_episodes=args.demo_episodes,
         bc_epochs=args.bc_epochs,
         bc_lr=args.bc_lr,
@@ -10113,6 +10823,12 @@ def main():
         bc_signal_rejected_target_drift_action_loss_weight=(
             args.bc_signal_rejected_target_drift_action_loss_weight
         ),
+        bc_signal_frontier_exploration_action_weight=(
+            args.bc_signal_frontier_exploration_action_weight
+        ),
+        bc_signal_frontier_exploration_min_map_size=(
+            args.bc_signal_frontier_exploration_min_map_size
+        ),
         dagger_rounds=args.dagger_rounds,
         dagger_episodes=args.dagger_episodes,
         dagger_seed_base=args.dagger_seed_base,
@@ -10148,6 +10864,10 @@ def main():
         dagger_replay_balance_negative_events=args.dagger_replay_balance_negative_events,
         dagger_replay_max_negative_per_positive=args.dagger_replay_max_negative_per_positive,
         dagger_max_replay_snippets_per_episode=args.dagger_max_replay_snippets_per_episode,
+        dagger_max_failed_parent_replay_snippets_per_episode=(
+            args.dagger_max_failed_parent_replay_snippets_per_episode
+        ),
+        dagger_failed_parent_replay_weight_scale=args.dagger_failed_parent_replay_weight_scale,
         dagger_expert_max_replay_snippets_per_episode=args.dagger_expert_max_replay_snippets_per_episode,
         dagger_solo_target_team_success_only=args.dagger_solo_target_team_success_only,
         dagger_positive_target_pursuit_min_map_size=args.dagger_positive_target_pursuit_min_map_size,
@@ -10158,6 +10878,7 @@ def main():
         rollout_steps=args.rollout_steps,
         rl_balanced_rollouts=args.rl_balanced_rollouts,
         rl_rollout_map_steps=args.rl_rollout_map_steps,
+        rl_rollout_eval_decoding=args.rl_rollout_eval_decoding,
         rl_redundant_target_scan_penalty=args.rl_redundant_target_scan_penalty,
         rl_wrong_target_scan_penalty=args.rl_wrong_target_scan_penalty,
         rl_epochs=args.rl_epochs,
@@ -10174,6 +10895,7 @@ def main():
         rl_eval_episodes=args.rl_eval_episodes,
         rl_eval_seed=args.rl_eval_seed,
         rl_eval_seed_count=args.rl_eval_seed_count,
+        rl_eval_seed_list=args.rl_eval_seed_list,
         rl_restore_best=args.rl_restore_best,
         rl_save_best=args.rl_save_best,
         rl_best_save=args.rl_best_save,
@@ -10186,6 +10908,7 @@ def main():
         eval_episodes=args.eval_episodes,
         eval_seed=args.eval_seed,
         eval_seed_count=args.eval_seed_count,
+        eval_seed_list=args.eval_seed_list,
         eval_map_sizes=args.eval_map_sizes,
         eval_send_threshold=args.eval_send_threshold,
         eval_signal_target_scan_threshold=args.eval_signal_target_scan_threshold,
@@ -10226,6 +10949,8 @@ def main():
             model,
             device,
             seed_count=max(1, int(cfg.eval_seed_count)),
+            seed_list=cfg.eval_seed_list,
+            seed_list_field_name="eval_seed_list",
         )
         print(json.dumps({"eval_recurrent_init": eval_result}, indent=2, sort_keys=True))
         if wandb_run is not None:
@@ -10240,7 +10965,7 @@ def main():
                 ),
                 context="init eval log",
             )
-    if not cfg.recurrent_init or cfg.recurrent_init_for_dagger:
+    if _should_run_recurrent_bc_stage(cfg):
         step_prefix = "Step 3" if cfg.recurrent_init else "Step 1"
         print(f"=== {step_prefix}: Collecting oracle demos ===")
         episodes = collect_episode_demos(cfg)
@@ -10278,6 +11003,12 @@ def main():
                         _episode_count_label_mask(
                             episodes,
                             "signal_target_pursuit_action_mask",
+                        )
+                    ),
+                    "demo/frontier_exploration_action_labels": int(
+                        _episode_count_label_mask(
+                            episodes,
+                            "signal_frontier_exploration_action_mask",
                         )
                     ),
                     "demo/sync_response_action_labels": int(
@@ -10333,6 +11064,8 @@ def main():
                 model,
                 device,
                 seed_count=max(1, int(cfg.eval_seed_count)),
+                seed_list=cfg.eval_seed_list,
+                seed_list_field_name="eval_seed_list",
             )
             print(json.dumps({"eval_recurrent_bc": eval_result}, indent=2, sort_keys=True))
             if wandb_run is not None:
@@ -10347,6 +11080,8 @@ def main():
                     ),
                     context="bc eval log",
                 )
+    elif cfg.skip_bc:
+        print("=== Step 3: Skipping oracle demos and recurrent BC/DAgger ===")
 
     if cfg.save and cfg.rl_updates <= 0:
         os.makedirs(os.path.dirname(cfg.save) or ".", exist_ok=True)

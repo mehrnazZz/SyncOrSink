@@ -469,12 +469,30 @@ def _safe_wandb_log(wandb_run, payload: dict):
         wandb_run.log(payload)
         return wandb_run
     except Exception as exc:
+        scalar_payload = _wandb_scalar_payload(payload)
+        if scalar_payload and len(scalar_payload) < len(payload):
+            try:
+                wandb_run.log(scalar_payload)
+                print(f"wandb log skipped non-scalar values after error: {exc}")
+                return wandb_run
+            except Exception as scalar_exc:
+                print(f"wandb scalar retry failed: {scalar_exc}")
         print(f"wandb log failed, disabling wandb for this run: {exc}")
         try:
             wandb_run.finish()
         except Exception:
             pass
         return None
+
+
+def _wandb_scalar_payload(payload: dict) -> dict:
+    scalar_payload = {}
+    for key, value in payload.items():
+        if isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, (bool, int, float, str)):
+            scalar_payload[key] = value
+    return scalar_payload
 
 
 # ---------------------------------------------------------------------------
@@ -729,7 +747,6 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
         comm_total_steps = 0
         comm_len_sum = 0.0
         comm_len_count = 0
-        comm_len_samples = []
         comm_token_entropy_sum = 0.0
 
         obs, _ = env.reset(seed=update)
@@ -799,7 +816,6 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
                 if int(send.sum().item()) > 0:
                     comm_len_sum += float(len_samples[send.bool()].sum().item())
                     comm_len_count += int(send.sum().item())
-                    comm_len_samples.extend(len_samples[send.bool()].tolist())
                 comm_token_entropy_sum += float(token_dist.entropy().mean().item())
             else:
                 logits = actor_out
@@ -1059,12 +1075,6 @@ def train_mappo(cfg: MAPPOConfig, wandb_run=None, finish_wandb: bool = True):
             }
             for i in range(8):
                 log_payload[f"rollout/action_hist_{i}"] = int(action_hist[i])
-            if comm_len_samples:
-                try:
-                    import wandb
-                    log_payload["rollout/comm_len_hist"] = wandb.Histogram(comm_len_samples)
-                except Exception:
-                    pass
             wandb_run = _safe_wandb_log(wandb_run, log_payload)
 
         # ---- Periodic evaluation ----

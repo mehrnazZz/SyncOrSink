@@ -108,6 +108,8 @@ class RecurrentCurriculumConfig:
     bc_signal_decoy_drift_action_loss_weight: float = 0.25
     bc_signal_decoy_scan_action_loss_weight: float = 0.1
     bc_signal_rejected_target_drift_action_loss_weight: float = 0.0
+    bc_signal_frontier_exploration_action_weight: float = 0.0
+    bc_signal_frontier_exploration_min_map_size: int = 16
 
     dagger_rounds: int = 1
     dagger_episodes: int = 16
@@ -143,6 +145,8 @@ class RecurrentCurriculumConfig:
     dagger_replay_post_steps: int = 2
     dagger_replay_weight: float = 1.0
     dagger_max_replay_snippets_per_episode: int = 4
+    dagger_max_failed_parent_replay_snippets_per_episode: int = -1
+    dagger_failed_parent_replay_weight_scale: float = 1.0
     dagger_expert_max_replay_snippets_per_episode: int = -1
 
     eval_episodes: int = 12
@@ -488,6 +492,12 @@ def _stage_recurrent_config(
         bc_signal_rejected_target_drift_action_loss_weight=(
             cfg.bc_signal_rejected_target_drift_action_loss_weight
         ),
+        bc_signal_frontier_exploration_action_weight=(
+            cfg.bc_signal_frontier_exploration_action_weight
+        ),
+        bc_signal_frontier_exploration_min_map_size=(
+            cfg.bc_signal_frontier_exploration_min_map_size
+        ),
         dagger_rounds=cfg.dagger_rounds,
         dagger_episodes=cfg.dagger_episodes,
         dagger_seed_base=cfg.dagger_seed_base,
@@ -524,6 +534,10 @@ def _stage_recurrent_config(
         dagger_replay_post_steps=cfg.dagger_replay_post_steps,
         dagger_replay_weight=cfg.dagger_replay_weight,
         dagger_max_replay_snippets_per_episode=cfg.dagger_max_replay_snippets_per_episode,
+        dagger_max_failed_parent_replay_snippets_per_episode=(
+            cfg.dagger_max_failed_parent_replay_snippets_per_episode
+        ),
+        dagger_failed_parent_replay_weight_scale=cfg.dagger_failed_parent_replay_weight_scale,
         dagger_expert_max_replay_snippets_per_episode=cfg.dagger_expert_max_replay_snippets_per_episode,
         rl_updates=0,
         eval_episodes=cfg.eval_episodes,
@@ -680,6 +694,8 @@ def main() -> None:
     parser.add_argument("--bc-signal-decoy-drift-action-loss-weight", type=float, default=0.25)
     parser.add_argument("--bc-signal-decoy-scan-action-loss-weight", type=float, default=0.1)
     parser.add_argument("--bc-signal-rejected-target-drift-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-signal-frontier-exploration-action-weight", type=float, default=0.0)
+    parser.add_argument("--bc-signal-frontier-exploration-min-map-size", type=int, default=16)
     parser.add_argument("--dagger-rounds", type=int, default=1)
     parser.add_argument("--dagger-episodes", type=int, default=16)
     parser.add_argument("--dagger-seed-base", type=int, default=10000)
@@ -718,6 +734,8 @@ def main() -> None:
     parser.add_argument("--dagger-replay-post-steps", type=int, default=2)
     parser.add_argument("--dagger-replay-weight", type=float, default=1.0)
     parser.add_argument("--dagger-max-replay-snippets-per-episode", type=int, default=4)
+    parser.add_argument("--dagger-max-failed-parent-replay-snippets-per-episode", type=int, default=-1)
+    parser.add_argument("--dagger-failed-parent-replay-weight-scale", type=float, default=1.0)
     parser.add_argument("--dagger-expert-max-replay-snippets-per-episode", type=int, default=-1)
     parser.add_argument("--eval-episodes", type=int, default=12)
     parser.add_argument("--eval-seed-count", type=int, default=2)
@@ -807,6 +825,12 @@ def main() -> None:
         bc_signal_decoy_drift_action_loss_weight=args.bc_signal_decoy_drift_action_loss_weight,
         bc_signal_decoy_scan_action_loss_weight=args.bc_signal_decoy_scan_action_loss_weight,
         bc_signal_rejected_target_drift_action_loss_weight=args.bc_signal_rejected_target_drift_action_loss_weight,
+        bc_signal_frontier_exploration_action_weight=(
+            args.bc_signal_frontier_exploration_action_weight
+        ),
+        bc_signal_frontier_exploration_min_map_size=(
+            args.bc_signal_frontier_exploration_min_map_size
+        ),
         dagger_rounds=args.dagger_rounds,
         dagger_episodes=args.dagger_episodes,
         dagger_seed_base=args.dagger_seed_base,
@@ -838,6 +862,10 @@ def main() -> None:
         dagger_replay_post_steps=args.dagger_replay_post_steps,
         dagger_replay_weight=args.dagger_replay_weight,
         dagger_max_replay_snippets_per_episode=args.dagger_max_replay_snippets_per_episode,
+        dagger_max_failed_parent_replay_snippets_per_episode=(
+            args.dagger_max_failed_parent_replay_snippets_per_episode
+        ),
+        dagger_failed_parent_replay_weight_scale=args.dagger_failed_parent_replay_weight_scale,
         dagger_expert_max_replay_snippets_per_episode=args.dagger_expert_max_replay_snippets_per_episode,
         eval_episodes=args.eval_episodes,
         eval_seed_count=args.eval_seed_count,
