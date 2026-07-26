@@ -148,6 +148,97 @@ def test_core_training_sweep_comm_curriculum_profile_adds_training_aids(tmp_path
     assert "--eval-action-mode" not in commands[("tarmac", "signal_hunt")]
 
 
+def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path):
+    from examples.core_training_sweep import _parse_eval_metrics, parse_args, run_suite
+
+    args = parse_args([
+        "--algorithms",
+        "recurrent_bc_rl",
+        "--scenarios",
+        "signal_hunt",
+        "--updates",
+        "7",
+        "--rollout-steps",
+        "16",
+        "--eval-every",
+        "2",
+        "--eval-episodes",
+        "3",
+        "--seeds",
+        "0",
+        "--learning-profile",
+        "comm_curriculum",
+        "--recurrent-demo-episodes",
+        "4",
+        "--recurrent-bc-epochs",
+        "2",
+        "--recurrent-dagger-rounds",
+        "1",
+        "--recurrent-dagger-episodes",
+        "5",
+        "--recurrent-rl-updates",
+        "0",
+        "--recurrent-train-map-sizes",
+        "8,16",
+        "--recurrent-map-max-steps",
+        "8:60,16:120",
+        "--recurrent-eval-map-sizes",
+        "8,16",
+        "--recurrent-eval-seed-list",
+        "8:3000+16:13000",
+        "--recurrent-dagger-seed-list",
+        "8:3000+16:13000",
+        "--recurrent-init",
+        "logs/recurrent_curriculum/example.pt",
+        "--recurrent-init-for-dagger",
+        "--recurrent-calibrate-send-threshold",
+        "--output-dir",
+        str(tmp_path / "runs"),
+        "--run-name",
+        "recurrent",
+        "--dry-run",
+    ])
+
+    payload = run_suite(args)
+    command = payload["runs"][0]["command"]
+
+    assert payload["overall"] == {"complete": 0, "dry_run": 1, "failed": 0, "total": 1}
+    assert payload["config"]["recurrent_oracle"] == "signal_hint_comm"
+    assert payload["config"]["recurrent_signal_preset"] == "specialist"
+    assert "--updates" not in command
+    assert "--epochs" not in command
+    assert "--save-every" not in command
+    assert "--rl-updates" in command
+    assert command[command.index("--rl-updates") + 1] == "0"
+    assert "--demo-episodes" in command
+    assert command[command.index("--demo-episodes") + 1] == "4"
+    assert "--dagger-rounds" in command
+    assert command[command.index("--dagger-rounds") + 1] == "1"
+    assert "--train-map-sizes" in command
+    assert "--eval-map-sizes" in command
+    assert "--eval-seed-list" in command
+    assert "--dagger-seed-list" in command
+    assert "--recurrent-init" in command
+    assert "--recurrent-init-for-dagger" in command
+    assert "--bc-calibrate-send-threshold" in command
+    assert "--obs-exploration-memory" in command
+    assert "--obs-signal-scan-state" in command
+    assert "--eval-signal-exact-target-navigation-assist" in command
+    assert "--signal-shaping" in command
+    assert "--comm-send-target" not in command
+
+    stdout = tmp_path / "stdout.log"
+    stdout.write_text(
+        'noise\n{"eval_recurrent_bc": {"success_rate": 0.5, "avg_return": 1.25, "avg_steps": 42.0}}\n',
+        encoding="utf-8",
+    )
+    assert _parse_eval_metrics("recurrent_bc_rl", stdout, [], checkpoint_path=None) == {
+        "success_rate": 0.5,
+        "return": 1.25,
+        "steps": 42.0,
+    }
+
+
 def test_core_training_sweep_parses_wandb_failures(tmp_path):
     from examples.core_training_sweep import _parse_wandb_record
 

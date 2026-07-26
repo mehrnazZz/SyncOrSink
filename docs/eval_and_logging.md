@@ -245,6 +245,13 @@ exploration-memory, and eval-decoding controls through `--mappo-*` flags. Use
 `--mappo-obs-exploration-memory` for Signal Hunt memory baselines and record
 send-gate choices with `--mappo-eval-send-mode` / `--mappo-eval-send-threshold`.
 
+The sweep also supports `--algorithms recurrent_bc_rl` for the recurrent
+BC/DAgger/PPO trainer. Recurrent runs use `--recurrent-*` flags for oracle,
+demo count, BC epochs, DAgger rounds, checkpoint init, train/eval map schedules,
+and Signal Hunt specialist observation/eval assists. Recurrent JSON eval output
+and saved checkpoint eval metadata are normalized into the same aggregate
+`success_rate`, `return`, and `steps` fields as MAPPO/Comm-MAT/TarMAC.
+
 `examples/train_eval_workbench.py` is the single-run MAPPO checkpoint
 round-trip smoke. It exposes the MAPPO trainer's communication send-rate
 curriculum knobs, observation-memory flags, backbone choice, and final eval
