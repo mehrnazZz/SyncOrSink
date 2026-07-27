@@ -4689,6 +4689,49 @@ def test_recurrent_bc_event_action_weights_latest_event_agents():
     assert disabled_counts == {}
 
 
+def test_recurrent_dagger_failed_effective_ratio_cap_scales_failed_rollouts():
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_dagger_failed_effective_ratio_cap,
+        _episode_count_effective_transitions,
+    )
+
+    expert = {
+        "source": "expert",
+        "success": True,
+        "weight": 1.0,
+        "obs": np.zeros((2, 2, 1), dtype=np.float32),
+        "step_weights": np.ones((2, 2), dtype=np.float32),
+    }
+    failed = {
+        "source": "dagger",
+        "success": False,
+        "weight": 0.25,
+        "obs": np.zeros((10, 2, 1), dtype=np.float32),
+        "step_weights": np.ones((10, 2), dtype=np.float32),
+    }
+    episodes = [expert, failed]
+
+    row = _apply_dagger_failed_effective_ratio_cap(
+        episodes,
+        RecurrentConfig(dagger_failed_effective_ratio_cap=0.25),
+    )
+    disabled = _apply_dagger_failed_effective_ratio_cap(
+        [dict(expert), dict(failed)],
+        RecurrentConfig(dagger_failed_effective_ratio_cap=-1.0),
+    )
+
+    assert row["applied"] is True
+    assert row["reference_effective_transitions"] == pytest.approx(4.0)
+    assert row["failed_dagger_effective_transitions_before"] == pytest.approx(5.0)
+    assert row["failed_dagger_effective_transitions_after"] == pytest.approx(1.0)
+    assert row["scale"] == pytest.approx(0.2)
+    assert failed["weight"] == pytest.approx(0.05)
+    assert _episode_count_effective_transitions(episodes) == pytest.approx(5.0)
+    assert disabled["enabled"] is False
+    assert disabled["applied"] is False
+
+
 def test_recurrent_comm_length_loss_ignores_no_message_examples():
     from syncorsink.train.recurrent_bc_rl import (
         _mix_oracle_rollin_messages,

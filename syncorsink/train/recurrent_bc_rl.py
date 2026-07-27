@@ -170,6 +170,7 @@ class RecurrentConfig:
     dagger_max_steps_per_episode: int = 0
     dagger_success_episode_weight: float = 1.0
     dagger_failed_episode_weight: float = 0.25
+    dagger_failed_effective_ratio_cap: float = -1.0
     dagger_focus_events: str = (
         "decoy_scan,solo_target_scan,rejected_target_scan,"
         "bad_redundant_target_scan,target_interact_miss,target_pursuit_miss,"
@@ -3305,6 +3306,49 @@ def _episode_count_effective_transitions(episodes) -> float:
         else:
             total += ep["obs"].shape[0] * ep["obs"].shape[1] * episode_weight
     return float(total)
+
+
+def _is_failed_dagger_episode(ep: dict) -> bool:
+    return str(ep.get("source", "")) == "dagger" and not bool(ep.get("success", False))
+
+
+def _apply_dagger_failed_effective_ratio_cap(
+    episodes: list[dict],
+    cfg: RecurrentConfig,
+) -> dict:
+    cap = float(getattr(cfg, "dagger_failed_effective_ratio_cap", -1.0))
+    failed_episodes = [ep for ep in episodes if _is_failed_dagger_episode(ep)]
+    failed_ids = {id(ep) for ep in failed_episodes}
+    reference_episodes = [ep for ep in episodes if id(ep) not in failed_ids]
+    reference_effective = _episode_count_effective_transitions(reference_episodes)
+    failed_effective_before = _episode_count_effective_transitions(failed_episodes)
+    row = {
+        "enabled": bool(cap >= 0.0),
+        "cap": cap,
+        "reference_effective_transitions": float(reference_effective),
+        "failed_dagger_effective_transitions_before": float(failed_effective_before),
+        "failed_dagger_effective_transitions_after": float(failed_effective_before),
+        "failed_dagger_episodes": int(len(failed_episodes)),
+        "scale": 1.0,
+        "applied": False,
+    }
+    if cap < 0.0 or not failed_episodes or failed_effective_before <= 0.0:
+        return row
+
+    max_failed_effective = max(0.0, cap) * max(0.0, reference_effective)
+    if failed_effective_before <= max_failed_effective + 1e-8:
+        return row
+
+    scale = max_failed_effective / failed_effective_before if failed_effective_before > 0.0 else 0.0
+    for ep in failed_episodes:
+        ep["weight"] = _episode_training_weight(ep) * scale
+    failed_effective_after = _episode_count_effective_transitions(failed_episodes)
+    row.update({
+        "failed_dagger_effective_transitions_after": float(failed_effective_after),
+        "scale": float(scale),
+        "applied": True,
+    })
+    return row
 
 
 def _episode_source_counts(episodes) -> dict[str, int]:
@@ -7488,6 +7532,11 @@ def train_recurrent_bc_dagger(
         print(json.dumps({"recurrent_dagger_initial": best_row}, indent=2, sort_keys=True))
 
     for round_idx in range(cfg.dagger_rounds + 1):
+        dataset_balance = _apply_dagger_failed_effective_ratio_cap(all_episodes, cfg)
+        if dataset_balance.get("enabled") and (
+            dataset_balance.get("applied") or dataset_balance.get("failed_dagger_episodes", 0)
+        ):
+            print(json.dumps({"dagger_dataset_balance": dataset_balance}, indent=2, sort_keys=True))
         print(
             f"\n=== Recurrent DAgger round {round_idx} | "
             f"episodes {len(all_episodes)} | transitions {_episode_count_transitions(all_episodes)} | "
@@ -7513,6 +7562,11 @@ def train_recurrent_bc_dagger(
                     "dagger/dataset_episodes": int(len(all_episodes)),
                     "dagger/dataset_transitions": int(_episode_count_transitions(all_episodes)),
                     "dagger/dataset_effective_transitions": float(_episode_count_effective_transitions(all_episodes)),
+                    "dagger/dataset_failed_effective_ratio_cap": float(dataset_balance.get("cap", -1.0)),
+                    "dagger/dataset_failed_dagger_effective_after": float(
+                        dataset_balance.get("failed_dagger_effective_transitions_after", 0.0)
+                    ),
+                    "dagger/dataset_failed_dagger_scale": float(dataset_balance.get("scale", 1.0)),
                 },
             )
         eval_result = evaluate_recurrent_policy_multi_seed(
@@ -7533,6 +7587,7 @@ def train_recurrent_bc_dagger(
             "dataset_sources": _episode_source_counts(all_episodes),
             "dataset_map_sizes": _episode_map_size_counts(all_episodes),
             "dataset_map_diagnostics": _episode_map_size_diagnostics(all_episodes),
+            "dataset_balance": dataset_balance,
             "retrain_from_scratch": start_model is None,
             "started_from_recurrent_init": starts_from_initial_model,
             "eval": eval_result,
@@ -7568,6 +7623,15 @@ def train_recurrent_bc_dagger(
                     "dagger/dataset_episodes": int(len(all_episodes)),
                     "dagger/dataset_transitions": int(_episode_count_transitions(all_episodes)),
                     "dagger/dataset_effective_transitions": float(_episode_count_effective_transitions(all_episodes)),
+                    "dagger/dataset_failed_effective_ratio_cap": float(dataset_balance.get("cap", -1.0)),
+                    "dagger/dataset_failed_dagger_effective_before": float(
+                        dataset_balance.get("failed_dagger_effective_transitions_before", 0.0)
+                    ),
+                    "dagger/dataset_failed_dagger_effective_after": float(
+                        dataset_balance.get("failed_dagger_effective_transitions_after", 0.0)
+                    ),
+                    "dagger/dataset_failed_dagger_scale": float(dataset_balance.get("scale", 1.0)),
+                    "dagger/dataset_failed_dagger_cap_applied": int(bool(dataset_balance.get("applied", False))),
                     **_map_diagnostics_wandb_payload(
                         "dagger/dataset",
                         _episode_map_size_diagnostics(all_episodes),
@@ -10651,6 +10715,15 @@ def main():
     p.add_argument("--dagger-success-episode-weight", type=float, default=1.0)
     p.add_argument("--dagger-failed-episode-weight", type=float, default=0.25)
     p.add_argument(
+        "--dagger-failed-effective-ratio-cap",
+        type=float,
+        default=-1.0,
+        help=(
+            "If nonnegative, cap failed DAgger effective transitions to this multiple of "
+            "the non-failed dataset before each BC retrain"
+        ),
+    )
+    p.add_argument(
         "--dagger-focus-events",
         default=(
             "decoy_scan,solo_target_scan,rejected_target_scan,"
@@ -11069,6 +11142,7 @@ def main():
         dagger_max_steps_per_episode=args.dagger_max_steps_per_episode,
         dagger_success_episode_weight=args.dagger_success_episode_weight,
         dagger_failed_episode_weight=args.dagger_failed_episode_weight,
+        dagger_failed_effective_ratio_cap=args.dagger_failed_effective_ratio_cap,
         dagger_focus_events=args.dagger_focus_events,
         dagger_focus_error_weight=args.dagger_focus_error_weight,
         dagger_focus_recovery_weight=args.dagger_focus_recovery_weight,

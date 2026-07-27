@@ -290,6 +290,8 @@ def _build_recurrent_command(
         str(args.recurrent_dagger_rounds),
         "--dagger-episodes",
         str(args.recurrent_dagger_episodes),
+        "--dagger-failed-effective-ratio-cap",
+        str(args.recurrent_dagger_failed_effective_ratio_cap),
         "--rl-updates",
         str(rl_updates),
         "--rollout-steps",
@@ -560,6 +562,7 @@ def run_suite(args) -> dict:
             "recurrent_bc_comm_send_rate_target": args.recurrent_bc_comm_send_rate_target,
             "recurrent_dagger_rounds": args.recurrent_dagger_rounds,
             "recurrent_dagger_episodes": args.recurrent_dagger_episodes,
+            "recurrent_dagger_failed_effective_ratio_cap": args.recurrent_dagger_failed_effective_ratio_cap,
             "recurrent_rl_updates": args.recurrent_rl_updates,
             "recurrent_ppo_profile": args.recurrent_ppo_profile,
             "recurrent_rl_epochs": args.recurrent_rl_epochs,
@@ -1098,6 +1101,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-bc-comm-send-rate-target", type=float, default=-1.0)
     parser.add_argument("--recurrent-dagger-rounds", type=int, default=0)
     parser.add_argument("--recurrent-dagger-episodes", type=int, default=20)
+    parser.add_argument("--recurrent-dagger-failed-effective-ratio-cap", type=float, default=0.25)
     parser.add_argument(
         "--recurrent-rl-updates",
         type=int,
