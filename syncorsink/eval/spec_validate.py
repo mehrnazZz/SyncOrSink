@@ -25,6 +25,11 @@ SCHEMA: Dict[str, Any] = {
         "fov_preset": {"type": "string"},
         "comm_mode": {"type": "string"},
         "track": {"type": "string", "enum": ["dtde", "ctde"]},
+        "pipeline_stage_count": {"type": ["integer", "null"], "minimum": 1},
+        "pipeline_required_per_stage_min": {"type": "integer", "minimum": 1},
+        "pipeline_required_per_stage_max": {"type": "integer", "minimum": 1},
+        "pipeline_sync_probability": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "pipeline_dependency_probability": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         "energy_preset": {"type": "string"},
         "energy_private_monitor": {"type": "boolean"},
         "policy_checkpoint": {"type": ["string", "null"]},
@@ -68,6 +73,18 @@ def _manual_validate(data: Dict[str, Any]) -> None:
         raise ValueError("spec.comm_mode must be 'tokens' or 'text'")
     if "track" in data and data["track"] not in ("dtde", "ctde"):
         raise ValueError("spec.track must be 'dtde' or 'ctde'")
+    if (
+        "pipeline_stage_count" in data
+        and data["pipeline_stage_count"] is not None
+        and (not isinstance(data["pipeline_stage_count"], int) or data["pipeline_stage_count"] <= 0)
+    ):
+        raise ValueError("spec.pipeline_stage_count must be null or int > 0")
+    for key in ("pipeline_required_per_stage_min", "pipeline_required_per_stage_max"):
+        if key in data and (not isinstance(data[key], int) or data[key] <= 0):
+            raise ValueError(f"spec.{key} must be int > 0")
+    for key in ("pipeline_sync_probability", "pipeline_dependency_probability"):
+        if key in data and (not isinstance(data[key], (int, float)) or not 0.0 <= float(data[key]) <= 1.0):
+            raise ValueError(f"spec.{key} must be a number in [0, 1]")
     if "energy_private_monitor" in data and not isinstance(data["energy_private_monitor"], bool):
         raise ValueError("spec.energy_private_monitor must be boolean")
     if "policy_entrypoint" in data and data["policy_entrypoint"] is not None and not isinstance(data["policy_entrypoint"], str):

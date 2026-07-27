@@ -514,6 +514,11 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         bc_signal_target_decision_neg_weight=1.75,
         bc_signal_frontier_exploration_action_weight=0.65,
         bc_signal_frontier_exploration_min_map_size=12,
+        pipeline_stage_count=2,
+        pipeline_required_per_stage_min=1,
+        pipeline_required_per_stage_max=1,
+        pipeline_sync_probability=0.0,
+        pipeline_dependency_probability=0.25,
         eval_signal_target_validity_threshold=0.55,
         eval_signal_target_decision_threshold=0.6,
         eval_signal_target_decision_suppress=False,
@@ -526,6 +531,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         dagger_focus_error_weight=4.0,
         dagger_focus_recovery_weight=2.5,
         dagger_focus_window=3,
+        dagger_oracle_action_rollin_rate=0.35,
         dagger_seed_base=3000,
         dagger_seed_stride=17,
         dagger_seed_list="3002,3003,3020",
@@ -562,6 +568,11 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["bc_signal_target_decision_loss_weight"] == pytest.approx(0.4)
     assert result["config"]["bc_signal_frontier_exploration_action_weight"] == pytest.approx(0.65)
     assert result["config"]["bc_signal_frontier_exploration_min_map_size"] == 12
+    assert result["config"]["pipeline_stage_count"] == 2
+    assert result["config"]["pipeline_required_per_stage_min"] == 1
+    assert result["config"]["pipeline_required_per_stage_max"] == 1
+    assert result["config"]["pipeline_sync_probability"] == pytest.approx(0.0)
+    assert result["config"]["pipeline_dependency_probability"] == pytest.approx(0.25)
     assert result["config"]["eval_signal_target_validity_threshold"] == pytest.approx(0.55)
     assert result["config"]["eval_signal_target_decision_threshold"] == pytest.approx(0.6)
     assert result["config"]["eval_signal_target_decision_suppress"] is False
@@ -584,6 +595,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["dagger_focus_error_weight"] == pytest.approx(4.0)
     assert result["config"]["dagger_focus_recovery_weight"] == pytest.approx(2.5)
     assert result["config"]["dagger_focus_window"] == 3
+    assert result["config"]["dagger_oracle_action_rollin_rate"] == pytest.approx(0.35)
     assert result["config"]["dagger_seed_base"] == 3000
     assert result["config"]["dagger_seed_stride"] == 17
     assert result["config"]["dagger_seed_list"] == "3002,3003,3020"
@@ -618,6 +630,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         has_initial_model=False,
     )
     assert stage_cfg.obs_signal_negative_memory is True
+    assert stage_cfg.dagger_oracle_action_rollin_rate == pytest.approx(0.35)
     assert stage_cfg.train_map_sampling_weights == "8:1,16:3"
     assert stage_cfg.obs_exploration_age is True
     assert stage_cfg.obs_signal_negative_memory_window == 12
@@ -644,6 +657,11 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.bc_signal_target_decision_neg_weight == pytest.approx(1.75)
     assert stage_cfg.bc_signal_frontier_exploration_action_weight == pytest.approx(0.65)
     assert stage_cfg.bc_signal_frontier_exploration_min_map_size == 12
+    assert stage_cfg.pipeline_stage_count == 2
+    assert stage_cfg.pipeline_required_per_stage_min == 1
+    assert stage_cfg.pipeline_required_per_stage_max == 1
+    assert stage_cfg.pipeline_sync_probability == pytest.approx(0.0)
+    assert stage_cfg.pipeline_dependency_probability == pytest.approx(0.25)
     assert stage_cfg.eval_signal_target_validity_threshold == pytest.approx(0.55)
     assert stage_cfg.eval_signal_target_decision_threshold == pytest.approx(0.6)
     assert stage_cfg.eval_signal_target_decision_suppress is False
@@ -918,6 +936,9 @@ def test_recurrent_dagger_caps_and_weights_failed_rollouts():
     assert summary["oracle_message_rollin_steps"] == 0
     assert summary["oracle_message_rollin_agents"] == 0
     assert summary["oracle_message_rollin_tokens"] == 0
+    assert summary["oracle_action_rollin_rate"] == 0.0
+    assert summary["oracle_action_rollin_steps"] == 0
+    assert summary["oracle_action_rollin_agents"] == 0
     assert summary["seed_base"] == 10000
     assert summary["seed_stride"] == 1000
     assert summary["seed_list"] == []
@@ -4734,6 +4755,7 @@ def test_recurrent_dagger_failed_effective_ratio_cap_scales_failed_rollouts():
 
 def test_recurrent_comm_length_loss_ignores_no_message_examples():
     from syncorsink.train.recurrent_bc_rl import (
+        _mix_oracle_rollin_actions,
         _mix_oracle_rollin_messages,
         _recurrent_comm_loss,
         _recurrent_comm_loss_components,
@@ -4769,6 +4791,25 @@ def test_recurrent_comm_length_loss_ignores_no_message_examples():
     assert unchanged[1]["message_tokens"] == []
     assert replaced_agents == 0
     assert replaced_tokens == 0
+
+    action_mixed, action_replaced_agents = _mix_oracle_rollin_actions(
+        model_actions,
+        oracle_actions,
+        1.0,
+        np.random.default_rng(0),
+    )
+    assert {aid: action["action"] for aid, action in action_mixed.items()} == {0: 3, 1: 4}
+    assert action_mixed[0]["message_tokens"] == [1, 2]
+    assert action_mixed[1]["message_tokens"] == []
+    assert action_replaced_agents == 2
+    action_unchanged, action_replaced_agents = _mix_oracle_rollin_actions(
+        model_actions,
+        oracle_actions,
+        0.0,
+        np.random.default_rng(0),
+    )
+    assert {aid: action["action"] for aid, action in action_unchanged.items()} == {0: 1, 1: 2}
+    assert action_replaced_agents == 0
 
     send_logits = torch.zeros((2, 1), requires_grad=True)
     token_logits = torch.zeros((2, 4, 8), requires_grad=True)

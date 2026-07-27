@@ -45,6 +45,20 @@ class ScenarioBase:
 class PipelineAssembly(ScenarioBase):
     name = "pipeline_assembly"
 
+    @staticmethod
+    def _clamped_probability(value: float, default: float) -> float:
+        try:
+            probability = float(value)
+        except (TypeError, ValueError):
+            probability = float(default)
+        return min(1.0, max(0.0, probability))
+
+    @staticmethod
+    def _required_bounds(config) -> tuple[int, int]:
+        min_required = max(1, int(getattr(config, "pipeline_required_per_stage_min", 1)))
+        max_required = max(min_required, int(getattr(config, "pipeline_required_per_stage_max", 2)))
+        return min_required, max_required
+
     def build_map(self, size: int, rng: np.random.Generator, config) -> tuple[np.ndarray, dict]:
         station_count = max(3, min(5, size // 6))
         resource_count = station_count * 3
@@ -95,22 +109,51 @@ class PipelineAssembly(ScenarioBase):
     def reset(self, env) -> ScenarioState:
         rng = env.rng
         stations = env.meta["stations"]
-        stage_count = max(4, min(7, len(stations) + 2))
+        configured_stage_count = getattr(env.config, "pipeline_stage_count", None)
+        if configured_stage_count is None:
+            stage_count = max(4, min(7, len(stations) + 2))
+        else:
+            stage_count = max(1, int(configured_stage_count))
         resource_type_count = 4
+        min_required, max_required_config = self._required_bounds(env.config)
+        sync_probability = self._clamped_probability(
+            getattr(env.config, "pipeline_sync_probability", 0.5),
+            0.5,
+        )
+        dependency_probability = self._clamped_probability(
+            getattr(env.config, "pipeline_dependency_probability", 0.7),
+            0.7,
+        )
+        legacy_default_distribution = (
+            configured_stage_count is None
+            and min_required == 1
+            and max_required_config == 2
+            and float(sync_probability) == 0.5
+            and float(dependency_probability) == 0.7
+        )
 
         # ensure total required resources do not exceed available resources
         resource_types = {pos: (idx % resource_type_count) + 1 for idx, pos in enumerate(env.meta["resources"])}
         resource_pool = list(resource_types.values())
         if resource_pool:
-            stage_count = min(stage_count, max(1, len(resource_pool) // 2))
+            resource_stage_budget = 2 if legacy_default_distribution else max_required_config
+            stage_count = min(stage_count, max(1, len(resource_pool) // resource_stage_budget))
 
         stages = []
         for stage_id in range(stage_count):
             station = stations[stage_id % len(stations)]
-            # reserve at least 1 resource per remaining stage
-            remaining_stages = stage_count - stage_id
-            max_req = max(1, len(resource_pool) - (remaining_stages - 1))
-            req_count = int(rng.integers(1, min(2, max_req) + 1))
+            if legacy_default_distribution:
+                # Preserve historical benchmark seed streams for the default Pipeline distribution.
+                remaining_stages = stage_count - stage_id
+                max_req = max(1, len(resource_pool) - (remaining_stages - 1))
+                req_count = int(rng.integers(1, min(2, max_req) + 1))
+            else:
+                remaining_stages = stage_count - stage_id
+                remaining_min_budget = (remaining_stages - 1) * min_required
+                available_for_stage = max(min_required, len(resource_pool) - remaining_min_budget)
+                max_req = min(max_required_config, available_for_stage)
+                max_req = max(min_required, max_req)
+                req_count = int(rng.integers(min_required, max_req + 1))
             required = []
             for _ in range(req_count):
                 if resource_pool:
@@ -118,7 +161,10 @@ class PipelineAssembly(ScenarioBase):
                     required.append(resource_pool.pop(idx))
                 else:
                     required.append(int(rng.integers(1, resource_type_count + 1)))
-            sync_required = bool(rng.integers(0, 2))
+            if legacy_default_distribution:
+                sync_required = bool(rng.integers(0, 2))
+            else:
+                sync_required = bool(rng.random() < sync_probability)
             stages.append(
                 {
                     "stage": stage_id,
@@ -133,7 +179,7 @@ class PipelineAssembly(ScenarioBase):
 
         # DAG dependencies (only backward edges)
         for stage in stages[1:]:
-            if rng.random() < 0.7:
+            if rng.random() < dependency_probability:
                 dep = int(rng.integers(0, stage["stage"]))
                 stage["deps"].append(dep)
 

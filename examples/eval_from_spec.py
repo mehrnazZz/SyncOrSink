@@ -134,6 +134,11 @@ def main():
         fov_preset=spec.fov_preset,
         max_steps=spec.max_steps,
         comm_mode=spec.comm_mode,
+        pipeline_stage_count=spec.pipeline_stage_count,
+        pipeline_required_per_stage_min=spec.pipeline_required_per_stage_min,
+        pipeline_required_per_stage_max=spec.pipeline_required_per_stage_max,
+        pipeline_sync_probability=spec.pipeline_sync_probability,
+        pipeline_dependency_probability=spec.pipeline_dependency_probability,
         energy_preset=spec.energy_preset,
         energy_private_monitor=spec.energy_private_monitor,
     )

@@ -198,6 +198,11 @@ def test_eval_spec_loads_extended_benchmark_fields(tmp_path):
         "fov_preset": "easy",
         "comm_mode": "tokens",
         "track": "ctde",
+        "pipeline_stage_count": 2,
+        "pipeline_required_per_stage_min": 1,
+        "pipeline_required_per_stage_max": 1,
+        "pipeline_sync_probability": 0.0,
+        "pipeline_dependency_probability": 0.25,
         "energy_preset": "easy",
         "energy_private_monitor": True,
         "policy": "comm_mat",
@@ -214,6 +219,11 @@ def test_eval_spec_loads_extended_benchmark_fields(tmp_path):
     assert spec.map_size == 12
     assert spec.max_steps == 90
     assert spec.track == "ctde"
+    assert spec.pipeline_stage_count == 2
+    assert spec.pipeline_required_per_stage_min == 1
+    assert spec.pipeline_required_per_stage_max == 1
+    assert spec.pipeline_sync_probability == 0.0
+    assert spec.pipeline_dependency_probability == 0.25
     assert spec.energy_preset == "easy"
     assert spec.energy_private_monitor is True
     assert spec.policy_entrypoint == "my_package.agent:build_policy"

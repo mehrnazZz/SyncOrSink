@@ -48,6 +48,11 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.add_argument("--pipeline-shaping", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--pipeline-shaping-scale", type=float, default=0.01)
+    parser.add_argument("--pipeline-stage-count", type=int, default=None)
+    parser.add_argument("--pipeline-required-per-stage-min", type=int, default=1)
+    parser.add_argument("--pipeline-required-per-stage-max", type=int, default=2)
+    parser.add_argument("--pipeline-sync-probability", type=float, default=0.5)
+    parser.add_argument("--pipeline-dependency-probability", type=float, default=0.7)
     parser.add_argument("--energy-shaping", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--energy-shaping-scale", type=float, default=0.01)
     parser.add_argument("--signal-shaping", action=argparse.BooleanOptionalAction, default=True)
@@ -160,6 +165,11 @@ def main(argv: list[str] | None = None) -> int:
         comm_len_cost=args.comm_len_cost,
         pipeline_shaping=args.pipeline_shaping,
         pipeline_shaping_scale=args.pipeline_shaping_scale,
+        pipeline_stage_count=args.pipeline_stage_count,
+        pipeline_required_per_stage_min=args.pipeline_required_per_stage_min,
+        pipeline_required_per_stage_max=args.pipeline_required_per_stage_max,
+        pipeline_sync_probability=args.pipeline_sync_probability,
+        pipeline_dependency_probability=args.pipeline_dependency_probability,
         energy_shaping=args.energy_shaping,
         energy_shaping_scale=args.energy_shaping_scale,
         signal_shaping=args.signal_shaping,

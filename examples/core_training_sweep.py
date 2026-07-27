@@ -280,6 +280,14 @@ def _build_recurrent_command(
         str(args.recurrent_bc_event_action_weight),
         "--bc-event-action-events",
         args.recurrent_bc_event_action_events,
+        "--pipeline-required-per-stage-min",
+        str(args.recurrent_pipeline_required_per_stage_min),
+        "--pipeline-required-per-stage-max",
+        str(args.recurrent_pipeline_required_per_stage_max),
+        "--pipeline-sync-probability",
+        str(args.recurrent_pipeline_sync_probability),
+        "--pipeline-dependency-probability",
+        str(args.recurrent_pipeline_dependency_probability),
         "--bc-comm-send-rate-penalty-weight",
         str(args.recurrent_bc_comm_send_rate_penalty_weight),
         "--bc-comm-send-rate-target",
@@ -292,6 +300,10 @@ def _build_recurrent_command(
         str(args.recurrent_dagger_episodes),
         "--dagger-failed-effective-ratio-cap",
         str(args.recurrent_dagger_failed_effective_ratio_cap),
+        "--dagger-oracle-action-rollin-rate",
+        str(args.recurrent_dagger_oracle_action_rollin_rate),
+        "--dagger-oracle-message-rollin-rate",
+        str(args.recurrent_dagger_oracle_message_rollin_rate),
         "--rl-updates",
         str(rl_updates),
         "--rollout-steps",
@@ -345,6 +357,8 @@ def _build_recurrent_command(
         cmd.append("--bc-action-class-balance")
     if args.recurrent_bc_calibrate_send_threshold:
         cmd.append("--bc-calibrate-send-threshold")
+    if args.recurrent_pipeline_stage_count is not None:
+        cmd.extend(["--pipeline-stage-count", str(args.recurrent_pipeline_stage_count)])
     if args.recurrent_train_map_sizes:
         cmd.extend(["--train-map-sizes", args.recurrent_train_map_sizes])
     if args.recurrent_train_map_sampling_weights:
@@ -556,6 +570,11 @@ def run_suite(args) -> dict:
             "recurrent_bc_action_class_balance_max_weight": args.recurrent_bc_action_class_balance_max_weight,
             "recurrent_bc_event_action_weight": args.recurrent_bc_event_action_weight,
             "recurrent_bc_event_action_events": args.recurrent_bc_event_action_events,
+            "recurrent_pipeline_stage_count": args.recurrent_pipeline_stage_count,
+            "recurrent_pipeline_required_per_stage_min": args.recurrent_pipeline_required_per_stage_min,
+            "recurrent_pipeline_required_per_stage_max": args.recurrent_pipeline_required_per_stage_max,
+            "recurrent_pipeline_sync_probability": args.recurrent_pipeline_sync_probability,
+            "recurrent_pipeline_dependency_probability": args.recurrent_pipeline_dependency_probability,
             "recurrent_bc_calibrate_send_threshold": args.recurrent_bc_calibrate_send_threshold,
             "recurrent_bc_send_threshold_target_rate": args.recurrent_bc_send_threshold_target_rate,
             "recurrent_bc_comm_send_rate_penalty_weight": args.recurrent_bc_comm_send_rate_penalty_weight,
@@ -563,6 +582,8 @@ def run_suite(args) -> dict:
             "recurrent_dagger_rounds": args.recurrent_dagger_rounds,
             "recurrent_dagger_episodes": args.recurrent_dagger_episodes,
             "recurrent_dagger_failed_effective_ratio_cap": args.recurrent_dagger_failed_effective_ratio_cap,
+            "recurrent_dagger_oracle_action_rollin_rate": args.recurrent_dagger_oracle_action_rollin_rate,
+            "recurrent_dagger_oracle_message_rollin_rate": args.recurrent_dagger_oracle_message_rollin_rate,
             "recurrent_rl_updates": args.recurrent_rl_updates,
             "recurrent_ppo_profile": args.recurrent_ppo_profile,
             "recurrent_rl_epochs": args.recurrent_rl_epochs,
@@ -1091,6 +1112,11 @@ def parse_args(argv: list[str] | None = None):
         "--recurrent-bc-event-action-events",
         default="delivered,sync_complete,recharged,joint_target_scan",
     )
+    parser.add_argument("--recurrent-pipeline-stage-count", type=int, default=None)
+    parser.add_argument("--recurrent-pipeline-required-per-stage-min", type=int, default=1)
+    parser.add_argument("--recurrent-pipeline-required-per-stage-max", type=int, default=2)
+    parser.add_argument("--recurrent-pipeline-sync-probability", type=float, default=0.5)
+    parser.add_argument("--recurrent-pipeline-dependency-probability", type=float, default=0.7)
     parser.add_argument(
         "--recurrent-bc-calibrate-send-threshold",
         action=argparse.BooleanOptionalAction,
@@ -1102,6 +1128,8 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-dagger-rounds", type=int, default=0)
     parser.add_argument("--recurrent-dagger-episodes", type=int, default=20)
     parser.add_argument("--recurrent-dagger-failed-effective-ratio-cap", type=float, default=0.25)
+    parser.add_argument("--recurrent-dagger-oracle-action-rollin-rate", type=float, default=0.25)
+    parser.add_argument("--recurrent-dagger-oracle-message-rollin-rate", type=float, default=0.0)
     parser.add_argument(
         "--recurrent-rl-updates",
         type=int,

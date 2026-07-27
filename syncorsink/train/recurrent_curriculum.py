@@ -64,6 +64,11 @@ class RecurrentCurriculumConfig:
     comm_max_messages: int = 8
     comm_cost: float = 0.01
     comm_len_cost: float = 0.0
+    pipeline_stage_count: int | None = None
+    pipeline_required_per_stage_min: int = 1
+    pipeline_required_per_stage_max: int = 2
+    pipeline_sync_probability: float = 0.5
+    pipeline_dependency_probability: float = 0.7
 
     hidden_dim: int = 128
     demo_episodes: int = 60
@@ -123,6 +128,7 @@ class RecurrentCurriculumConfig:
     dagger_focus_window: int = 1
     dagger_focus_replay: bool = True
     dagger_oracle_message_rollin_rate: float = 0.0
+    dagger_oracle_action_rollin_rate: float = 0.0
     dagger_target_scan_broadcast_labels: bool = False
     dagger_redundant_target_wait_labels: bool = False
     dagger_target_discovery_min_map_size: int = 16
@@ -446,6 +452,11 @@ def _stage_recurrent_config(
         comm_max_messages=cfg.comm_max_messages,
         comm_cost=cfg.comm_cost,
         comm_len_cost=cfg.comm_len_cost,
+        pipeline_stage_count=cfg.pipeline_stage_count,
+        pipeline_required_per_stage_min=cfg.pipeline_required_per_stage_min,
+        pipeline_required_per_stage_max=cfg.pipeline_required_per_stage_max,
+        pipeline_sync_probability=cfg.pipeline_sync_probability,
+        pipeline_dependency_probability=cfg.pipeline_dependency_probability,
         demo_episodes=cfg.demo_episodes,
         bc_epochs=cfg.bc_epochs,
         bc_lr=cfg.bc_lr,
@@ -512,6 +523,7 @@ def _stage_recurrent_config(
         dagger_focus_window=cfg.dagger_focus_window,
         dagger_focus_replay=cfg.dagger_focus_replay,
         dagger_oracle_message_rollin_rate=cfg.dagger_oracle_message_rollin_rate,
+        dagger_oracle_action_rollin_rate=cfg.dagger_oracle_action_rollin_rate,
         dagger_target_scan_broadcast_labels=cfg.dagger_target_scan_broadcast_labels,
         dagger_redundant_target_wait_labels=cfg.dagger_redundant_target_wait_labels,
         dagger_target_discovery_min_map_size=cfg.dagger_target_discovery_min_map_size,
@@ -696,6 +708,11 @@ def main() -> None:
     parser.add_argument("--bc-signal-rejected-target-drift-action-loss-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-frontier-exploration-action-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-frontier-exploration-min-map-size", type=int, default=16)
+    parser.add_argument("--pipeline-stage-count", type=int, default=None)
+    parser.add_argument("--pipeline-required-per-stage-min", type=int, default=1)
+    parser.add_argument("--pipeline-required-per-stage-max", type=int, default=2)
+    parser.add_argument("--pipeline-sync-probability", type=float, default=0.5)
+    parser.add_argument("--pipeline-dependency-probability", type=float, default=0.7)
     parser.add_argument("--dagger-rounds", type=int, default=1)
     parser.add_argument("--dagger-episodes", type=int, default=16)
     parser.add_argument("--dagger-seed-base", type=int, default=10000)
@@ -712,6 +729,7 @@ def main() -> None:
     parser.add_argument("--dagger-focus-recovery-weight", type=float, default=2.0)
     parser.add_argument("--dagger-focus-window", type=int, default=1)
     parser.add_argument("--dagger-oracle-message-rollin-rate", type=float, default=0.0)
+    parser.add_argument("--dagger-oracle-action-rollin-rate", type=float, default=0.0)
     parser.add_argument("--dagger-target-scan-broadcast-labels", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--dagger-redundant-target-wait-labels", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--dagger-target-discovery-min-map-size", type=int, default=16)
@@ -831,6 +849,11 @@ def main() -> None:
         bc_signal_frontier_exploration_min_map_size=(
             args.bc_signal_frontier_exploration_min_map_size
         ),
+        pipeline_stage_count=args.pipeline_stage_count,
+        pipeline_required_per_stage_min=args.pipeline_required_per_stage_min,
+        pipeline_required_per_stage_max=args.pipeline_required_per_stage_max,
+        pipeline_sync_probability=args.pipeline_sync_probability,
+        pipeline_dependency_probability=args.pipeline_dependency_probability,
         dagger_rounds=args.dagger_rounds,
         dagger_episodes=args.dagger_episodes,
         dagger_seed_base=args.dagger_seed_base,
@@ -840,6 +863,7 @@ def main() -> None:
         dagger_focus_recovery_weight=args.dagger_focus_recovery_weight,
         dagger_focus_window=args.dagger_focus_window,
         dagger_oracle_message_rollin_rate=args.dagger_oracle_message_rollin_rate,
+        dagger_oracle_action_rollin_rate=args.dagger_oracle_action_rollin_rate,
         dagger_target_scan_broadcast_labels=args.dagger_target_scan_broadcast_labels,
         dagger_redundant_target_wait_labels=args.dagger_redundant_target_wait_labels,
         dagger_target_discovery_min_map_size=args.dagger_target_discovery_min_map_size,

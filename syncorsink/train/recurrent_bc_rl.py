@@ -84,6 +84,11 @@ class RecurrentConfig:
     # shaping
     pipeline_shaping: bool = True
     pipeline_shaping_scale: float = 0.1
+    pipeline_stage_count: int | None = None
+    pipeline_required_per_stage_min: int = 1
+    pipeline_required_per_stage_max: int = 2
+    pipeline_sync_probability: float = 0.5
+    pipeline_dependency_probability: float = 0.7
     energy_shaping: bool = False
     energy_shaping_scale: float = 0.01
     signal_shaping: bool = False
@@ -210,6 +215,7 @@ class RecurrentConfig:
     dagger_redundant_target_wait_labels: bool = False
     dagger_target_scan_broadcast_labels: bool = False
     dagger_oracle_message_rollin_rate: float = 0.0
+    dagger_oracle_action_rollin_rate: float = 0.0
     # RL
     rl_updates: int = 3000
     rollout_steps: int = 256
@@ -280,6 +286,11 @@ def _build_env(cfg: RecurrentConfig):
         energy_preset=cfg.energy_preset,
         pipeline_shaping=cfg.pipeline_shaping,
         pipeline_shaping_scale=cfg.pipeline_shaping_scale,
+        pipeline_stage_count=cfg.pipeline_stage_count,
+        pipeline_required_per_stage_min=cfg.pipeline_required_per_stage_min,
+        pipeline_required_per_stage_max=cfg.pipeline_required_per_stage_max,
+        pipeline_sync_probability=cfg.pipeline_sync_probability,
+        pipeline_dependency_probability=cfg.pipeline_dependency_probability,
         energy_shaping=cfg.energy_shaping,
         energy_shaping_scale=cfg.energy_shaping_scale,
         signal_decoy_count=cfg.signal_decoy_count,
@@ -1664,6 +1675,27 @@ def _mix_oracle_rollin_messages(
             replaced_tokens += len(oracle_tokens)
         mixed[aid_int] = action
     return mixed, replaced_agents, replaced_tokens
+
+
+def _mix_oracle_rollin_actions(
+    model_actions: dict[int, dict],
+    oracle_actions: dict[int, dict],
+    rate: float,
+    rng: np.random.Generator,
+) -> tuple[dict[int, dict], int]:
+    rate = min(1.0, max(0.0, float(rate)))
+    mixed: dict[int, dict] = {}
+    replaced_agents = 0
+    for aid, model_action in model_actions.items():
+        aid_int = int(aid)
+        action = dict(model_action)
+        if rate > 0.0 and float(rng.random()) < rate:
+            oracle_action = oracle_actions.get(aid_int, oracle_actions.get(aid, {}))
+            if oracle_action:
+                action["action"] = int(oracle_action.get("action", action.get("action", 0)))
+                replaced_agents += 1
+        mixed[aid_int] = action
+    return mixed, replaced_agents
 
 
 def _signal_target_interact_agents(env: SyncOrSinkEnv, actions: dict[int, dict]) -> list[int]:
@@ -6747,6 +6779,9 @@ def collect_recurrent_dagger_episodes(
     positive_replay_events = _dagger_positive_replay_events(cfg)
     positive_replay_event_counts: dict[str, int] = {}
     oracle_message_rollin_rate = min(1.0, max(0.0, float(cfg.dagger_oracle_message_rollin_rate)))
+    oracle_action_rollin_rate = min(1.0, max(0.0, float(cfg.dagger_oracle_action_rollin_rate)))
+    oracle_action_rollin_steps = 0
+    oracle_action_rollin_agents = 0
 
     for ep in range(cfg.dagger_episodes):
         env, episode_cfg = _build_training_env(cfg, round_idx * cfg.dagger_episodes + ep)
@@ -7251,8 +7286,17 @@ def collect_recurrent_dagger_episodes(
                         recovery_remaining[aid],
                         int(cfg.dagger_focus_window),
                     )
-            rollout_actions, replaced_agents, replaced_tokens = _mix_oracle_rollin_messages(
+            rollout_actions, replaced_action_agents = _mix_oracle_rollin_actions(
                 model_actions,
+                oracle_actions,
+                oracle_action_rollin_rate,
+                rng,
+            )
+            if replaced_action_agents > 0:
+                oracle_action_rollin_steps += 1
+                oracle_action_rollin_agents += int(replaced_action_agents)
+            rollout_actions, replaced_agents, replaced_tokens = _mix_oracle_rollin_messages(
+                rollout_actions,
                 oracle_actions,
                 oracle_message_rollin_rate,
                 rng,
@@ -7448,6 +7492,9 @@ def collect_recurrent_dagger_episodes(
         "oracle_message_rollin_steps": int(oracle_message_rollin_steps),
         "oracle_message_rollin_agents": int(oracle_message_rollin_agents),
         "oracle_message_rollin_tokens": int(oracle_message_rollin_tokens),
+        "oracle_action_rollin_rate": float(oracle_action_rollin_rate),
+        "oracle_action_rollin_steps": int(oracle_action_rollin_steps),
+        "oracle_action_rollin_agents": int(oracle_action_rollin_agents),
         "event_action_labels": int(event_action_labels),
         "event_action_label_events": event_action_label_counts,
         "event_action_weight": float(cfg.bc_event_action_weight),
@@ -7728,6 +7775,15 @@ def train_recurrent_bc_dagger(
                         ),
                         "dagger/collect_oracle_message_rollin_tokens": int(
                             collect_summary.get("oracle_message_rollin_tokens", 0)
+                        ),
+                        "dagger/collect_oracle_action_rollin_rate": float(
+                            collect_summary.get("oracle_action_rollin_rate", 0.0)
+                        ),
+                        "dagger/collect_oracle_action_rollin_steps": int(
+                            collect_summary.get("oracle_action_rollin_steps", 0)
+                        ),
+                        "dagger/collect_oracle_action_rollin_agents": int(
+                            collect_summary.get("oracle_action_rollin_agents", 0)
                         ),
                         "dagger/collect_event_action_labels": int(
                             collect_summary.get("event_action_labels", 0)
@@ -10560,6 +10616,11 @@ def main():
     p.add_argument("--obs-signal-target-match-features", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--pipeline-shaping", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--pipeline-shaping-scale", type=float, default=0.1)
+    p.add_argument("--pipeline-stage-count", type=int, default=None)
+    p.add_argument("--pipeline-required-per-stage-min", type=int, default=1)
+    p.add_argument("--pipeline-required-per-stage-max", type=int, default=2)
+    p.add_argument("--pipeline-sync-probability", type=float, default=0.5)
+    p.add_argument("--pipeline-dependency-probability", type=float, default=0.7)
     p.add_argument("--energy-shaping", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--energy-shaping-scale", type=float, default=0.01)
     p.add_argument("--signal-shaping", action=argparse.BooleanOptionalAction, default=False)
@@ -10842,6 +10903,15 @@ def main():
             "per-agent probability while keeping model physical actions"
         ),
     )
+    p.add_argument(
+        "--dagger-oracle-action-rollin-rate",
+        type=float,
+        default=0.0,
+        help=(
+            "During DAgger collection, execute the oracle physical action at this "
+            "per-agent probability while still labeling every visited state with oracle actions"
+        ),
+    )
     p.add_argument("--rl-updates", type=int, default=3000)
     p.add_argument("--rollout-steps", type=int, default=256)
     p.add_argument("--rl-balanced-rollouts", action=argparse.BooleanOptionalAction, default=False)
@@ -11048,6 +11118,11 @@ def main():
         obs_signal_target_match_features=args.obs_signal_target_match_features,
         pipeline_shaping=args.pipeline_shaping,
         pipeline_shaping_scale=args.pipeline_shaping_scale,
+        pipeline_stage_count=args.pipeline_stage_count,
+        pipeline_required_per_stage_min=args.pipeline_required_per_stage_min,
+        pipeline_required_per_stage_max=args.pipeline_required_per_stage_max,
+        pipeline_sync_probability=args.pipeline_sync_probability,
+        pipeline_dependency_probability=args.pipeline_dependency_probability,
         energy_shaping=args.energy_shaping,
         energy_shaping_scale=args.energy_shaping_scale,
         signal_shaping=args.signal_shaping,
@@ -11179,6 +11254,7 @@ def main():
         dagger_redundant_target_wait_labels=args.dagger_redundant_target_wait_labels,
         dagger_target_scan_broadcast_labels=args.dagger_target_scan_broadcast_labels,
         dagger_oracle_message_rollin_rate=args.dagger_oracle_message_rollin_rate,
+        dagger_oracle_action_rollin_rate=args.dagger_oracle_action_rollin_rate,
         rl_updates=args.rl_updates,
         rollout_steps=args.rollout_steps,
         rl_balanced_rollouts=args.rl_balanced_rollouts,

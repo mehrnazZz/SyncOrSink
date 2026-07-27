@@ -231,6 +231,15 @@ def main():
             max_steps=int(spec.get("max_steps", 300)),
             comm_mode=spec.get("comm_mode", "tokens"),
             track=spec.get("track", "dtde"),
+            pipeline_stage_count=(
+                None
+                if spec.get("pipeline_stage_count") is None
+                else int(spec.get("pipeline_stage_count"))
+            ),
+            pipeline_required_per_stage_min=int(spec.get("pipeline_required_per_stage_min", 1)),
+            pipeline_required_per_stage_max=int(spec.get("pipeline_required_per_stage_max", 2)),
+            pipeline_sync_probability=float(spec.get("pipeline_sync_probability", 0.5)),
+            pipeline_dependency_probability=float(spec.get("pipeline_dependency_probability", 0.7)),
             energy_preset=spec.get("energy_preset", "hard"),
             energy_private_monitor=bool(spec.get("energy_private_monitor", True)),
         )

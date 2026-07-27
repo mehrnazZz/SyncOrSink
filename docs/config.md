@@ -20,6 +20,11 @@ All configuration options are defined in `syncorsink/envs/base.py` under `SyncOr
 | `signal_decoy_count` | int? | `None` | Override decoy target count in Signal Hunt. |
 | `decoy_penalty` | float | `0.5` | Penalty multiplier for decoy scan. |
 | `scan_window` | int | `3` | Steps window for joint scan. |
+| `pipeline_stage_count` | int? | `None` | Exact Pipeline Assembly stage count; `None` keeps the default size-derived hard distribution. |
+| `pipeline_required_per_stage_min` | int | `1` | Minimum resources required by each Pipeline stage. |
+| `pipeline_required_per_stage_max` | int | `2` | Maximum resources required by each Pipeline stage. |
+| `pipeline_sync_probability` | float | `0.5` | Probability that a Pipeline stage requires synchronized interaction by at least two agents. |
+| `pipeline_dependency_probability` | float | `0.7` | Probability that a Pipeline stage depends on an earlier stage. |
 | `energy_preset` | str | `"hard"` | Energy Grid difficulty preset: `easy` or `hard`. |
 | `energy_private_monitor` | bool | `True` | If true, each Energy Grid node's energy is visible only to its assigned monitor; use `False` only for the legacy symmetric-information ablation. |
 | `map_seed` | int? | `None` | Fixed map seed. |

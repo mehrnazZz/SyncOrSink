@@ -110,6 +110,11 @@ def main():
         ],
     )
     parser.add_argument("--bc-ckpt", default=None, help="Path to BC model checkpoint")
+    parser.add_argument("--pipeline-stage-count", type=int, default=None)
+    parser.add_argument("--pipeline-required-per-stage-min", type=int, default=1)
+    parser.add_argument("--pipeline-required-per-stage-max", type=int, default=2)
+    parser.add_argument("--pipeline-sync-probability", type=float, default=0.5)
+    parser.add_argument("--pipeline-dependency-probability", type=float, default=0.7)
     parser.add_argument("--energy-preset", default="hard", choices=["easy", "hard"])
     parser.add_argument("--energy-private-monitor", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--wandb", action="store_true")
@@ -140,6 +145,11 @@ def main():
         split=args.split,
         map_variant=args.variant,
         track="ctde" if "oracle" in args.policy else "dtde",
+        pipeline_stage_count=args.pipeline_stage_count,
+        pipeline_required_per_stage_min=args.pipeline_required_per_stage_min,
+        pipeline_required_per_stage_max=args.pipeline_required_per_stage_max,
+        pipeline_sync_probability=args.pipeline_sync_probability,
+        pipeline_dependency_probability=args.pipeline_dependency_probability,
         energy_preset=args.energy_preset,
         energy_private_monitor=args.energy_private_monitor,
         render_split_view=args.render_split_view,
@@ -313,8 +323,13 @@ def main():
             "episodes": args.episodes,
             "split": args.split,
             "variant": args.variant,
-            "policy": args.policy,
-            "record_video": args.record_video,
+                "policy": args.policy,
+                "pipeline_stage_count": args.pipeline_stage_count,
+                "pipeline_required_per_stage_min": args.pipeline_required_per_stage_min,
+                "pipeline_required_per_stage_max": args.pipeline_required_per_stage_max,
+                "pipeline_sync_probability": args.pipeline_sync_probability,
+                "pipeline_dependency_probability": args.pipeline_dependency_probability,
+                "record_video": args.record_video,
             "render_split_view": args.render_split_view,
             "render_god_view": args.render_god_view,
             "render_style": args.render_style,

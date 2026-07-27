@@ -23,6 +23,11 @@ class EvalSpec:
     fov_preset: str = "medium"
     max_steps: int = 300
     comm_mode: str = "tokens"
+    pipeline_stage_count: int | None = None
+    pipeline_required_per_stage_min: int = 1
+    pipeline_required_per_stage_max: int = 2
+    pipeline_sync_probability: float = 0.5
+    pipeline_dependency_probability: float = 0.7
     energy_preset: str = "hard"
     energy_private_monitor: bool = True
     policy_checkpoint: str | None = None
@@ -49,6 +54,15 @@ def load_spec(path: str) -> EvalSpec:
         fov_preset=data.get("fov_preset", "medium"),
         max_steps=int(data.get("max_steps", 300)),
         comm_mode=data.get("comm_mode", "tokens"),
+        pipeline_stage_count=(
+            None
+            if data.get("pipeline_stage_count") is None
+            else int(data.get("pipeline_stage_count"))
+        ),
+        pipeline_required_per_stage_min=int(data.get("pipeline_required_per_stage_min", 1)),
+        pipeline_required_per_stage_max=int(data.get("pipeline_required_per_stage_max", 2)),
+        pipeline_sync_probability=float(data.get("pipeline_sync_probability", 0.5)),
+        pipeline_dependency_probability=float(data.get("pipeline_dependency_probability", 0.7)),
         energy_preset=data.get("energy_preset", "hard"),
         energy_private_monitor=bool(data.get("energy_private_monitor", True)),
         policy_checkpoint=data.get("policy_checkpoint"),

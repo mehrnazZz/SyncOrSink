@@ -53,6 +53,11 @@ class SyncOrSinkConfig:
     # pipeline shaping
     pipeline_shaping: bool = False
     pipeline_shaping_scale: float = 0.01
+    pipeline_stage_count: int | None = None
+    pipeline_required_per_stage_min: int = 1
+    pipeline_required_per_stage_max: int = 2
+    pipeline_sync_probability: float = 0.5
+    pipeline_dependency_probability: float = 0.7
     # energy grid shaping
     energy_shaping: bool = False
     energy_shaping_scale: float = 0.01

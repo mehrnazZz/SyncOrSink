@@ -196,9 +196,16 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert payload["config"]["recurrent_bc_event_action_events"] == (
         "delivered,sync_complete,recharged,joint_target_scan"
     )
+    assert payload["config"]["recurrent_pipeline_stage_count"] is None
+    assert payload["config"]["recurrent_pipeline_required_per_stage_min"] == 1
+    assert payload["config"]["recurrent_pipeline_required_per_stage_max"] == 2
+    assert payload["config"]["recurrent_pipeline_sync_probability"] == 0.5
+    assert payload["config"]["recurrent_pipeline_dependency_probability"] == 0.7
     assert payload["config"]["recurrent_bc_kl_coeff"] == 2.0
     assert payload["config"]["recurrent_bc_comm_kl_coeff"] == 2.0
     assert payload["config"]["recurrent_dagger_failed_effective_ratio_cap"] == 0.25
+    assert payload["config"]["recurrent_dagger_oracle_action_rollin_rate"] == 0.25
+    assert payload["config"]["recurrent_dagger_oracle_message_rollin_rate"] == 0.0
     assert payload["config"]["recurrent_rl_balanced_rollouts"] is True
     assert payload["config"]["recurrent_rl_rollout_eval_decoding"] is True
 
@@ -218,9 +225,28 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--bc-event-action-events") + 1
     ] == "delivered,sync_complete,recharged,joint_target_scan"
+    assert "--pipeline-stage-count" not in commands["pipeline_assembly"]
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--pipeline-required-per-stage-min") + 1
+    ] == "1"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--pipeline-required-per-stage-max") + 1
+    ] == "2"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--pipeline-sync-probability") + 1
+    ] == "0.5"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--pipeline-dependency-probability") + 1
+    ] == "0.7"
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--dagger-failed-effective-ratio-cap") + 1
     ] == "0.25"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--dagger-oracle-action-rollin-rate") + 1
+    ] == "0.25"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--dagger-oracle-message-rollin-rate") + 1
+    ] == "0.0"
     assert "--rl-balanced-rollouts" in commands["energy_grid"]
     assert "--rl-rollout-eval-decoding" in commands["pipeline_assembly"]
 
@@ -260,6 +286,16 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "6.0",
         "--recurrent-bc-event-action-events",
         "delivered,sync_complete",
+        "--recurrent-pipeline-stage-count",
+        "2",
+        "--recurrent-pipeline-required-per-stage-min",
+        "1",
+        "--recurrent-pipeline-required-per-stage-max",
+        "1",
+        "--recurrent-pipeline-sync-probability",
+        "0.0",
+        "--recurrent-pipeline-dependency-probability",
+        "0.0",
         "--recurrent-bc-calibrate-send-threshold",
         "--recurrent-bc-send-threshold-target-rate",
         "0.15",
@@ -273,6 +309,10 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "5",
         "--recurrent-dagger-failed-effective-ratio-cap",
         "0.5",
+        "--recurrent-dagger-oracle-action-rollin-rate",
+        "0.4",
+        "--recurrent-dagger-oracle-message-rollin-rate",
+        "0.3",
         "--recurrent-rl-updates",
         "0",
         "--recurrent-rl-lr",
@@ -323,11 +363,18 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_bc_action_class_balance_max_weight"] == 4.0
     assert payload["config"]["recurrent_bc_event_action_weight"] == 6.0
     assert payload["config"]["recurrent_bc_event_action_events"] == "delivered,sync_complete"
+    assert payload["config"]["recurrent_pipeline_stage_count"] == 2
+    assert payload["config"]["recurrent_pipeline_required_per_stage_min"] == 1
+    assert payload["config"]["recurrent_pipeline_required_per_stage_max"] == 1
+    assert payload["config"]["recurrent_pipeline_sync_probability"] == 0.0
+    assert payload["config"]["recurrent_pipeline_dependency_probability"] == 0.0
     assert payload["config"]["recurrent_bc_calibrate_send_threshold"] is True
     assert payload["config"]["recurrent_bc_send_threshold_target_rate"] == 0.15
     assert payload["config"]["recurrent_bc_comm_send_rate_penalty_weight"] == 0.25
     assert payload["config"]["recurrent_bc_comm_send_rate_target"] == 0.15
     assert payload["config"]["recurrent_dagger_failed_effective_ratio_cap"] == 0.5
+    assert payload["config"]["recurrent_dagger_oracle_action_rollin_rate"] == 0.4
+    assert payload["config"]["recurrent_dagger_oracle_message_rollin_rate"] == 0.3
     assert "--updates" not in command
     assert "--epochs" not in command
     assert "--save-every" not in command
@@ -348,6 +395,11 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert command[command.index("--bc-action-class-balance-max-weight") + 1] == "4.0"
     assert command[command.index("--bc-event-action-weight") + 1] == "6.0"
     assert command[command.index("--bc-event-action-events") + 1] == "delivered,sync_complete"
+    assert command[command.index("--pipeline-stage-count") + 1] == "2"
+    assert command[command.index("--pipeline-required-per-stage-min") + 1] == "1"
+    assert command[command.index("--pipeline-required-per-stage-max") + 1] == "1"
+    assert command[command.index("--pipeline-sync-probability") + 1] == "0.0"
+    assert command[command.index("--pipeline-dependency-probability") + 1] == "0.0"
     assert "--bc-calibrate-send-threshold" in command
     assert command[command.index("--bc-send-threshold-target-rate") + 1] == "0.15"
     assert command[command.index("--bc-comm-send-rate-penalty-weight") + 1] == "0.25"
@@ -355,6 +407,8 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert "--dagger-rounds" in command
     assert command[command.index("--dagger-rounds") + 1] == "1"
     assert command[command.index("--dagger-failed-effective-ratio-cap") + 1] == "0.5"
+    assert command[command.index("--dagger-oracle-action-rollin-rate") + 1] == "0.4"
+    assert command[command.index("--dagger-oracle-message-rollin-rate") + 1] == "0.3"
     assert "--train-map-sizes" in command
     assert "--eval-map-sizes" in command
     assert "--eval-seed-list" in command
