@@ -248,9 +248,17 @@ send-gate choices with `--mappo-eval-send-mode` / `--mappo-eval-send-threshold`.
 The sweep also supports `--algorithms recurrent_bc_rl` for the recurrent
 BC/DAgger/PPO trainer. Recurrent runs use `--recurrent-*` flags for oracle,
 demo count, BC epochs, DAgger rounds, checkpoint init, train/eval map schedules,
-and Signal Hunt specialist observation/eval assists. Recurrent JSON eval output
-and saved checkpoint eval metadata are normalized into the same aggregate
-`success_rate`, `return`, and `steps` fields as MAPPO/Comm-MAT/TarMAC.
+Signal Hunt specialist observation/eval assists, and PPO stability controls.
+Use `--recurrent-init-template` with `{seed}` to fine-tune each seed from its
+own BC/DAgger checkpoint. Use `--recurrent-rl-lr`, `--recurrent-clip`,
+`--recurrent-bc-kl-coeff`, `--recurrent-bc-comm-kl-coeff`,
+`--recurrent-rl-rollout-eval-decoding`, and `--recurrent-rl-balanced-rollouts`
+for safer PPO ablations. Recurrent JSON eval output and saved checkpoint eval
+metadata are normalized into the same aggregate `success_rate`, `return`, and
+`steps` fields as MAPPO/Comm-MAT/TarMAC. When recurrent PPO restores the best
+checkpoint before saving, `eval_metrics` describes that saved checkpoint;
+recurrent summaries also preserve separate `final_eval_metrics` and
+`best_eval_metrics` so PPO regressions are visible.
 
 `examples/train_eval_workbench.py` is the single-run MAPPO checkpoint
 round-trip smoke. It exposes the MAPPO trainer's communication send-rate

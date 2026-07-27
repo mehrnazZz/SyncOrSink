@@ -1,5 +1,7 @@
 import json
 
+import torch
+
 
 def test_core_training_sweep_dry_run_writes_manifest(tmp_path):
     from examples.core_training_sweep import parse_args, run_suite
@@ -149,7 +151,12 @@ def test_core_training_sweep_comm_curriculum_profile_adds_training_aids(tmp_path
 
 
 def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path):
-    from examples.core_training_sweep import _parse_eval_metrics, parse_args, run_suite
+    from examples.core_training_sweep import (
+        _parse_eval_metrics,
+        _parse_recurrent_checkpoint_evals,
+        parse_args,
+        run_suite,
+    )
 
     args = parse_args([
         "--algorithms",
@@ -178,6 +185,21 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "5",
         "--recurrent-rl-updates",
         "0",
+        "--recurrent-rl-lr",
+        "1e-5",
+        "--recurrent-clip",
+        "0.1",
+        "--recurrent-entropy-coeff",
+        "0.0",
+        "--recurrent-max-grad-norm",
+        "0.25",
+        "--recurrent-bc-kl-coeff",
+        "1.0",
+        "--recurrent-bc-comm-kl-coeff",
+        "1.5",
+        "--recurrent-rl-balanced-rollouts",
+        "--recurrent-rl-rollout-eval-decoding",
+        "--no-recurrent-rl-restore-best",
         "--recurrent-train-map-sizes",
         "8,16",
         "--recurrent-map-max-steps",
@@ -188,8 +210,8 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "8:3000+16:13000",
         "--recurrent-dagger-seed-list",
         "8:3000+16:13000",
-        "--recurrent-init",
-        "logs/recurrent_curriculum/example.pt",
+        "--recurrent-init-template",
+        "logs/{scenario}/seed{seed}/{algorithm}_{map_size}x.pt",
         "--recurrent-init-for-dagger",
         "--recurrent-calibrate-send-threshold",
         "--output-dir",
@@ -210,6 +232,15 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert "--save-every" not in command
     assert "--rl-updates" in command
     assert command[command.index("--rl-updates") + 1] == "0"
+    assert command[command.index("--rl-lr") + 1] == "1e-05"
+    assert command[command.index("--clip") + 1] == "0.1"
+    assert command[command.index("--entropy-coeff") + 1] == "0.0"
+    assert command[command.index("--max-grad-norm") + 1] == "0.25"
+    assert command[command.index("--bc-kl-coeff") + 1] == "1.0"
+    assert command[command.index("--bc-comm-kl-coeff") + 1] == "1.5"
+    assert "--rl-balanced-rollouts" in command
+    assert "--rl-rollout-eval-decoding" in command
+    assert "--no-rl-restore-best" in command
     assert "--demo-episodes" in command
     assert command[command.index("--demo-episodes") + 1] == "4"
     assert "--dagger-rounds" in command
@@ -219,6 +250,9 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert "--eval-seed-list" in command
     assert "--dagger-seed-list" in command
     assert "--recurrent-init" in command
+    assert command[command.index("--recurrent-init") + 1] == (
+        "logs/signal_hunt/seed0/recurrent_bc_rl_8x.pt"
+    )
     assert "--recurrent-init-for-dagger" in command
     assert "--bc-calibrate-send-threshold" in command
     assert "--obs-exploration-memory" in command
@@ -236,6 +270,75 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "success_rate": 0.5,
         "return": 1.25,
         "steps": 42.0,
+    }
+
+    rl_stdout = tmp_path / "rl_stdout.log"
+    rl_stdout.write_text(
+        '{"recurrent_rl_eval": {"success_rate": 0.75, "avg_return": 3.5, "avg_steps": 12.0}}\n',
+        encoding="utf-8",
+    )
+    assert _parse_eval_metrics("recurrent_bc_rl", rl_stdout, [], checkpoint_path=None) == {
+        "success_rate": 0.75,
+        "return": 3.5,
+        "steps": 12.0,
+    }
+
+    rl_checkpoint = tmp_path / "recurrent_rl.pt"
+    torch.save(
+        {
+            "final_eval": {
+                "success_rate": 0.25,
+                "avg_return": -4.0,
+                "avg_steps": 55.0,
+            },
+            "best_eval": {
+                "success_rate": 0.8,
+                "avg_return": 6.0,
+                "avg_steps": 14.0,
+            },
+            "restored_best": True,
+        },
+        rl_checkpoint,
+    )
+    assert _parse_eval_metrics("recurrent_bc_rl", rl_stdout, [], checkpoint_path=rl_checkpoint) == {
+        "success_rate": 0.8,
+        "return": 6.0,
+        "steps": 14.0,
+    }
+    assert _parse_recurrent_checkpoint_evals(rl_checkpoint) == {
+        "final_eval": {
+            "success_rate": 0.25,
+            "return": -4.0,
+            "steps": 55.0,
+        },
+        "best_eval": {
+            "success_rate": 0.8,
+            "return": 6.0,
+            "steps": 14.0,
+        },
+    }
+
+    final_checkpoint = tmp_path / "recurrent_rl_final.pt"
+    torch.save(
+        {
+            "final_eval": {
+                "success_rate": 0.25,
+                "avg_return": -4.0,
+                "avg_steps": 55.0,
+            },
+            "best_eval": {
+                "success_rate": 0.8,
+                "avg_return": 6.0,
+                "avg_steps": 14.0,
+            },
+            "restored_best": False,
+        },
+        final_checkpoint,
+    )
+    assert _parse_eval_metrics("recurrent_bc_rl", rl_stdout, [], checkpoint_path=final_checkpoint) == {
+        "success_rate": 0.25,
+        "return": -4.0,
+        "steps": 55.0,
     }
 
 

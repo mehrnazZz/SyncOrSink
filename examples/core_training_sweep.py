@@ -44,6 +44,10 @@ class RunRecord:
     stdout_tail: list[str]
     stderr_tail: list[str]
     eval_metrics: dict[str, float] | None
+    final_eval_metrics: dict[str, float] | None
+    best_eval_metrics: dict[str, float] | None
+    best_checkpoint_path: str | None
+    best_checkpoint_exists: bool
     wandb: dict
 
 
@@ -251,6 +255,18 @@ def _build_recurrent_command(
         str(args.recurrent_rl_epochs),
         "--minibatch-seqs",
         str(args.recurrent_minibatch_seqs),
+        "--rl-lr",
+        str(args.recurrent_rl_lr),
+        "--clip",
+        str(args.recurrent_clip),
+        "--entropy-coeff",
+        str(args.recurrent_entropy_coeff),
+        "--max-grad-norm",
+        str(args.recurrent_max_grad_norm),
+        "--bc-kl-coeff",
+        str(args.recurrent_bc_kl_coeff),
+        "--bc-comm-kl-coeff",
+        str(args.recurrent_bc_comm_kl_coeff),
         "--rl-eval-every",
         str(args.eval_every),
         "--rl-eval-episodes",
@@ -292,12 +308,26 @@ def _build_recurrent_command(
         cmd.extend(["--eval-seed-list", args.recurrent_eval_seed_list])
     if args.recurrent_dagger_seed_list:
         cmd.extend(["--dagger-seed-list", args.recurrent_dagger_seed_list])
-    if args.recurrent_init:
-        cmd.extend(["--recurrent-init", args.recurrent_init])
+    recurrent_init = _resolve_recurrent_init(
+        args,
+        case=case,
+        seed=seed,
+        run_name=run_name,
+    )
+    if recurrent_init:
+        cmd.extend(["--recurrent-init", recurrent_init])
     if args.recurrent_init_for_dagger:
         cmd.append("--recurrent-init-for-dagger")
     if args.recurrent_init_allow_obs_dim_mismatch:
         cmd.append("--recurrent-init-allow-obs-dim-mismatch")
+    if args.recurrent_rl_balanced_rollouts:
+        cmd.append("--rl-balanced-rollouts")
+    if args.recurrent_rl_rollout_eval_decoding:
+        cmd.append("--rl-rollout-eval-decoding")
+    if not args.recurrent_rl_restore_best:
+        cmd.append("--no-rl-restore-best")
+    if not args.recurrent_rl_save_best:
+        cmd.append("--no-rl-save-best")
     if args.recurrent_comm:
         cmd.append("--comm")
     if args.recurrent_calibrate_send_threshold:
@@ -353,6 +383,19 @@ def _learning_profile_args(profile: str, algorithm: str, case: ScenarioCase) -> 
     elif algorithm == "tarmac":
         cmd.extend(["--attn-entropy-coeff", "0.01"])
     return cmd
+
+
+def _resolve_recurrent_init(args, *, case: ScenarioCase, seed: int, run_name: str) -> str:
+    if args.recurrent_init_template:
+        return args.recurrent_init_template.format(
+            seed=seed,
+            scenario=case.scenario,
+            map_size=case.map_size,
+            agents=case.agents,
+            algorithm="recurrent_bc_rl",
+            run_name=run_name,
+        )
+    return args.recurrent_init or ""
 
 
 def run_suite(args) -> dict:
@@ -447,6 +490,16 @@ def run_suite(args) -> dict:
             "recurrent_rl_updates": args.recurrent_rl_updates,
             "recurrent_rl_epochs": args.recurrent_rl_epochs,
             "recurrent_minibatch_seqs": args.recurrent_minibatch_seqs,
+            "recurrent_rl_lr": args.recurrent_rl_lr,
+            "recurrent_clip": args.recurrent_clip,
+            "recurrent_entropy_coeff": args.recurrent_entropy_coeff,
+            "recurrent_max_grad_norm": args.recurrent_max_grad_norm,
+            "recurrent_bc_kl_coeff": args.recurrent_bc_kl_coeff,
+            "recurrent_bc_comm_kl_coeff": args.recurrent_bc_comm_kl_coeff,
+            "recurrent_rl_balanced_rollouts": args.recurrent_rl_balanced_rollouts,
+            "recurrent_rl_rollout_eval_decoding": args.recurrent_rl_rollout_eval_decoding,
+            "recurrent_rl_restore_best": args.recurrent_rl_restore_best,
+            "recurrent_rl_save_best": args.recurrent_rl_save_best,
             "recurrent_train_map_sizes": args.recurrent_train_map_sizes,
             "recurrent_train_map_sampling_weights": args.recurrent_train_map_sampling_weights,
             "recurrent_map_max_steps": args.recurrent_map_max_steps,
@@ -455,6 +508,7 @@ def run_suite(args) -> dict:
             "recurrent_eval_seed_list": args.recurrent_eval_seed_list,
             "recurrent_dagger_seed_list": args.recurrent_dagger_seed_list,
             "recurrent_init": args.recurrent_init,
+            "recurrent_init_template": args.recurrent_init_template,
             "recurrent_init_for_dagger": args.recurrent_init_for_dagger,
             "recurrent_init_allow_obs_dim_mismatch": args.recurrent_init_allow_obs_dim_mismatch,
             "recurrent_comm": args.recurrent_comm,
@@ -503,6 +557,7 @@ def _run_one(
 ) -> RunRecord:
     start = time.time()
     wandb_requested = "--wandb" in cmd
+    best_checkpoint_path = _best_checkpoint_path(algorithm, checkpoint_path)
     if dry_run:
         stdout_path.write_text("", encoding="utf-8")
         stderr_path.write_text("", encoding="utf-8")
@@ -522,6 +577,10 @@ def _run_one(
             stdout_tail=[],
             stderr_tail=[],
             eval_metrics=None,
+            final_eval_metrics=None,
+            best_eval_metrics=None,
+            best_checkpoint_path=str(best_checkpoint_path) if best_checkpoint_path is not None else None,
+            best_checkpoint_exists=best_checkpoint_path.exists() if best_checkpoint_path is not None else False,
             wandb=_wandb_record(requested=wandb_requested, mode=wandb_mode, status="dry_run", error_lines=[]),
         )
 
@@ -552,6 +611,18 @@ def _run_one(
     status = "complete" if proc.returncode == 0 and checkpoint_path.exists() else "failed"
     if strict_wandb and wandb.get("status") == "failed":
         status = "failed"
+    eval_metrics = _parse_eval_metrics(
+        algorithm,
+        stdout_path,
+        stdout_tail,
+        checkpoint_path=checkpoint_path,
+    )
+    final_eval_metrics = None
+    best_eval_metrics = None
+    if algorithm == "recurrent_bc_rl":
+        recurrent_evals = _parse_recurrent_checkpoint_evals(checkpoint_path)
+        final_eval_metrics = recurrent_evals.get("final_eval")
+        best_eval_metrics = recurrent_evals.get("best_eval")
     return RunRecord(
         algorithm=algorithm,
         scenario=case.scenario,
@@ -567,12 +638,11 @@ def _run_one(
         stderr_path=str(stderr_path),
         stdout_tail=stdout_tail,
         stderr_tail=stderr_tail,
-        eval_metrics=_parse_eval_metrics(
-            algorithm,
-            stdout_path,
-            stdout_tail,
-            checkpoint_path=checkpoint_path,
-        ),
+        eval_metrics=eval_metrics,
+        final_eval_metrics=final_eval_metrics,
+        best_eval_metrics=best_eval_metrics,
+        best_checkpoint_path=str(best_checkpoint_path) if best_checkpoint_path is not None else None,
+        best_checkpoint_exists=best_checkpoint_path.exists() if best_checkpoint_path is not None else False,
         wandb=wandb,
     )
 
@@ -611,17 +681,42 @@ def _parse_last_eval(lines: Iterable[str]) -> dict[str, float] | None:
 
 
 def _parse_recurrent_checkpoint_eval(checkpoint_path: Path | None) -> dict[str, float] | None:
+    evals, restored_best = _parse_recurrent_checkpoint_eval_data(checkpoint_path)
+    if restored_best:
+        metrics = evals.get("best_eval")
+        if metrics is not None:
+            return metrics
+    for key in ("eval_recurrent_policy", "final_eval", "best_eval"):
+        metrics = evals.get(key)
+        if metrics is not None:
+            return metrics
+    return None
+
+
+def _parse_recurrent_checkpoint_evals(checkpoint_path: Path | None) -> dict[str, dict[str, float]]:
+    evals, _ = _parse_recurrent_checkpoint_eval_data(checkpoint_path)
+    return evals
+
+
+def _parse_recurrent_checkpoint_eval_data(
+    checkpoint_path: Path | None,
+) -> tuple[dict[str, dict[str, float]], bool]:
     if checkpoint_path is None or not checkpoint_path.exists():
-        return None
+        return {}, False
     try:
         import torch
 
         ckpt = torch.load(checkpoint_path, map_location="cpu")
     except Exception:
-        return None
+        return {}, False
     if not isinstance(ckpt, dict):
-        return None
-    return _metrics_from_recurrent_eval(ckpt.get("eval_recurrent_policy"))
+        return {}, False
+    evals: dict[str, dict[str, float]] = {}
+    for key in ("eval_recurrent_policy", "final_eval", "best_eval"):
+        metrics = _metrics_from_recurrent_eval(ckpt.get(key))
+        if metrics is not None:
+            evals[key] = metrics
+    return evals, bool(ckpt.get("restored_best", False))
 
 
 def _parse_recurrent_stdout_eval(stdout: str) -> dict[str, float] | None:
@@ -639,6 +734,9 @@ def _parse_recurrent_stdout_eval(stdout: str) -> dict[str, float] | None:
                 metrics = _metrics_from_recurrent_eval(row.get("eval"))
                 if metrics is not None:
                     latest = metrics
+        metrics = _metrics_from_recurrent_eval(obj.get("recurrent_rl_eval"))
+        if metrics is not None:
+            latest = metrics
     return latest
 
 
@@ -679,6 +777,12 @@ def _aggregate_records(records: list[RunRecord]) -> list[dict]:
     aggregate = []
     for (algorithm, scenario), group in sorted(groups.items()):
         eval_records = [record.eval_metrics for record in group if record.eval_metrics is not None]
+        final_eval_records = [
+            record.final_eval_metrics for record in group if record.final_eval_metrics is not None
+        ]
+        best_eval_records = [
+            record.best_eval_metrics for record in group if record.best_eval_metrics is not None
+        ]
         aggregate.append(
             {
                 "algorithm": algorithm,
@@ -694,6 +798,12 @@ def _aggregate_records(records: list[RunRecord]) -> list[dict]:
                 "mean_eval_success_rate": _mean_metric(eval_records, "success_rate"),
                 "mean_eval_return": _mean_metric(eval_records, "return"),
                 "mean_eval_steps": _mean_metric(eval_records, "steps"),
+                "mean_final_eval_success_rate": _mean_metric(final_eval_records, "success_rate"),
+                "mean_final_eval_return": _mean_metric(final_eval_records, "return"),
+                "mean_final_eval_steps": _mean_metric(final_eval_records, "steps"),
+                "mean_best_eval_success_rate": _mean_metric(best_eval_records, "success_rate"),
+                "mean_best_eval_return": _mean_metric(best_eval_records, "return"),
+                "mean_best_eval_steps": _mean_metric(best_eval_records, "steps"),
             }
         )
     return aggregate
@@ -711,6 +821,12 @@ def _prepare_wandb_dirs(run_dir: Path) -> Path:
     for name in ("data", "artifacts", "cache", "config", "tmp"):
         (wandb_dir / name).mkdir(parents=True, exist_ok=True)
     return wandb_dir
+
+
+def _best_checkpoint_path(algorithm: str, checkpoint_path: Path) -> Path | None:
+    if algorithm != "recurrent_bc_rl":
+        return None
+    return checkpoint_path.with_name(f"{checkpoint_path.stem}_best{checkpoint_path.suffix}")
 
 
 def _parse_wandb_record(
@@ -822,6 +938,10 @@ def _format_record(record: RunRecord) -> str:
             f" eval_success={record.eval_metrics.get('success_rate', 0.0):.2f}"
             f" eval_return={record.eval_metrics.get('return', 0.0):.2f}"
         )
+    if record.final_eval_metrics and record.final_eval_metrics != record.eval_metrics:
+        metrics += f" final_success={record.final_eval_metrics.get('success_rate', 0.0):.2f}"
+    if record.best_eval_metrics and record.best_eval_metrics != record.eval_metrics:
+        metrics += f" best_success={record.best_eval_metrics.get('success_rate', 0.0):.2f}"
     return (
         f"{record.status:8s} {record.algorithm:8s} {record.scenario:18s} seed={record.seed:<3d} "
         f"elapsed={record.elapsed_sec:.1f}s ckpt={int(record.checkpoint_exists)}{metrics}"
@@ -876,6 +996,16 @@ def parse_args(argv: list[str] | None = None):
     )
     parser.add_argument("--recurrent-rl-epochs", type=int, default=2)
     parser.add_argument("--recurrent-minibatch-seqs", type=int, default=8)
+    parser.add_argument("--recurrent-rl-lr", type=float, default=3e-5)
+    parser.add_argument("--recurrent-clip", type=float, default=0.2)
+    parser.add_argument("--recurrent-entropy-coeff", type=float, default=0.01)
+    parser.add_argument("--recurrent-max-grad-norm", type=float, default=0.5)
+    parser.add_argument("--recurrent-bc-kl-coeff", type=float, default=0.5)
+    parser.add_argument("--recurrent-bc-comm-kl-coeff", type=float, default=0.5)
+    parser.add_argument("--recurrent-rl-balanced-rollouts", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--recurrent-rl-rollout-eval-decoding", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--recurrent-rl-restore-best", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--recurrent-rl-save-best", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--recurrent-train-map-sizes", default="")
     parser.add_argument("--recurrent-train-map-sampling-weights", default="")
     parser.add_argument("--recurrent-map-max-steps", default="")
@@ -884,6 +1014,14 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-eval-seed-list", default="")
     parser.add_argument("--recurrent-dagger-seed-list", default="")
     parser.add_argument("--recurrent-init", default=None)
+    parser.add_argument(
+        "--recurrent-init-template",
+        default="",
+        help=(
+            "Seed-specific recurrent init path template. Supports {seed}, {scenario}, "
+            "{map_size}, {agents}, {algorithm}, and {run_name}."
+        ),
+    )
     parser.add_argument("--recurrent-init-for-dagger", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-init-allow-obs-dim-mismatch", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-comm", action=argparse.BooleanOptionalAction, default=True)
