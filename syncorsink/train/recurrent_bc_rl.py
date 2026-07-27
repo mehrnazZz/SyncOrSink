@@ -9555,6 +9555,8 @@ def _collect_recurrent_rl_rollout(
     hidden_buf = []
     ep_returns, ep_steps = [], []
     ep_comm = []
+    partial_ep_returns, partial_ep_steps = [], []
+    partial_ep_comm = []
     comm_send_counts = 0
     comm_total_steps = 0
     comm_len_sum = 0.0
@@ -9799,6 +9801,10 @@ def _collect_recurrent_rl_rollout(
                 prev_actions = next_prev_actions
                 prev_msg_lens = next_prev_msg_lens
                 prev_positions = prev_positions_for_events
+            if segment_end and not (done or truncated) and ep_step > 0:
+                partial_ep_returns.append(ep_ret)
+                partial_ep_steps.append(ep_step)
+                partial_ep_comm.append(ep_comm_tokens)
 
     return {
         "obs_buf": obs_buf,
@@ -9816,6 +9822,9 @@ def _collect_recurrent_rl_rollout(
         "ep_returns": ep_returns,
         "ep_steps": ep_steps,
         "ep_comm": ep_comm,
+        "partial_ep_returns": partial_ep_returns,
+        "partial_ep_steps": partial_ep_steps,
+        "partial_ep_comm": partial_ep_comm,
         "comm_send_counts": comm_send_counts,
         "comm_total_steps": comm_total_steps,
         "comm_len_sum": comm_len_sum,
@@ -9930,6 +9939,9 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
         ep_returns = rollout["ep_returns"]
         ep_steps = rollout["ep_steps"]
         ep_comm = rollout["ep_comm"]
+        partial_ep_returns = rollout["partial_ep_returns"]
+        partial_ep_steps = rollout["partial_ep_steps"]
+        partial_ep_comm = rollout["partial_ep_comm"]
         comm_send_counts = rollout["comm_send_counts"]
         comm_total_steps = rollout["comm_total_steps"]
         comm_len_sum = rollout["comm_len_sum"]
@@ -10103,9 +10115,15 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
                 total_steps += 1
 
         denom = max(total_steps, 1)
-        mean_ret = float(np.mean(ep_returns)) if ep_returns else 0.0
-        mean_len = float(np.mean(ep_steps)) if ep_steps else 0.0
-        mean_comm = float(np.mean(ep_comm)) if ep_comm else 0.0
+        mean_completed_ret = float(np.mean(ep_returns)) if ep_returns else 0.0
+        mean_completed_len = float(np.mean(ep_steps)) if ep_steps else 0.0
+        mean_completed_comm = float(np.mean(ep_comm)) if ep_comm else 0.0
+        mean_partial_ret = float(np.mean(partial_ep_returns)) if partial_ep_returns else 0.0
+        mean_partial_len = float(np.mean(partial_ep_steps)) if partial_ep_steps else 0.0
+        mean_partial_comm = float(np.mean(partial_ep_comm)) if partial_ep_comm else 0.0
+        mean_ret = mean_completed_ret if ep_returns else mean_partial_ret
+        mean_len = mean_completed_len if ep_steps else mean_partial_len
+        mean_comm = mean_completed_comm if ep_comm else mean_partial_comm
         comm_send_rate = comm_send_counts / comm_total_steps if comm_total_steps else 0.0
         comm_mean_len = comm_len_sum / comm_len_count if comm_len_count else 0.0
         comm_token_entropy = comm_token_entropy_sum / T if T else 0.0
@@ -10134,9 +10152,17 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
                 "train/entropy": total_entropy / denom,
                 "train/lr": lr,
                 "rollout/episodes": len(ep_returns),
+                "rollout/completed_episodes": len(ep_returns),
+                "rollout/partial_segments": len(partial_ep_returns),
                 "rollout/mean_ep_return": mean_ret,
                 "rollout/mean_ep_len": mean_len,
                 "rollout/mean_ep_comm_tokens": mean_comm,
+                "rollout/mean_completed_ep_return": mean_completed_ret,
+                "rollout/mean_completed_ep_len": mean_completed_len,
+                "rollout/mean_completed_ep_comm_tokens": mean_completed_comm,
+                "rollout/mean_partial_return": mean_partial_ret,
+                "rollout/mean_partial_len": mean_partial_len,
+                "rollout/mean_partial_comm_tokens": mean_partial_comm,
                 "rollout/comm_send_rate": comm_send_rate,
                 "rollout/comm_mean_len": comm_mean_len,
                 "rollout/comm_token_entropy": comm_token_entropy,

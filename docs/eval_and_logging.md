@@ -263,7 +263,11 @@ metadata are normalized into the same aggregate `success_rate`, `return`, and
 `steps` fields as MAPPO/Comm-MAT/TarMAC. When recurrent PPO restores the best
 checkpoint before saving, `eval_metrics` describes that saved checkpoint;
 recurrent summaries also preserve separate `final_eval_metrics` and
-`best_eval_metrics` so PPO regressions are visible.
+`best_eval_metrics` so PPO regressions are visible. Recurrent PPO W&B logs also
+report `rollout/completed_episodes` and `rollout/partial_segments`; when a
+rollout chunk has no completed episodes, `rollout/mean_ep_return`,
+`rollout/mean_ep_len`, and `rollout/mean_ep_comm_tokens` fall back to partial
+segment means so plots do not show misleading zeros.
 
 `examples/train_eval_workbench.py` is the single-run MAPPO checkpoint
 round-trip smoke. It exposes the MAPPO trainer's communication send-rate

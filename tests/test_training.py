@@ -4495,6 +4495,10 @@ def test_recurrent_rl_balanced_rollout_collects_each_train_map_size():
     assert rollout["reset_after_buf"][1] is True
     assert rollout["reset_after_buf"][3] is True
     assert rollout["reset_after_buf"][5] is True
+    assert rollout["ep_returns"] == []
+    assert rollout["partial_ep_steps"] == [2, 2, 2]
+    assert len(rollout["partial_ep_returns"]) == 3
+    assert len(rollout["partial_ep_comm"]) == 3
 
     weighted_cfg = RecurrentConfig(**{**vars(cfg), "rl_rollout_map_steps": "8:2,16:3,32:4"})
     assert _balanced_rollout_step_counts_for_maps(weighted_cfg, [8, 16, 32]) == [2, 3, 4]
@@ -4513,6 +4517,8 @@ def test_recurrent_rl_balanced_rollout_collects_each_train_map_size():
     assert weighted_rollout["reset_after_buf"][1] is True
     assert weighted_rollout["reset_after_buf"][4] is True
     assert weighted_rollout["reset_after_buf"][8] is True
+    assert weighted_rollout["ep_returns"] == []
+    assert weighted_rollout["partial_ep_steps"] == [2, 3, 4]
 
     bad_cfg = RecurrentConfig(**{**vars(cfg), "rl_rollout_map_steps": "64:5"})
     with pytest.raises(ValueError, match="not present in train_map_sizes"):
