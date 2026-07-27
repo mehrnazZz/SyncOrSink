@@ -110,6 +110,37 @@ SCENARIO_SHAPING_ARGS = {
 }
 
 
+RECURRENT_AUTO_ORACLES = {
+    "signal_hunt": "signal_hint_comm",
+    "energy_grid": "oracle_strong_comm",
+    "pipeline_assembly": "oracle_strong_comm",
+}
+
+
+RECURRENT_PPO_PROFILES = {
+    "standard": {
+        "recurrent_rl_lr": 3e-5,
+        "recurrent_clip": 0.2,
+        "recurrent_entropy_coeff": 0.01,
+        "recurrent_max_grad_norm": 0.5,
+        "recurrent_bc_kl_coeff": 0.5,
+        "recurrent_bc_comm_kl_coeff": 0.5,
+        "recurrent_rl_balanced_rollouts": False,
+        "recurrent_rl_rollout_eval_decoding": False,
+    },
+    "guarded": {
+        "recurrent_rl_lr": 1e-5,
+        "recurrent_clip": 0.1,
+        "recurrent_entropy_coeff": 0.0,
+        "recurrent_max_grad_norm": 0.25,
+        "recurrent_bc_kl_coeff": 2.0,
+        "recurrent_bc_comm_kl_coeff": 2.0,
+        "recurrent_rl_balanced_rollouts": True,
+        "recurrent_rl_rollout_eval_decoding": True,
+    },
+}
+
+
 def build_command(
     *,
     algorithm: str,
@@ -234,7 +265,7 @@ def _build_recurrent_command(
         "--max-steps",
         str(case.max_steps),
         "--oracle",
-        args.recurrent_oracle,
+        _resolve_recurrent_oracle(args, case),
         "--demo-episodes",
         str(args.recurrent_demo_episodes),
         "--bc-epochs",
@@ -398,6 +429,20 @@ def _resolve_recurrent_init(args, *, case: ScenarioCase, seed: int, run_name: st
     return args.recurrent_init or ""
 
 
+def _resolve_recurrent_oracle(args, case: ScenarioCase) -> str:
+    if args.recurrent_oracle == "auto":
+        return RECURRENT_AUTO_ORACLES[case.scenario]
+    return args.recurrent_oracle
+
+
+def _apply_recurrent_ppo_profile(args):
+    profile = RECURRENT_PPO_PROFILES[args.recurrent_ppo_profile]
+    for key, value in profile.items():
+        if getattr(args, key) is None:
+            setattr(args, key, value)
+    return args
+
+
 def run_suite(args) -> dict:
     suite_dir = _suite_dir(args)
     suite_dir.mkdir(parents=True, exist_ok=True)
@@ -480,6 +525,10 @@ def run_suite(args) -> dict:
             "mappo_eval_length_mode": args.mappo_eval_length_mode,
             "mappo_eval_length_temperature": args.mappo_eval_length_temperature,
             "recurrent_oracle": args.recurrent_oracle,
+            "recurrent_resolved_oracles": {
+                case.scenario: _resolve_recurrent_oracle(args, case)
+                for case in cases
+            },
             "recurrent_signal_preset": args.recurrent_signal_preset,
             "recurrent_demo_episodes": args.recurrent_demo_episodes,
             "recurrent_bc_epochs": args.recurrent_bc_epochs,
@@ -488,6 +537,7 @@ def run_suite(args) -> dict:
             "recurrent_dagger_rounds": args.recurrent_dagger_rounds,
             "recurrent_dagger_episodes": args.recurrent_dagger_episodes,
             "recurrent_rl_updates": args.recurrent_rl_updates,
+            "recurrent_ppo_profile": args.recurrent_ppo_profile,
             "recurrent_rl_epochs": args.recurrent_rl_epochs,
             "recurrent_minibatch_seqs": args.recurrent_minibatch_seqs,
             "recurrent_rl_lr": args.recurrent_rl_lr,
@@ -980,7 +1030,15 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--mappo-eval-token-temperature", type=float, default=1.0)
     parser.add_argument("--mappo-eval-length-mode", default="argmax", choices=["argmax", "sample"])
     parser.add_argument("--mappo-eval-length-temperature", type=float, default=1.0)
-    parser.add_argument("--recurrent-oracle", default="signal_hint_comm", choices=["oracle_strong", "oracle_strong_comm", "signal_hint_comm"])
+    parser.add_argument(
+        "--recurrent-oracle",
+        default="auto",
+        choices=["auto", "oracle_strong", "oracle_strong_comm", "signal_hint_comm"],
+        help=(
+            "Oracle used for recurrent demos. auto uses signal_hint_comm for Signal Hunt "
+            "and oracle_strong_comm for Energy Grid/Pipeline."
+        ),
+    )
     parser.add_argument("--recurrent-signal-preset", default="specialist", choices=["minimal", "specialist"])
     parser.add_argument("--recurrent-demo-episodes", type=int, default=20)
     parser.add_argument("--recurrent-bc-epochs", type=int, default=1)
@@ -994,16 +1052,22 @@ def parse_args(argv: list[str] | None = None):
         default=None,
         help="Override recurrent PPO updates; defaults to the shared --updates value",
     )
+    parser.add_argument(
+        "--recurrent-ppo-profile",
+        default="guarded",
+        choices=sorted(RECURRENT_PPO_PROFILES),
+        help="Named recurrent PPO tuning profile; explicit --recurrent-* PPO flags override it.",
+    )
     parser.add_argument("--recurrent-rl-epochs", type=int, default=2)
     parser.add_argument("--recurrent-minibatch-seqs", type=int, default=8)
-    parser.add_argument("--recurrent-rl-lr", type=float, default=3e-5)
-    parser.add_argument("--recurrent-clip", type=float, default=0.2)
-    parser.add_argument("--recurrent-entropy-coeff", type=float, default=0.01)
-    parser.add_argument("--recurrent-max-grad-norm", type=float, default=0.5)
-    parser.add_argument("--recurrent-bc-kl-coeff", type=float, default=0.5)
-    parser.add_argument("--recurrent-bc-comm-kl-coeff", type=float, default=0.5)
-    parser.add_argument("--recurrent-rl-balanced-rollouts", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--recurrent-rl-rollout-eval-decoding", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--recurrent-rl-lr", type=float, default=None)
+    parser.add_argument("--recurrent-clip", type=float, default=None)
+    parser.add_argument("--recurrent-entropy-coeff", type=float, default=None)
+    parser.add_argument("--recurrent-max-grad-norm", type=float, default=None)
+    parser.add_argument("--recurrent-bc-kl-coeff", type=float, default=None)
+    parser.add_argument("--recurrent-bc-comm-kl-coeff", type=float, default=None)
+    parser.add_argument("--recurrent-rl-balanced-rollouts", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--recurrent-rl-rollout-eval-decoding", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--recurrent-rl-restore-best", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--recurrent-rl-save-best", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--recurrent-train-map-sizes", default="")
@@ -1048,7 +1112,7 @@ def parse_args(argv: list[str] | None = None):
     elif args.seed is not None and args.seed not in args.seeds:
         args.seeds = sorted([*args.seeds, args.seed])
     args.seeds = sorted(set(args.seeds))
-    return args
+    return _apply_recurrent_ppo_profile(args)
 
 
 def main(argv: list[str] | None = None) -> int:

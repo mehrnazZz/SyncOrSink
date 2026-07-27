@@ -150,6 +150,61 @@ def test_core_training_sweep_comm_curriculum_profile_adds_training_aids(tmp_path
     assert "--eval-action-mode" not in commands[("tarmac", "signal_hunt")]
 
 
+def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(tmp_path):
+    from examples.core_training_sweep import parse_args, run_suite
+
+    args = parse_args([
+        "--algorithms",
+        "recurrent_bc_rl",
+        "--scenarios",
+        "signal_hunt",
+        "energy_grid",
+        "pipeline_assembly",
+        "--updates",
+        "1",
+        "--rollout-steps",
+        "8",
+        "--eval-every",
+        "1",
+        "--eval-episodes",
+        "1",
+        "--seeds",
+        "0",
+        "--output-dir",
+        str(tmp_path / "runs"),
+        "--run-name",
+        "recurrent-defaults",
+        "--dry-run",
+    ])
+
+    payload = run_suite(args)
+    commands = {run["scenario"]: run["command"] for run in payload["runs"]}
+
+    assert payload["config"]["recurrent_oracle"] == "auto"
+    assert payload["config"]["recurrent_resolved_oracles"] == {
+        "energy_grid": "oracle_strong_comm",
+        "pipeline_assembly": "oracle_strong_comm",
+        "signal_hunt": "signal_hint_comm",
+    }
+    assert payload["config"]["recurrent_ppo_profile"] == "guarded"
+    assert payload["config"]["recurrent_rl_lr"] == 1e-5
+    assert payload["config"]["recurrent_clip"] == 0.1
+    assert payload["config"]["recurrent_entropy_coeff"] == 0.0
+    assert payload["config"]["recurrent_bc_kl_coeff"] == 2.0
+    assert payload["config"]["recurrent_bc_comm_kl_coeff"] == 2.0
+    assert payload["config"]["recurrent_rl_balanced_rollouts"] is True
+    assert payload["config"]["recurrent_rl_rollout_eval_decoding"] is True
+
+    assert commands["signal_hunt"][commands["signal_hunt"].index("--oracle") + 1] == "signal_hint_comm"
+    assert commands["energy_grid"][commands["energy_grid"].index("--oracle") + 1] == "oracle_strong_comm"
+    assert (
+        commands["pipeline_assembly"][commands["pipeline_assembly"].index("--oracle") + 1]
+        == "oracle_strong_comm"
+    )
+    assert "--rl-balanced-rollouts" in commands["energy_grid"]
+    assert "--rl-rollout-eval-decoding" in commands["pipeline_assembly"]
+
+
 def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path):
     from examples.core_training_sweep import (
         _parse_eval_metrics,
@@ -225,7 +280,9 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     command = payload["runs"][0]["command"]
 
     assert payload["overall"] == {"complete": 0, "dry_run": 1, "failed": 0, "total": 1}
-    assert payload["config"]["recurrent_oracle"] == "signal_hint_comm"
+    assert payload["config"]["recurrent_oracle"] == "auto"
+    assert payload["config"]["recurrent_resolved_oracles"] == {"signal_hunt": "signal_hint_comm"}
+    assert payload["config"]["recurrent_ppo_profile"] == "guarded"
     assert payload["config"]["recurrent_signal_preset"] == "specialist"
     assert "--updates" not in command
     assert "--epochs" not in command
