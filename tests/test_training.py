@@ -380,6 +380,61 @@ def test_signal_hint_comm_oracle_does_not_share_private_hints_without_message():
     assert inbox_actions[0]["message_tokens"] == exact_message
 
 
+def test_recurrent_oracle_factory_supports_scenario_planner_comm():
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.eval.runner import run_episodes
+    from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _make_oracle_policy
+
+    cases = [
+        (
+            "energy_grid",
+            "energy_planner_comm",
+            {"num_agents": 3, "energy_preset": "easy", "max_steps": 180},
+        ),
+        (
+            "pipeline_assembly",
+            "pipeline_planner_comm",
+            {"num_agents": 3, "max_steps": 180},
+        ),
+    ]
+
+    for scenario, explicit_oracle, kwargs in cases:
+        env_config = SyncOrSinkConfig(
+            scenario=scenario,
+            map_size=8,
+            fov_preset="easy",
+            comm_token_limit=8,
+            token_vocab_size=32,
+            max_messages=8,
+            **kwargs,
+        )
+        env = SyncOrSinkEnv(env_config)
+        cfg = RecurrentConfig(
+            scenario=scenario,
+            map_size=8,
+            agents=env_config.num_agents,
+            fov_preset="easy",
+            max_steps=env_config.max_steps,
+            energy_preset=env_config.energy_preset,
+            oracle_type="planner_comm",
+            comm=True,
+        )
+
+        summary, _episodes = run_episodes(env, _make_oracle_policy(env, cfg), episodes=4, seed=0)
+
+        assert summary.success_rate == 1.0
+
+        explicit_cfg = RecurrentConfig(**{**vars(cfg), "oracle_type": explicit_oracle})
+        explicit_env = SyncOrSinkEnv(env_config)
+        explicit_summary, _episodes = run_episodes(
+            explicit_env,
+            _make_oracle_policy(explicit_env, explicit_cfg),
+            episodes=4,
+            seed=0,
+        )
+        assert explicit_summary.success_rate == 1.0
+
+
 def test_bc_dagger(tmp_path):
     from syncorsink.train.bc import collect_demos, train_bc_dagger, BCConfig
     demo_path = str(tmp_path / "demos.npz")

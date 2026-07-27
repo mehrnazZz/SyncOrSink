@@ -112,8 +112,8 @@ SCENARIO_SHAPING_ARGS = {
 
 RECURRENT_AUTO_ORACLES = {
     "signal_hunt": "signal_hint_comm",
-    "energy_grid": "oracle_strong_comm",
-    "pipeline_assembly": "oracle_strong_comm",
+    "energy_grid": "planner_comm",
+    "pipeline_assembly": "planner_comm",
 }
 
 
@@ -274,6 +274,12 @@ def _build_recurrent_command(
         str(args.recurrent_bc_lr),
         "--bc-seq-len",
         str(args.recurrent_bc_seq_len),
+        "--bc-comm-send-rate-penalty-weight",
+        str(args.recurrent_bc_comm_send_rate_penalty_weight),
+        "--bc-comm-send-rate-target",
+        str(args.recurrent_bc_comm_send_rate_target),
+        "--bc-send-threshold-target-rate",
+        str(args.recurrent_bc_send_threshold_target_rate),
         "--dagger-rounds",
         str(args.recurrent_dagger_rounds),
         "--dagger-episodes",
@@ -327,6 +333,8 @@ def _build_recurrent_command(
     ]
     if case.energy_preset is not None:
         cmd.extend(["--energy-preset", case.energy_preset])
+    if args.recurrent_bc_calibrate_send_threshold:
+        cmd.append("--bc-calibrate-send-threshold")
     if args.recurrent_train_map_sizes:
         cmd.extend(["--train-map-sizes", args.recurrent_train_map_sizes])
     if args.recurrent_train_map_sampling_weights:
@@ -534,6 +542,10 @@ def run_suite(args) -> dict:
             "recurrent_bc_epochs": args.recurrent_bc_epochs,
             "recurrent_bc_lr": args.recurrent_bc_lr,
             "recurrent_bc_seq_len": args.recurrent_bc_seq_len,
+            "recurrent_bc_calibrate_send_threshold": args.recurrent_bc_calibrate_send_threshold,
+            "recurrent_bc_send_threshold_target_rate": args.recurrent_bc_send_threshold_target_rate,
+            "recurrent_bc_comm_send_rate_penalty_weight": args.recurrent_bc_comm_send_rate_penalty_weight,
+            "recurrent_bc_comm_send_rate_target": args.recurrent_bc_comm_send_rate_target,
             "recurrent_dagger_rounds": args.recurrent_dagger_rounds,
             "recurrent_dagger_episodes": args.recurrent_dagger_episodes,
             "recurrent_rl_updates": args.recurrent_rl_updates,
@@ -1033,10 +1045,19 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument(
         "--recurrent-oracle",
         default="auto",
-        choices=["auto", "oracle_strong", "oracle_strong_comm", "signal_hint_comm"],
+        choices=[
+            "auto",
+            "oracle_strong",
+            "oracle_strong_comm",
+            "signal_hint_comm",
+            "planner_comm",
+            "energy_planner_comm",
+            "pipeline_planner_comm",
+            "signal_hunt_planner_comm",
+        ],
         help=(
             "Oracle used for recurrent demos. auto uses signal_hint_comm for Signal Hunt "
-            "and oracle_strong_comm for Energy Grid/Pipeline."
+            "and scenario planner communication teachers for Energy Grid/Pipeline."
         ),
     )
     parser.add_argument("--recurrent-signal-preset", default="specialist", choices=["minimal", "specialist"])
@@ -1044,6 +1065,14 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-bc-epochs", type=int, default=1)
     parser.add_argument("--recurrent-bc-lr", type=float, default=1e-3)
     parser.add_argument("--recurrent-bc-seq-len", type=int, default=32)
+    parser.add_argument(
+        "--recurrent-bc-calibrate-send-threshold",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--recurrent-bc-send-threshold-target-rate", type=float, default=-1.0)
+    parser.add_argument("--recurrent-bc-comm-send-rate-penalty-weight", type=float, default=0.0)
+    parser.add_argument("--recurrent-bc-comm-send-rate-target", type=float, default=-1.0)
     parser.add_argument("--recurrent-dagger-rounds", type=int, default=0)
     parser.add_argument("--recurrent-dagger-episodes", type=int, default=20)
     parser.add_argument(

@@ -2681,9 +2681,34 @@ def _make_oracle_policy(env: SyncOrSinkEnv, cfg: RecurrentConfig):
         pipeline_oracle_strong,
         signal_hunt_oracle_strong,
     )
+    from syncorsink.policies.planner_comm import (
+        energy_planner_comm,
+        pipeline_planner_comm,
+        signal_hunt_planner_comm,
+    )
 
     if cfg.oracle_type == "signal_hint_comm":
         return local_signal_policy(env)
+    planner_map = {
+        "signal_hunt": signal_hunt_planner_comm,
+        "energy_grid": energy_planner_comm,
+        "pipeline_assembly": pipeline_planner_comm,
+    }
+    planner_aliases = {
+        "signal_hunt": "signal_hunt_planner_comm",
+        "energy_grid": "energy_planner_comm",
+        "pipeline_assembly": "pipeline_planner_comm",
+    }
+    if cfg.oracle_type == "planner_comm":
+        return planner_map[cfg.scenario](env)
+    if cfg.oracle_type in planner_aliases.values():
+        expected = planner_aliases[cfg.scenario]
+        if cfg.oracle_type != expected:
+            raise ValueError(
+                f"{cfg.oracle_type} is not valid for scenario={cfg.scenario!r}; "
+                f"use {expected!r} or 'planner_comm'"
+            )
+        return planner_map[cfg.scenario](env)
     oracle_map = {
         "signal_hunt": signal_hunt_oracle_strong,
         "energy_grid": energy_oracle_strong,
@@ -10290,8 +10315,19 @@ def main():
     p.add_argument("--signal-decoy-count", type=int, default=None)
     p.add_argument("--decoy-penalty", type=float, default=0.5)
     p.add_argument("--scan-window", type=int, default=3)
-    p.add_argument("--oracle", default="oracle_strong",
-                   choices=["oracle_strong", "oracle_strong_comm", "signal_hint_comm"])
+    p.add_argument(
+        "--oracle",
+        default="oracle_strong",
+        choices=[
+            "oracle_strong",
+            "oracle_strong_comm",
+            "signal_hint_comm",
+            "planner_comm",
+            "energy_planner_comm",
+            "pipeline_planner_comm",
+            "signal_hunt_planner_comm",
+        ],
+    )
     p.add_argument("--obs-exploration-memory", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--obs-exploration-age", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--obs-feedback", action=argparse.BooleanOptionalAction, default=False)

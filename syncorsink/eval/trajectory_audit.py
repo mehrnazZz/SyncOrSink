@@ -131,6 +131,11 @@ def make_oracle_policy_factory(scenario: str, oracle_type: str = "oracle_strong_
         signal_hunt_oracle,
         signal_hunt_oracle_strong,
     )
+    from syncorsink.policies.planner_comm import (
+        energy_planner_comm,
+        pipeline_planner_comm,
+        signal_hunt_planner_comm,
+    )
 
     oracle_map = {
         "signal_hunt": {
@@ -146,6 +151,26 @@ def make_oracle_policy_factory(scenario: str, oracle_type: str = "oracle_strong_
             "oracle_strong": pipeline_oracle_strong,
         },
     }
+    planner_map = {
+        "signal_hunt": signal_hunt_planner_comm,
+        "energy_grid": energy_planner_comm,
+        "pipeline_assembly": pipeline_planner_comm,
+    }
+    planner_aliases = {
+        "signal_hunt": "signal_hunt_planner_comm",
+        "energy_grid": "energy_planner_comm",
+        "pipeline_assembly": "pipeline_planner_comm",
+    }
+    if oracle_type == "planner_comm":
+        return lambda env: planner_map[scenario](env)
+    if oracle_type in planner_aliases.values():
+        expected = planner_aliases.get(scenario)
+        if oracle_type != expected:
+            raise ValueError(
+                f"{oracle_type} is not valid for scenario={scenario!r}; "
+                f"use {expected!r} or 'planner_comm'"
+            )
+        return lambda env: planner_map[scenario](env)
     base_type = oracle_type.removesuffix("_comm")
     if scenario not in oracle_map or base_type not in oracle_map[scenario]:
         if scenario == "signal_hunt" and oracle_type == "signal_hint_comm":

@@ -182,8 +182,8 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
 
     assert payload["config"]["recurrent_oracle"] == "auto"
     assert payload["config"]["recurrent_resolved_oracles"] == {
-        "energy_grid": "oracle_strong_comm",
-        "pipeline_assembly": "oracle_strong_comm",
+        "energy_grid": "planner_comm",
+        "pipeline_assembly": "planner_comm",
         "signal_hunt": "signal_hint_comm",
     }
     assert payload["config"]["recurrent_ppo_profile"] == "guarded"
@@ -196,10 +196,10 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert payload["config"]["recurrent_rl_rollout_eval_decoding"] is True
 
     assert commands["signal_hunt"][commands["signal_hunt"].index("--oracle") + 1] == "signal_hint_comm"
-    assert commands["energy_grid"][commands["energy_grid"].index("--oracle") + 1] == "oracle_strong_comm"
+    assert commands["energy_grid"][commands["energy_grid"].index("--oracle") + 1] == "planner_comm"
     assert (
         commands["pipeline_assembly"][commands["pipeline_assembly"].index("--oracle") + 1]
-        == "oracle_strong_comm"
+        == "planner_comm"
     )
     assert "--rl-balanced-rollouts" in commands["energy_grid"]
     assert "--rl-rollout-eval-decoding" in commands["pipeline_assembly"]
@@ -234,6 +234,13 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "4",
         "--recurrent-bc-epochs",
         "2",
+        "--recurrent-bc-calibrate-send-threshold",
+        "--recurrent-bc-send-threshold-target-rate",
+        "0.15",
+        "--recurrent-bc-comm-send-rate-penalty-weight",
+        "0.25",
+        "--recurrent-bc-comm-send-rate-target",
+        "0.15",
         "--recurrent-dagger-rounds",
         "1",
         "--recurrent-dagger-episodes",
@@ -284,6 +291,10 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_resolved_oracles"] == {"signal_hunt": "signal_hint_comm"}
     assert payload["config"]["recurrent_ppo_profile"] == "guarded"
     assert payload["config"]["recurrent_signal_preset"] == "specialist"
+    assert payload["config"]["recurrent_bc_calibrate_send_threshold"] is True
+    assert payload["config"]["recurrent_bc_send_threshold_target_rate"] == 0.15
+    assert payload["config"]["recurrent_bc_comm_send_rate_penalty_weight"] == 0.25
+    assert payload["config"]["recurrent_bc_comm_send_rate_target"] == 0.15
     assert "--updates" not in command
     assert "--epochs" not in command
     assert "--save-every" not in command
@@ -300,6 +311,10 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert "--no-rl-restore-best" in command
     assert "--demo-episodes" in command
     assert command[command.index("--demo-episodes") + 1] == "4"
+    assert "--bc-calibrate-send-threshold" in command
+    assert command[command.index("--bc-send-threshold-target-rate") + 1] == "0.15"
+    assert command[command.index("--bc-comm-send-rate-penalty-weight") + 1] == "0.25"
+    assert command[command.index("--bc-comm-send-rate-target") + 1] == "0.15"
     assert "--dagger-rounds" in command
     assert command[command.index("--dagger-rounds") + 1] == "1"
     assert "--train-map-sizes" in command
@@ -311,7 +326,6 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "logs/signal_hunt/seed0/recurrent_bc_rl_8x.pt"
     )
     assert "--recurrent-init-for-dagger" in command
-    assert "--bc-calibrate-send-threshold" in command
     assert "--obs-exploration-memory" in command
     assert "--obs-signal-scan-state" in command
     assert "--eval-signal-exact-target-navigation-assist" in command

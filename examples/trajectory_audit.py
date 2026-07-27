@@ -70,6 +70,10 @@ def main(argv: list[str] | None = None) -> int:
                             "oracle_comm",
                             "oracle_strong_comm",
                             "signal_hint_comm",
+                            "planner_comm",
+                            "energy_planner_comm",
+                            "pipeline_planner_comm",
+                            "signal_hunt_planner_comm",
                         ])
     parser.add_argument("--oracle-label", action="append", default=None)
     parser.add_argument("--bc-checkpoint", action="append", default=[])

@@ -250,7 +250,7 @@ BC/DAgger/PPO trainer. Recurrent runs use `--recurrent-*` flags for oracle,
 demo count, BC epochs, DAgger rounds, checkpoint init, train/eval map schedules,
 Signal Hunt specialist observation/eval assists, and PPO stability controls.
 By default, `--recurrent-oracle auto` uses the Signal Hunt specialist oracle for
-Signal Hunt and communication-wrapped strong experts for Energy Grid and
+Signal Hunt and the scenario planner communication teachers for Energy Grid and
 Pipeline Assembly. The default `--recurrent-ppo-profile guarded` applies the
 safer PPO recipe from the Signal Hunt ablation: lower LR/clip, stronger
 BC/communication KL, balanced rollouts, and eval-decoding rollouts. Use
@@ -258,7 +258,12 @@ BC/communication KL, balanced rollouts, and eval-decoding rollouts. Use
 individual knobs such as `--recurrent-rl-lr`, `--recurrent-clip`,
 `--recurrent-bc-kl-coeff`, and `--recurrent-bc-comm-kl-coeff`. Use
 `--recurrent-init-template` with `{seed}` to fine-tune each seed from its own
-BC/DAgger checkpoint. Recurrent JSON eval output and saved checkpoint eval
+BC/DAgger checkpoint. For non-Signal scenarios,
+`--recurrent-bc-calibrate-send-threshold` passes the recurrent trainer's
+post-BC communication threshold calibration into the sweep;
+`--recurrent-bc-send-threshold-target-rate` and
+`--recurrent-bc-comm-send-rate-*` expose the trainer's existing send-rate
+controls. Recurrent JSON eval output and saved checkpoint eval
 metadata are normalized into the same aggregate `success_rate`, `return`, and
 `steps` fields as MAPPO/Comm-MAT/TarMAC. When recurrent PPO restores the best
 checkpoint before saving, `eval_metrics` describes that saved checkpoint;
