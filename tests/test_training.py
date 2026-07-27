@@ -4615,6 +4615,80 @@ def test_recurrent_comm_reference_kl_tracks_all_comm_heads():
     assert shifted.item() > 0.0
 
 
+def test_recurrent_action_class_balance_weights_rare_actions():
+    from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _recurrent_action_class_weights
+
+    episodes = [{
+        "actions": np.array(
+            [
+                [0, 0, 0, 5],
+                [0, 6, 7, 7],
+            ],
+            dtype=np.int64,
+        )
+    }]
+
+    disabled = _recurrent_action_class_weights(
+        episodes,
+        RecurrentConfig(bc_action_class_balance=False),
+        torch.device("cpu"),
+    )
+    weights = _recurrent_action_class_weights(
+        episodes,
+        RecurrentConfig(
+            bc_action_class_balance=True,
+            bc_action_class_balance_max_weight=1.5,
+        ),
+        torch.device("cpu"),
+    )
+
+    assert disabled is None
+    assert weights is not None
+    assert weights[5].item() > weights[0].item()
+    assert weights[6].item() > weights[0].item()
+    assert weights.max().item() <= 1.5 + 1e-6
+    assert weights[1].item() == pytest.approx(1.0)
+
+
+def test_recurrent_bc_event_action_weights_latest_event_agents():
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _scale_latest_bc_event_action_weights,
+    )
+
+    ep_data = {"step_weights": [1.0, 1.0, 1.0, 1.0, 1.0, 2.0]}
+    info = {
+        "events": {
+            0: [{"event": "delivered"}],
+            "1": [{"event": "ignored"}],
+            2: [{"event": "recharged"}, {"event": "sync_complete"}],
+        }
+    }
+    cfg = RecurrentConfig(
+        bc_event_action_weight=4.0,
+        bc_event_action_events="delivered,recharged,sync_complete",
+    )
+
+    scaled, event_counts = _scale_latest_bc_event_action_weights(
+        ep_data,
+        info,
+        cfg,
+        num_agents=3,
+    )
+    disabled_scaled, disabled_counts = _scale_latest_bc_event_action_weights(
+        {"step_weights": [1.0, 1.0, 1.0]},
+        info,
+        RecurrentConfig(bc_event_action_weight=1.0),
+        num_agents=3,
+    )
+
+    assert scaled == 2
+    assert event_counts == {"delivered": 1, "recharged": 1, "sync_complete": 1}
+    assert ep_data["step_weights"] == [1.0, 1.0, 1.0, 4.0, 1.0, 4.0]
+    assert disabled_scaled == 0
+    assert disabled_counts == {}
+
+
 def test_recurrent_comm_length_loss_ignores_no_message_examples():
     from syncorsink.train.recurrent_bc_rl import (
         _mix_oracle_rollin_messages,

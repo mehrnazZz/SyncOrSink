@@ -124,6 +124,10 @@ class RecurrentConfig:
     bc_eval_episodes: int = 0  # <=0 uses eval_episodes
     bc_eval_seed_count: int = 1
     bc_restore_best_eval_epoch: bool = False
+    bc_action_class_balance: bool = False
+    bc_action_class_balance_max_weight: float = 5.0
+    bc_event_action_weight: float = 0.0
+    bc_event_action_events: str = "delivered,sync_complete,recharged,joint_target_scan"
     bc_signal_target_interact_weight: float = 1.0
     bc_signal_redundant_target_interact_weight: float = 1.0
     bc_signal_target_pursuit_weight: float = 1.0
@@ -1270,6 +1274,14 @@ def _event_names_by_agent(info: dict | None, num_agents: int) -> dict[int, set[s
             if isinstance(event, dict) and event.get("event"):
                 names[aid].add(str(event["event"]))
     return names
+
+
+def _bc_event_action_events(cfg: RecurrentConfig) -> set[str]:
+    return {
+        item.strip()
+        for item in str(getattr(cfg, "bc_event_action_events", "") or "").split(",")
+        if item.strip()
+    }
 
 
 def _signal_sync_feedback_flags(info: dict | None, agent_id: int, num_agents: int) -> list[float]:
@@ -3928,6 +3940,40 @@ def _scale_latest_agent_weights(
     return scaled
 
 
+def _scale_latest_bc_event_action_weights(
+    ep_data: dict,
+    info: dict | None,
+    cfg: RecurrentConfig,
+    *,
+    num_agents: int,
+) -> tuple[int, dict[str, int]]:
+    weight = float(getattr(cfg, "bc_event_action_weight", 0.0))
+    target_events = _bc_event_action_events(cfg)
+    if weight <= 1.0 or not target_events:
+        return 0, {}
+
+    events_by_agent = _event_names_by_agent(info, num_agents)
+    scaled_agents: set[int] = set()
+    event_counts: dict[str, int] = {}
+    for aid, names in events_by_agent.items():
+        matched = sorted(names & target_events)
+        if not matched:
+            continue
+        scaled_agents.add(int(aid))
+        for name in matched:
+            event_counts[name] = event_counts.get(name, 0) + 1
+
+    if not scaled_agents:
+        return 0, event_counts
+    scaled = _scale_latest_agent_weights(
+        ep_data,
+        num_agents=num_agents,
+        agent_ids=sorted(scaled_agents),
+        weight=weight,
+    )
+    return scaled, event_counts
+
+
 def _label_latest_signal_decoy_drift_actions(
     ep_data: dict,
     *,
@@ -4135,6 +4181,8 @@ def collect_episode_demos(cfg: RecurrentConfig):
     episodes = []
     successful_demos = 0
     replay_demos = 0
+    event_action_labels = 0
+    event_action_label_counts: dict[str, int] = {}
     positive_replay_events = _dagger_positive_replay_events(cfg)
     for ep in range(cfg.demo_episodes):
         env, episode_cfg = _build_training_env(cfg, ep)
@@ -4202,6 +4250,15 @@ def collect_episode_demos(cfg: RecurrentConfig):
                     })
             obs, rewards, done, truncated, info = env.step(actions)
             event_names = _event_names_by_agent(info or {}, env.num_agents)
+            event_updates, event_counts = _scale_latest_bc_event_action_weights(
+                ep_data,
+                info,
+                episode_cfg,
+                num_agents=env.num_agents,
+            )
+            event_action_labels += event_updates
+            for name, count in event_counts.items():
+                event_action_label_counts[name] = event_action_label_counts.get(name, 0) + count
             for aid, names in event_names.items():
                 for name in sorted(names & positive_replay_events):
                     positive_records.append({
@@ -4250,6 +4307,14 @@ def collect_episode_demos(cfg: RecurrentConfig):
         f"Collected {successful_demos} successful demos, "
         f"{replay_demos} replay snippets, {len(episodes)} training episodes"
     )
+    if cfg.bc_event_action_weight > 1.0:
+        print(json.dumps({
+            "bc_event_action_labels": {
+                "labels": event_action_labels,
+                "events": event_action_label_counts,
+                "weight": float(cfg.bc_event_action_weight),
+            }
+        }, indent=2, sort_keys=True))
     return episodes
 
 
@@ -4263,6 +4328,38 @@ def _recurrent_comm_send_pos_weight(episodes, cfg: RecurrentConfig, device):
         if positives > 0 and negatives > 0:
             return torch.tensor(negatives / positives, dtype=torch.float32, device=device)
     return None
+
+
+def _recurrent_action_class_weights(
+    episodes,
+    cfg: RecurrentConfig,
+    device,
+    *,
+    action_dim: int = 8,
+):
+    if not bool(cfg.bc_action_class_balance):
+        return None
+    counts = np.zeros((int(action_dim),), dtype=np.float64)
+    for episode in episodes:
+        actions = np.asarray(episode["actions"], dtype=np.int64).reshape(-1)
+        valid = actions[(actions >= 0) & (actions < int(action_dim))]
+        if valid.size:
+            counts += np.bincount(valid, minlength=int(action_dim))[: int(action_dim)]
+    total = float(counts.sum())
+    present = counts > 0
+    present_count = int(present.sum())
+    if total <= 0.0 or present_count <= 1:
+        return None
+
+    weights = np.ones((int(action_dim),), dtype=np.float32)
+    weights[present] = (total / (present_count * counts[present])).astype(np.float32)
+    denom = float((weights * counts).sum() / total)
+    if denom > 0.0:
+        weights /= denom
+    max_weight = max(1.0, float(cfg.bc_action_class_balance_max_weight))
+    weights = np.clip(weights, 0.0, max_weight)
+    weights[~present] = 1.0
+    return torch.tensor(weights, dtype=torch.float32, device=device)
 
 
 def _weighted_mean(loss: torch.Tensor, weights: torch.Tensor | None = None) -> torch.Tensor:
@@ -4763,6 +4860,17 @@ def train_recurrent_bc(
         ).to(device)
     trainable_params = list(model.parameters())
     optimizer = optim.Adam(trainable_params, lr=cfg.bc_lr)
+    action_class_weights = _recurrent_action_class_weights(episodes, cfg, device)
+    action_class_weight_values = (
+        [1.0] * 8
+        if action_class_weights is None
+        else [float(value) for value in action_class_weights.detach().cpu().tolist()]
+    )
+    if action_class_weights is not None:
+        print(
+            "[BC] action class weights "
+            + " ".join(f"{idx}:{value:.3f}" for idx, value in enumerate(action_class_weight_values))
+        )
     send_pos_weight = _recurrent_comm_send_pos_weight(episodes, cfg, device) if cfg.comm else None
     bc_eval_every = max(0, int(getattr(cfg, "bc_eval_every_epochs", 0)))
     bc_eval_seed_count = max(1, int(getattr(cfg, "bc_eval_seed_count", 1)))
@@ -5204,7 +5312,12 @@ def train_recurrent_bc(
                     else:
                         logits, hidden = model(obs_seq[t], hidden)
                     sample_weight = step_weight_seq[t]
-                    action_loss = nn.functional.cross_entropy(logits, act_seq[t], reduction="none")
+                    action_loss = nn.functional.cross_entropy(
+                        logits,
+                        act_seq[t],
+                        reduction="none",
+                        weight=action_class_weights,
+                    )
                     loss = _weighted_mean(action_loss, sample_weight)
                     rejected_target_mask = rejected_target_seq[t]
                     target_scan_action_mask = target_scan_action_mask_seq[t]
@@ -6095,6 +6208,19 @@ def train_recurrent_bc(
                 {
                     f"{log_prefix}/epoch": epoch,
                     f"{log_prefix}/loss": float(total_loss / max(loss_den, 1e-8)),
+                    f"{log_prefix}/action_class_balance": int(bool(action_class_weights is not None)),
+                    f"{log_prefix}/action_class_balance_max_weight": float(
+                        cfg.bc_action_class_balance_max_weight
+                    ),
+                    f"{log_prefix}/action_weight_up": float(action_class_weight_values[0]),
+                    f"{log_prefix}/action_weight_down": float(action_class_weight_values[1]),
+                    f"{log_prefix}/action_weight_left": float(action_class_weight_values[2]),
+                    f"{log_prefix}/action_weight_right": float(action_class_weight_values[3]),
+                    f"{log_prefix}/action_weight_stay": float(action_class_weight_values[4]),
+                    f"{log_prefix}/action_weight_interact": float(action_class_weight_values[5]),
+                    f"{log_prefix}/action_weight_pickup": float(action_class_weight_values[6]),
+                    f"{log_prefix}/action_weight_drop": float(action_class_weight_values[7]),
+                    f"{log_prefix}/event_action_weight": float(cfg.bc_event_action_weight),
                     f"{log_prefix}/comm_loss": float(avg_comm),
                     f"{log_prefix}/comm_loss_per_step": float(total_comm_loss / comm_loss_den),
                     f"{log_prefix}/comm_send_loss": float(comm_send_loss_sum / comm_loss_den),
@@ -6570,6 +6696,8 @@ def collect_recurrent_dagger_episodes(
     oracle_message_rollin_steps = 0
     oracle_message_rollin_agents = 0
     oracle_message_rollin_tokens = 0
+    event_action_labels = 0
+    event_action_label_counts: dict[str, int] = {}
     target_interact_miss_kind_counts = {name: 0 for name in _SIGNAL_TARGET_SCAN_KIND_NAMES}
     focus_events = _dagger_focus_events(cfg)
     positive_replay_events = _dagger_positive_replay_events(cfg)
@@ -7098,6 +7226,15 @@ def collect_recurrent_dagger_episodes(
                     del history[:-history_window]
             obs, _rewards, done, truncated, info = env.step(rollout_actions)
             last_info = info or {}
+            event_updates, event_counts = _scale_latest_bc_event_action_weights(
+                ep_data,
+                last_info,
+                episode_cfg,
+                num_agents=env.num_agents,
+            )
+            event_action_labels += event_updates
+            for name, count in event_counts.items():
+                event_action_label_counts[name] = event_action_label_counts.get(name, 0) + count
             event_names = _event_names_by_agent(last_info, env.num_agents)
             decoy_scan_agents = [
                 int(aid)
@@ -7267,6 +7404,9 @@ def collect_recurrent_dagger_episodes(
         "oracle_message_rollin_steps": int(oracle_message_rollin_steps),
         "oracle_message_rollin_agents": int(oracle_message_rollin_agents),
         "oracle_message_rollin_tokens": int(oracle_message_rollin_tokens),
+        "event_action_labels": int(event_action_labels),
+        "event_action_label_events": event_action_label_counts,
+        "event_action_weight": float(cfg.bc_event_action_weight),
         "target_interact_miss_kinds": target_interact_miss_kind_counts,
         "recovery_state_updates": recovery_state_updates,
         "focus_error_weight": float(cfg.dagger_focus_error_weight),
@@ -7525,6 +7665,18 @@ def train_recurrent_bc_dagger(
                         "dagger/collect_oracle_message_rollin_tokens": int(
                             collect_summary.get("oracle_message_rollin_tokens", 0)
                         ),
+                        "dagger/collect_event_action_labels": int(
+                            collect_summary.get("event_action_labels", 0)
+                        ),
+                        "dagger/collect_event_action_weight": float(
+                            collect_summary.get("event_action_weight", 0.0)
+                        ),
+                        **{
+                            f"dagger/collect_event_action_{event}": int(count)
+                            for event, count in sorted(
+                                (collect_summary.get("event_action_label_events") or {}).items()
+                            )
+                        },
                         **{
                             f"dagger/collect_target_interact_miss_{kind_name}": int(count)
                             for kind_name, count in sorted(
@@ -10377,6 +10529,19 @@ def main():
     p.add_argument("--bc-eval-seed-count", type=int, default=1)
     p.add_argument("--bc-restore-best-eval-epoch", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--bc-equal-episode-weight", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--bc-action-class-balance", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--bc-action-class-balance-max-weight", type=float, default=5.0)
+    p.add_argument(
+        "--bc-event-action-weight",
+        type=float,
+        default=0.0,
+        help="Upweight latest expert-labeled agent actions that trigger configured environment events",
+    )
+    p.add_argument(
+        "--bc-event-action-events",
+        default="delivered,sync_complete,recharged,joint_target_scan",
+        help="Comma-separated event names that receive --bc-event-action-weight in demos/DAgger",
+    )
     p.add_argument("--bc-comm-loss-weight", type=float, default=0.1)
     p.add_argument("--bc-comm-send-pos-weight", type=float, default=0.0)
     p.add_argument("--bc-comm-send-loss-weight", type=float, default=1.0)
@@ -10839,6 +11004,10 @@ def main():
         bc_eval_seed_count=args.bc_eval_seed_count,
         bc_restore_best_eval_epoch=args.bc_restore_best_eval_epoch,
         bc_equal_episode_weight=args.bc_equal_episode_weight,
+        bc_action_class_balance=args.bc_action_class_balance,
+        bc_action_class_balance_max_weight=args.bc_action_class_balance_max_weight,
+        bc_event_action_weight=args.bc_event_action_weight,
+        bc_event_action_events=args.bc_event_action_events,
         bc_comm_loss_weight=args.bc_comm_loss_weight,
         bc_comm_send_pos_weight=args.bc_comm_send_pos_weight,
         bc_comm_send_loss_weight=args.bc_comm_send_loss_weight,

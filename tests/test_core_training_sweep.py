@@ -190,6 +190,12 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert payload["config"]["recurrent_rl_lr"] == 1e-5
     assert payload["config"]["recurrent_clip"] == 0.1
     assert payload["config"]["recurrent_entropy_coeff"] == 0.0
+    assert payload["config"]["recurrent_bc_action_class_balance"] is True
+    assert payload["config"]["recurrent_bc_action_class_balance_max_weight"] == 5.0
+    assert payload["config"]["recurrent_bc_event_action_weight"] == 2.0
+    assert payload["config"]["recurrent_bc_event_action_events"] == (
+        "delivered,sync_complete,recharged,joint_target_scan"
+    )
     assert payload["config"]["recurrent_bc_kl_coeff"] == 2.0
     assert payload["config"]["recurrent_bc_comm_kl_coeff"] == 2.0
     assert payload["config"]["recurrent_rl_balanced_rollouts"] is True
@@ -201,6 +207,16 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
         commands["pipeline_assembly"][commands["pipeline_assembly"].index("--oracle") + 1]
         == "planner_comm"
     )
+    assert "--bc-action-class-balance" in commands["energy_grid"]
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-action-class-balance-max-weight") + 1
+    ] == "5.0"
+    assert commands["energy_grid"][
+        commands["energy_grid"].index("--bc-event-action-weight") + 1
+    ] == "2.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-event-action-events") + 1
+    ] == "delivered,sync_complete,recharged,joint_target_scan"
     assert "--rl-balanced-rollouts" in commands["energy_grid"]
     assert "--rl-rollout-eval-decoding" in commands["pipeline_assembly"]
 
@@ -234,6 +250,12 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "4",
         "--recurrent-bc-epochs",
         "2",
+        "--recurrent-bc-action-class-balance-max-weight",
+        "4.0",
+        "--recurrent-bc-event-action-weight",
+        "6.0",
+        "--recurrent-bc-event-action-events",
+        "delivered,sync_complete",
         "--recurrent-bc-calibrate-send-threshold",
         "--recurrent-bc-send-threshold-target-rate",
         "0.15",
@@ -291,6 +313,10 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_resolved_oracles"] == {"signal_hunt": "signal_hint_comm"}
     assert payload["config"]["recurrent_ppo_profile"] == "guarded"
     assert payload["config"]["recurrent_signal_preset"] == "specialist"
+    assert payload["config"]["recurrent_bc_action_class_balance"] is True
+    assert payload["config"]["recurrent_bc_action_class_balance_max_weight"] == 4.0
+    assert payload["config"]["recurrent_bc_event_action_weight"] == 6.0
+    assert payload["config"]["recurrent_bc_event_action_events"] == "delivered,sync_complete"
     assert payload["config"]["recurrent_bc_calibrate_send_threshold"] is True
     assert payload["config"]["recurrent_bc_send_threshold_target_rate"] == 0.15
     assert payload["config"]["recurrent_bc_comm_send_rate_penalty_weight"] == 0.25
@@ -311,6 +337,10 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert "--no-rl-restore-best" in command
     assert "--demo-episodes" in command
     assert command[command.index("--demo-episodes") + 1] == "4"
+    assert "--bc-action-class-balance" in command
+    assert command[command.index("--bc-action-class-balance-max-weight") + 1] == "4.0"
+    assert command[command.index("--bc-event-action-weight") + 1] == "6.0"
+    assert command[command.index("--bc-event-action-events") + 1] == "delivered,sync_complete"
     assert "--bc-calibrate-send-threshold" in command
     assert command[command.index("--bc-send-threshold-target-rate") + 1] == "0.15"
     assert command[command.index("--bc-comm-send-rate-penalty-weight") + 1] == "0.25"

@@ -274,6 +274,12 @@ def _build_recurrent_command(
         str(args.recurrent_bc_lr),
         "--bc-seq-len",
         str(args.recurrent_bc_seq_len),
+        "--bc-action-class-balance-max-weight",
+        str(args.recurrent_bc_action_class_balance_max_weight),
+        "--bc-event-action-weight",
+        str(args.recurrent_bc_event_action_weight),
+        "--bc-event-action-events",
+        args.recurrent_bc_event_action_events,
         "--bc-comm-send-rate-penalty-weight",
         str(args.recurrent_bc_comm_send_rate_penalty_weight),
         "--bc-comm-send-rate-target",
@@ -333,6 +339,8 @@ def _build_recurrent_command(
     ]
     if case.energy_preset is not None:
         cmd.extend(["--energy-preset", case.energy_preset])
+    if args.recurrent_bc_action_class_balance:
+        cmd.append("--bc-action-class-balance")
     if args.recurrent_bc_calibrate_send_threshold:
         cmd.append("--bc-calibrate-send-threshold")
     if args.recurrent_train_map_sizes:
@@ -542,6 +550,10 @@ def run_suite(args) -> dict:
             "recurrent_bc_epochs": args.recurrent_bc_epochs,
             "recurrent_bc_lr": args.recurrent_bc_lr,
             "recurrent_bc_seq_len": args.recurrent_bc_seq_len,
+            "recurrent_bc_action_class_balance": args.recurrent_bc_action_class_balance,
+            "recurrent_bc_action_class_balance_max_weight": args.recurrent_bc_action_class_balance_max_weight,
+            "recurrent_bc_event_action_weight": args.recurrent_bc_event_action_weight,
+            "recurrent_bc_event_action_events": args.recurrent_bc_event_action_events,
             "recurrent_bc_calibrate_send_threshold": args.recurrent_bc_calibrate_send_threshold,
             "recurrent_bc_send_threshold_target_rate": args.recurrent_bc_send_threshold_target_rate,
             "recurrent_bc_comm_send_rate_penalty_weight": args.recurrent_bc_comm_send_rate_penalty_weight,
@@ -1065,6 +1077,17 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-bc-epochs", type=int, default=1)
     parser.add_argument("--recurrent-bc-lr", type=float, default=1e-3)
     parser.add_argument("--recurrent-bc-seq-len", type=int, default=32)
+    parser.add_argument(
+        "--recurrent-bc-action-class-balance",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--recurrent-bc-action-class-balance-max-weight", type=float, default=5.0)
+    parser.add_argument("--recurrent-bc-event-action-weight", type=float, default=2.0)
+    parser.add_argument(
+        "--recurrent-bc-event-action-events",
+        default="delivered,sync_complete,recharged,joint_target_scan",
+    )
     parser.add_argument(
         "--recurrent-bc-calibrate-send-threshold",
         action=argparse.BooleanOptionalAction,
