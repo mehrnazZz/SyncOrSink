@@ -59,3 +59,29 @@ def test_pipeline_curriculum_knobs_can_force_sync_and_dependencies():
     assert all(stage["sync"] for stage in stages)
     assert stages[0]["deps"] == []
     assert all(stage["deps"] for stage in stages[1:])
+
+
+def test_resource_pickup_emits_training_event():
+    config = SyncOrSinkConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        num_agents=3,
+        fov_preset="easy",
+        pipeline_stage_count=1,
+        pipeline_required_per_stage_min=1,
+        pipeline_required_per_stage_max=1,
+        pipeline_sync_probability=0.0,
+        pipeline_dependency_probability=0.0,
+    )
+    env = SyncOrSinkEnv(config)
+    env.reset(seed=0)
+    resource_pos, resource_type = next(iter(env.scenario_state.data["resource_types"].items()))
+    env.agent_positions[0] = resource_pos
+
+    _, _, _, _, info = env.step({
+        0: {"action": env.ACTION_PICKUP},
+        1: {"action": env.ACTION_STAY},
+        2: {"action": env.ACTION_STAY},
+    })
+
+    assert {"event": "picked_resource", "resource_type": int(resource_type)} in info["events"][0]

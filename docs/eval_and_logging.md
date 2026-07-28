@@ -274,6 +274,19 @@ rollout chunk has no completed episodes, `rollout/mean_ep_return`,
 `rollout/mean_ep_len`, and `rollout/mean_ep_comm_tokens` fall back to partial
 segment means so plots do not show misleading zeros.
 
+`python -m syncorsink.train.recurrent_curriculum` runs staged recurrent
+BC/DAgger curricula and can optionally fine-tune each stage with recurrent PPO.
+For Pipeline Assembly, use `--scenario pipeline_assembly --oracle-type
+planner_comm --agents 3` plus the per-stage Pipeline difficulty schedules:
+`--pipeline-stage-count-schedule`, `--pipeline-required-per-stage-*-schedule`,
+`--pipeline-sync-probability-schedule`, and
+`--pipeline-dependency-probability-schedule`. The runner writes
+`summary.json`, one checkpoint per stage, and a `_best.pt` RL checkpoint when
+`--rl-updates > 0` and `--rl-save-best` is enabled. It also forwards the
+generic rare-action BC controls `--bc-action-class-balance` and
+`--bc-event-action-weight`; the default event list includes `picked_resource`,
+`delivered`, and `sync_complete` for Pipeline learning.
+
 `examples/train_eval_workbench.py` is the single-run MAPPO checkpoint
 round-trip smoke. It exposes the MAPPO trainer's communication send-rate
 curriculum knobs, observation-memory flags, backbone choice, and final eval

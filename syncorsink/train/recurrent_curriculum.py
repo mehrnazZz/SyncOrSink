@@ -1,4 +1,4 @@
-"""Staged recurrent BC/DAgger curriculum for Signal Hunt.
+"""Staged recurrent BC/DAgger curriculum for SyncOrSink scenarios.
 
 This runner is intentionally trainer-facing: it creates local demos,
 checkpoints, and summaries under logs/ and does not define benchmark artifacts.
@@ -24,6 +24,7 @@ from syncorsink.train.recurrent_bc_rl import (
     evaluate_recurrent_policy_multi_seed,
     load_recurrent_actor_checkpoint,
     train_recurrent_bc_dagger,
+    train_recurrent_rl,
 )
 
 
@@ -42,7 +43,8 @@ class RecurrentCurriculumConfig:
     stop_on_unmet_mastery: bool = True
     carry_model_between_stages: bool = True
 
-    # Observation and communication defaults used by the strongest recurrent Signal Hunt runs.
+    # Observation and communication defaults remain tuned for recurrent Signal Hunt;
+    # override scenario/oracle/channel fields for Pipeline and Energy curricula.
     oracle_type: str = "signal_hint_comm"
     obs_exploration_memory: bool = True
     obs_exploration_age: bool = False
@@ -69,6 +71,11 @@ class RecurrentCurriculumConfig:
     pipeline_required_per_stage_max: int = 2
     pipeline_sync_probability: float = 0.5
     pipeline_dependency_probability: float = 0.7
+    pipeline_stage_count_schedule: str = ""
+    pipeline_required_per_stage_min_schedule: str = ""
+    pipeline_required_per_stage_max_schedule: str = ""
+    pipeline_sync_probability_schedule: str = ""
+    pipeline_dependency_probability_schedule: str = ""
 
     hidden_dim: int = 128
     demo_episodes: int = 60
@@ -79,6 +86,11 @@ class RecurrentCurriculumConfig:
     bc_eval_episodes: int = 0
     bc_eval_seed_count: int = 1
     bc_restore_best_eval_epoch: bool = False
+    bc_equal_episode_weight: bool = True
+    bc_action_class_balance: bool = False
+    bc_action_class_balance_max_weight: float = 5.0
+    bc_event_action_weight: float = 0.0
+    bc_event_action_events: str = "picked_resource,delivered,sync_complete,recharged,joint_target_scan"
     bc_comm_loss_weight: float = 0.1
     bc_comm_send_pos_weight: float = 5.0
     bc_calibrate_send_threshold: bool = True
@@ -154,6 +166,33 @@ class RecurrentCurriculumConfig:
     dagger_max_failed_parent_replay_snippets_per_episode: int = -1
     dagger_failed_parent_replay_weight_scale: float = 1.0
     dagger_expert_max_replay_snippets_per_episode: int = -1
+
+    rl_updates: int = 0
+    rollout_steps: int = 256
+    rl_balanced_rollouts: bool = False
+    rl_rollout_map_steps: str = ""
+    rl_rollout_eval_decoding: bool = False
+    rl_redundant_target_scan_penalty: float = 0.0
+    rl_wrong_target_scan_penalty: float = 0.0
+    rl_epochs: int = 2
+    minibatch_seqs: int = 8
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip: float = 0.2
+    value_clip: float = 0.2
+    entropy_coeff: float = 0.01
+    rl_lr: float = 3e-5
+    max_grad_norm: float = 0.5
+    bc_kl_coeff: float = 0.5
+    bc_comm_kl_coeff: float = 0.5
+    rl_eval_every: int = 5
+    rl_eval_episodes: int = 20
+    rl_eval_seed: int = 10000
+    rl_eval_seed_count: int = 1
+    rl_eval_seed_list: str = ""
+    rl_restore_best: bool = True
+    rl_save_best: bool = True
+    rl_best_save: str | None = None
 
     eval_episodes: int = 12
     eval_seed: int = 3000
@@ -242,8 +281,17 @@ def run_recurrent_curriculum(cfg: RecurrentCurriculumConfig) -> dict[str, Any]:
             wandb_run=stage_run,
             initial_model=model if cfg.carry_model_between_stages else None,
         )
-        eval_result = (best_round or {}).get("eval")
-        if eval_result is None:
+        bc_eval_result = (best_round or {}).get("eval")
+        if bc_eval_result is None:
+            bc_eval_result = evaluate_recurrent_policy_multi_seed(
+                stage_cfg,
+                model,
+                device,
+                seed_count=max(1, int(stage_cfg.eval_seed_count)),
+            )
+        eval_result = bc_eval_result
+        if int(stage_cfg.rl_updates) > 0:
+            model = train_recurrent_rl(stage_cfg, model, device, wandb_run=stage_run)
             eval_result = evaluate_recurrent_policy_multi_seed(
                 stage_cfg,
                 model,
@@ -273,6 +321,9 @@ def run_recurrent_curriculum(cfg: RecurrentCurriculumConfig) -> dict[str, Any]:
             "dataset_episodes": len(all_episodes),
             "dagger_history": history,
             "best_round": best_round,
+            "bc_eval": bc_eval_result,
+            "rl_updates": int(stage_cfg.rl_updates),
+            "rl_best_checkpoint": _stage_rl_best_checkpoint(stage_cfg),
             "initial_recurrent_checkpoint": cfg.initial_recurrent_checkpoint if stage_idx == 0 else None,
             "eval": eval_result,
             "mastery": mastery,
@@ -391,6 +442,18 @@ def _stage_checkpoint_path(checkpoints_dir: Path, stage_idx: int, suite: tuple[i
     return checkpoints_dir / f"stage{stage_idx}_{_stage_name(suite)}.pt"
 
 
+def _stage_rl_best_checkpoint(stage_cfg: RecurrentConfig) -> str | None:
+    if not stage_cfg.rl_save_best:
+        return None
+    if stage_cfg.rl_best_save:
+        return str(stage_cfg.rl_best_save)
+    if not stage_cfg.save:
+        return None
+    path = Path(stage_cfg.save)
+    suffix = path.suffix or ".pt"
+    return str(path.with_name(f"{path.stem}_best{suffix}"))
+
+
 def _planned_stage_row(
     stage_idx: int,
     suite: tuple[int, ...],
@@ -404,6 +467,8 @@ def _planned_stage_row(
         "train_map_sizes": list(suite),
         "eval_map_sizes": list(suite),
         "max_steps": {str(size): int(max_steps.get(size, _stage_max_steps((size,), max_steps))) for size in suite},
+        "pipeline": _stage_pipeline_settings(cfg, stage_idx),
+        "rl_updates": int(cfg.rl_updates),
         "promotion_success_threshold": float(cfg.promotion_success_threshold),
         "checkpoint": str(_stage_checkpoint_path(checkpoints_dir, stage_idx, suite)),
     }
@@ -421,6 +486,7 @@ def _stage_recurrent_config(
 ) -> RecurrentConfig:
     run_base = cfg.wandb_run or cfg.run_name or "recurrent_curriculum"
     stage_wandb_run = f"{run_base}-stage{stage_idx}-{_stage_name(suite)}"
+    pipeline = _stage_pipeline_settings(cfg, stage_idx)
     return RecurrentConfig(
         scenario=cfg.scenario,
         map_size=int(suite[0]),
@@ -452,11 +518,11 @@ def _stage_recurrent_config(
         comm_max_messages=cfg.comm_max_messages,
         comm_cost=cfg.comm_cost,
         comm_len_cost=cfg.comm_len_cost,
-        pipeline_stage_count=cfg.pipeline_stage_count,
-        pipeline_required_per_stage_min=cfg.pipeline_required_per_stage_min,
-        pipeline_required_per_stage_max=cfg.pipeline_required_per_stage_max,
-        pipeline_sync_probability=cfg.pipeline_sync_probability,
-        pipeline_dependency_probability=cfg.pipeline_dependency_probability,
+        pipeline_stage_count=pipeline["stage_count"],
+        pipeline_required_per_stage_min=pipeline["required_per_stage_min"],
+        pipeline_required_per_stage_max=pipeline["required_per_stage_max"],
+        pipeline_sync_probability=pipeline["sync_probability"],
+        pipeline_dependency_probability=pipeline["dependency_probability"],
         demo_episodes=cfg.demo_episodes,
         bc_epochs=cfg.bc_epochs,
         bc_lr=cfg.bc_lr,
@@ -465,6 +531,11 @@ def _stage_recurrent_config(
         bc_eval_episodes=cfg.bc_eval_episodes,
         bc_eval_seed_count=cfg.bc_eval_seed_count,
         bc_restore_best_eval_epoch=cfg.bc_restore_best_eval_epoch,
+        bc_equal_episode_weight=cfg.bc_equal_episode_weight,
+        bc_action_class_balance=cfg.bc_action_class_balance,
+        bc_action_class_balance_max_weight=cfg.bc_action_class_balance_max_weight,
+        bc_event_action_weight=cfg.bc_event_action_weight,
+        bc_event_action_events=cfg.bc_event_action_events,
         bc_comm_loss_weight=cfg.bc_comm_loss_weight,
         bc_comm_send_pos_weight=cfg.bc_comm_send_pos_weight,
         bc_calibrate_send_threshold=cfg.bc_calibrate_send_threshold,
@@ -551,7 +622,32 @@ def _stage_recurrent_config(
         ),
         dagger_failed_parent_replay_weight_scale=cfg.dagger_failed_parent_replay_weight_scale,
         dagger_expert_max_replay_snippets_per_episode=cfg.dagger_expert_max_replay_snippets_per_episode,
-        rl_updates=0,
+        rl_updates=cfg.rl_updates,
+        rollout_steps=cfg.rollout_steps,
+        rl_balanced_rollouts=cfg.rl_balanced_rollouts,
+        rl_rollout_map_steps=cfg.rl_rollout_map_steps,
+        rl_rollout_eval_decoding=cfg.rl_rollout_eval_decoding,
+        rl_redundant_target_scan_penalty=cfg.rl_redundant_target_scan_penalty,
+        rl_wrong_target_scan_penalty=cfg.rl_wrong_target_scan_penalty,
+        rl_epochs=cfg.rl_epochs,
+        minibatch_seqs=cfg.minibatch_seqs,
+        gamma=cfg.gamma,
+        gae_lambda=cfg.gae_lambda,
+        clip=cfg.clip,
+        value_clip=cfg.value_clip,
+        entropy_coeff=cfg.entropy_coeff,
+        rl_lr=cfg.rl_lr,
+        max_grad_norm=cfg.max_grad_norm,
+        bc_kl_coeff=cfg.bc_kl_coeff,
+        bc_comm_kl_coeff=cfg.bc_comm_kl_coeff,
+        rl_eval_every=cfg.rl_eval_every,
+        rl_eval_episodes=cfg.rl_eval_episodes,
+        rl_eval_seed=cfg.rl_eval_seed,
+        rl_eval_seed_count=cfg.rl_eval_seed_count,
+        rl_eval_seed_list=cfg.rl_eval_seed_list,
+        rl_restore_best=cfg.rl_restore_best,
+        rl_save_best=cfg.rl_save_best,
+        rl_best_save=cfg.rl_best_save,
         eval_episodes=cfg.eval_episodes,
         eval_seed=int(cfg.eval_seed) + stage_idx * 100000,
         eval_seed_count=cfg.eval_seed_count,
@@ -578,6 +674,73 @@ def _stage_recurrent_config(
         wandb_project=cfg.wandb_project,
         wandb_run=stage_wandb_run,
     )
+
+
+def _stage_pipeline_settings(cfg: RecurrentCurriculumConfig, stage_idx: int) -> dict[str, Any]:
+    return {
+        "stage_count": _stage_optional_int_schedule_value(
+            cfg.pipeline_stage_count_schedule,
+            stage_idx,
+            cfg.pipeline_stage_count,
+        ),
+        "required_per_stage_min": _stage_int_schedule_value(
+            cfg.pipeline_required_per_stage_min_schedule,
+            stage_idx,
+            cfg.pipeline_required_per_stage_min,
+        ),
+        "required_per_stage_max": _stage_int_schedule_value(
+            cfg.pipeline_required_per_stage_max_schedule,
+            stage_idx,
+            cfg.pipeline_required_per_stage_max,
+        ),
+        "sync_probability": _stage_float_schedule_value(
+            cfg.pipeline_sync_probability_schedule,
+            stage_idx,
+            cfg.pipeline_sync_probability,
+        ),
+        "dependency_probability": _stage_float_schedule_value(
+            cfg.pipeline_dependency_probability_schedule,
+            stage_idx,
+            cfg.pipeline_dependency_probability,
+        ),
+    }
+
+
+def _stage_schedule_items(raw_value: str) -> list[str]:
+    return [
+        item.strip()
+        for item in str(raw_value or "").replace(";", ",").split(",")
+        if item.strip()
+    ]
+
+
+def _stage_schedule_value(
+    raw_value: str,
+    stage_idx: int,
+    default: Any,
+    caster,
+    *,
+    optional_none: bool = False,
+) -> Any:
+    items = _stage_schedule_items(raw_value)
+    if not items:
+        return default
+    value = items[min(int(stage_idx), len(items) - 1)]
+    if optional_none and value.lower() in {"none", "null", "default"}:
+        return None
+    return caster(value)
+
+
+def _stage_optional_int_schedule_value(raw_value: str, stage_idx: int, default: int | None) -> int | None:
+    return _stage_schedule_value(raw_value, stage_idx, default, int, optional_none=True)
+
+
+def _stage_int_schedule_value(raw_value: str, stage_idx: int, default: int) -> int:
+    return int(_stage_schedule_value(raw_value, stage_idx, default, int))
+
+
+def _stage_float_schedule_value(raw_value: str, stage_idx: int, default: float) -> float:
+    return float(_stage_schedule_value(raw_value, stage_idx, default, float))
 
 
 def _mastery_row(eval_result: dict[str, Any], threshold: float) -> dict[str, Any]:
@@ -656,7 +819,11 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Staged recurrent Signal Hunt curriculum")
+    parser = argparse.ArgumentParser(description="Staged recurrent SyncOrSink curriculum")
+    parser.add_argument("--scenario", default="signal_hunt")
+    parser.add_argument("--agents", type=int, default=2)
+    parser.add_argument("--fov-preset", choices=["hard", "medium", "easy"], default="easy")
+    parser.add_argument("--oracle-type", default="signal_hint_comm")
     parser.add_argument("--stage-map-suites", default="8;8,16;8,16,32")
     parser.add_argument("--max-steps-by-map", default="8:60,16:120,32:240")
     parser.add_argument("--train-map-sampling-weights", default="")
@@ -667,15 +834,43 @@ def main() -> None:
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--bc-epochs", type=int, default=3)
     parser.add_argument("--bc-lr", type=float, default=1e-4)
+    parser.add_argument("--bc-seq-len", type=int, default=32)
     parser.add_argument("--bc-eval-every-epochs", type=int, default=0)
     parser.add_argument("--bc-eval-episodes", type=int, default=0)
     parser.add_argument("--bc-eval-seed-count", type=int, default=1)
     parser.add_argument("--bc-restore-best-eval-epoch", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--bc-equal-episode-weight", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--bc-action-class-balance", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--bc-action-class-balance-max-weight", type=float, default=5.0)
+    parser.add_argument("--bc-event-action-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--bc-event-action-events",
+        default="picked_resource,delivered,sync_complete,recharged,joint_target_scan",
+    )
+    parser.add_argument("--bc-comm-loss-weight", type=float, default=0.1)
+    parser.add_argument("--bc-comm-send-pos-weight", type=float, default=5.0)
+    parser.add_argument("--bc-calibrate-send-threshold", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--bc-send-threshold-target-rate", type=float, default=-1.0)
+    parser.add_argument("--obs-exploration-memory", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--obs-signal-negative-memory", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--obs-exploration-age", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--obs-feedback", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--obs-normalize-tokens", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--obs-memory-mode", choices=["full", "egocentric"], default="egocentric")
+    parser.add_argument("--obs-memory-radius", type=int, default=4)
+    parser.add_argument("--obs-navigation-features", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--obs-signal-features", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--obs-signal-sync-feedback", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--obs-signal-scan-state", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--obs-signal-negative-memory-window", type=int, default=64)
     parser.add_argument("--obs-signal-inferred-target-features", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--obs-signal-target-match-features", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--comm", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--comm-token-limit", type=int, default=8)
+    parser.add_argument("--comm-vocab-size", type=int, default=32)
+    parser.add_argument("--comm-max-messages", type=int, default=8)
+    parser.add_argument("--comm-cost", type=float, default=0.01)
+    parser.add_argument("--comm-len-cost", type=float, default=0.0)
     parser.add_argument("--bc-signal-redundant-target-interact-weight", type=float, default=1.0)
     parser.add_argument("--bc-signal-target-pursuit-weight", type=float, default=1.0)
     parser.add_argument("--bc-signal-target-pursuit-action-weight", type=float, default=0.0)
@@ -713,6 +908,18 @@ def main() -> None:
     parser.add_argument("--pipeline-required-per-stage-max", type=int, default=2)
     parser.add_argument("--pipeline-sync-probability", type=float, default=0.5)
     parser.add_argument("--pipeline-dependency-probability", type=float, default=0.7)
+    parser.add_argument(
+        "--pipeline-stage-count-schedule",
+        default="",
+        help=(
+            "Comma- or semicolon-separated per-curriculum-stage override. "
+            "Use none/null/default to keep procedural default stage counts."
+        ),
+    )
+    parser.add_argument("--pipeline-required-per-stage-min-schedule", default="")
+    parser.add_argument("--pipeline-required-per-stage-max-schedule", default="")
+    parser.add_argument("--pipeline-sync-probability-schedule", default="")
+    parser.add_argument("--pipeline-dependency-probability-schedule", default="")
     parser.add_argument("--dagger-rounds", type=int, default=1)
     parser.add_argument("--dagger-episodes", type=int, default=16)
     parser.add_argument("--dagger-seed-base", type=int, default=10000)
@@ -755,7 +962,34 @@ def main() -> None:
     parser.add_argument("--dagger-max-failed-parent-replay-snippets-per-episode", type=int, default=-1)
     parser.add_argument("--dagger-failed-parent-replay-weight-scale", type=float, default=1.0)
     parser.add_argument("--dagger-expert-max-replay-snippets-per-episode", type=int, default=-1)
+    parser.add_argument("--rl-updates", type=int, default=0)
+    parser.add_argument("--rollout-steps", type=int, default=256)
+    parser.add_argument("--rl-balanced-rollouts", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--rl-rollout-map-steps", default="")
+    parser.add_argument("--rl-rollout-eval-decoding", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--rl-redundant-target-scan-penalty", type=float, default=0.0)
+    parser.add_argument("--rl-wrong-target-scan-penalty", type=float, default=0.0)
+    parser.add_argument("--rl-epochs", type=int, default=2)
+    parser.add_argument("--minibatch-seqs", type=int, default=8)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--gae-lambda", type=float, default=0.95)
+    parser.add_argument("--clip", type=float, default=0.2)
+    parser.add_argument("--value-clip", type=float, default=0.2)
+    parser.add_argument("--entropy-coeff", type=float, default=0.01)
+    parser.add_argument("--rl-lr", type=float, default=3e-5)
+    parser.add_argument("--max-grad-norm", type=float, default=0.5)
+    parser.add_argument("--bc-kl-coeff", type=float, default=0.5)
+    parser.add_argument("--bc-comm-kl-coeff", type=float, default=0.5)
+    parser.add_argument("--rl-eval-every", type=int, default=5)
+    parser.add_argument("--rl-eval-episodes", type=int, default=20)
+    parser.add_argument("--rl-eval-seed", type=int, default=10000)
+    parser.add_argument("--rl-eval-seed-count", type=int, default=1)
+    parser.add_argument("--rl-eval-seed-list", default="")
+    parser.add_argument("--rl-restore-best", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--rl-save-best", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--rl-best-save", default=None)
     parser.add_argument("--eval-episodes", type=int, default=12)
+    parser.add_argument("--eval-seed", type=int, default=3000)
     parser.add_argument("--eval-seed-count", type=int, default=2)
     parser.add_argument("--eval-send-threshold", type=float, default=None)
     parser.add_argument("--eval-signal-target-scan-threshold", type=float, default=-1.0)
@@ -792,6 +1026,10 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = RecurrentCurriculumConfig(
+        scenario=args.scenario,
+        agents=args.agents,
+        fov_preset=args.fov_preset,
+        oracle_type=args.oracle_type,
         stage_map_suites=args.stage_map_suites,
         max_steps_by_map=args.max_steps_by_map,
         train_map_sampling_weights=args.train_map_sampling_weights,
@@ -802,15 +1040,40 @@ def main() -> None:
         hidden_dim=args.hidden_dim,
         bc_epochs=args.bc_epochs,
         bc_lr=args.bc_lr,
+        bc_seq_len=args.bc_seq_len,
         bc_eval_every_epochs=args.bc_eval_every_epochs,
         bc_eval_episodes=args.bc_eval_episodes,
         bc_eval_seed_count=args.bc_eval_seed_count,
         bc_restore_best_eval_epoch=args.bc_restore_best_eval_epoch,
+        bc_equal_episode_weight=args.bc_equal_episode_weight,
+        bc_action_class_balance=args.bc_action_class_balance,
+        bc_action_class_balance_max_weight=args.bc_action_class_balance_max_weight,
+        bc_event_action_weight=args.bc_event_action_weight,
+        bc_event_action_events=args.bc_event_action_events,
+        bc_comm_loss_weight=args.bc_comm_loss_weight,
+        bc_comm_send_pos_weight=args.bc_comm_send_pos_weight,
+        bc_calibrate_send_threshold=args.bc_calibrate_send_threshold,
+        bc_send_threshold_target_rate=args.bc_send_threshold_target_rate,
+        obs_exploration_memory=args.obs_exploration_memory,
         obs_exploration_age=args.obs_exploration_age,
+        obs_feedback=args.obs_feedback,
+        obs_normalize_tokens=args.obs_normalize_tokens,
+        obs_memory_mode=args.obs_memory_mode,
+        obs_memory_radius=args.obs_memory_radius,
+        obs_navigation_features=args.obs_navigation_features,
+        obs_signal_features=args.obs_signal_features,
+        obs_signal_sync_feedback=args.obs_signal_sync_feedback,
+        obs_signal_scan_state=args.obs_signal_scan_state,
         obs_signal_negative_memory=args.obs_signal_negative_memory,
         obs_signal_negative_memory_window=args.obs_signal_negative_memory_window,
         obs_signal_inferred_target_features=args.obs_signal_inferred_target_features,
         obs_signal_target_match_features=args.obs_signal_target_match_features,
+        comm=args.comm,
+        comm_token_limit=args.comm_token_limit,
+        comm_vocab_size=args.comm_vocab_size,
+        comm_max_messages=args.comm_max_messages,
+        comm_cost=args.comm_cost,
+        comm_len_cost=args.comm_len_cost,
         bc_signal_redundant_target_interact_weight=args.bc_signal_redundant_target_interact_weight,
         bc_signal_target_pursuit_weight=args.bc_signal_target_pursuit_weight,
         bc_signal_target_pursuit_action_weight=args.bc_signal_target_pursuit_action_weight,
@@ -854,6 +1117,11 @@ def main() -> None:
         pipeline_required_per_stage_max=args.pipeline_required_per_stage_max,
         pipeline_sync_probability=args.pipeline_sync_probability,
         pipeline_dependency_probability=args.pipeline_dependency_probability,
+        pipeline_stage_count_schedule=args.pipeline_stage_count_schedule,
+        pipeline_required_per_stage_min_schedule=args.pipeline_required_per_stage_min_schedule,
+        pipeline_required_per_stage_max_schedule=args.pipeline_required_per_stage_max_schedule,
+        pipeline_sync_probability_schedule=args.pipeline_sync_probability_schedule,
+        pipeline_dependency_probability_schedule=args.pipeline_dependency_probability_schedule,
         dagger_rounds=args.dagger_rounds,
         dagger_episodes=args.dagger_episodes,
         dagger_seed_base=args.dagger_seed_base,
@@ -891,7 +1159,34 @@ def main() -> None:
         ),
         dagger_failed_parent_replay_weight_scale=args.dagger_failed_parent_replay_weight_scale,
         dagger_expert_max_replay_snippets_per_episode=args.dagger_expert_max_replay_snippets_per_episode,
+        rl_updates=args.rl_updates,
+        rollout_steps=args.rollout_steps,
+        rl_balanced_rollouts=args.rl_balanced_rollouts,
+        rl_rollout_map_steps=args.rl_rollout_map_steps,
+        rl_rollout_eval_decoding=args.rl_rollout_eval_decoding,
+        rl_redundant_target_scan_penalty=args.rl_redundant_target_scan_penalty,
+        rl_wrong_target_scan_penalty=args.rl_wrong_target_scan_penalty,
+        rl_epochs=args.rl_epochs,
+        minibatch_seqs=args.minibatch_seqs,
+        gamma=args.gamma,
+        gae_lambda=args.gae_lambda,
+        clip=args.clip,
+        value_clip=args.value_clip,
+        entropy_coeff=args.entropy_coeff,
+        rl_lr=args.rl_lr,
+        max_grad_norm=args.max_grad_norm,
+        bc_kl_coeff=args.bc_kl_coeff,
+        bc_comm_kl_coeff=args.bc_comm_kl_coeff,
+        rl_eval_every=args.rl_eval_every,
+        rl_eval_episodes=args.rl_eval_episodes,
+        rl_eval_seed=args.rl_eval_seed,
+        rl_eval_seed_count=args.rl_eval_seed_count,
+        rl_eval_seed_list=args.rl_eval_seed_list,
+        rl_restore_best=args.rl_restore_best,
+        rl_save_best=args.rl_save_best,
+        rl_best_save=args.rl_best_save,
         eval_episodes=args.eval_episodes,
+        eval_seed=args.eval_seed,
         eval_seed_count=args.eval_seed_count,
         eval_send_threshold=args.eval_send_threshold,
         eval_signal_target_scan_threshold=args.eval_signal_target_scan_threshold,

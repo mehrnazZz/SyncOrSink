@@ -308,6 +308,7 @@ class SyncOrSinkEnv(gym.Env):
                         occupied[(nx, ny)] = agent_id
 
         # interaction phase: pickup/drop
+        interaction_events = {i: [] for i in range(self.num_agents)}
         for agent_id, action in parsed_actions.items():
             pos = self.agent_positions[agent_id]
             if action["action"] == self.ACTION_PICKUP:
@@ -316,10 +317,19 @@ class SyncOrSinkEnv(gym.Env):
                         resource_type = self._resource_positions()[pos]
                         self.inventories[agent_id] = resource_type
                         self._remove_resource(pos)
+                        interaction_events[agent_id].append({
+                            "event": "picked_resource",
+                            "resource_type": int(resource_type),
+                        })
             elif action["action"] == self.ACTION_DROP:
                 if self.inventories[agent_id] != 0 and self.grid[pos[1], pos[0]] == TILE_EMPTY:
+                    resource_type = int(self.inventories[agent_id])
                     self._add_resource(pos, self.inventories[agent_id])
                     self.inventories[agent_id] = 0
+                    interaction_events[agent_id].append({
+                        "event": "dropped_resource",
+                        "resource_type": resource_type,
+                    })
             elif action["action"] == self.ACTION_INTERACT and self.config.use_doors:
                 # open adjacent door if present
                 for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
@@ -370,6 +380,16 @@ class SyncOrSinkEnv(gym.Env):
 
         # scenario-specific step
         rewards, done, scenario_info = self.scenario.step(self, parsed_actions)
+        if any(interaction_events.values()):
+            scenario_info = dict(scenario_info)
+            scenario_events = scenario_info.get("events") or {}
+            merged_events = {}
+            for agent_id in range(self.num_agents):
+                merged_events[agent_id] = [
+                    *interaction_events.get(agent_id, []),
+                    *scenario_events.get(agent_id, scenario_events.get(str(agent_id), [])),
+                ]
+            scenario_info["events"] = merged_events
         self._update_exploration_memory()
 
         # communication penalty

@@ -132,7 +132,7 @@ class RecurrentConfig:
     bc_action_class_balance: bool = False
     bc_action_class_balance_max_weight: float = 5.0
     bc_event_action_weight: float = 0.0
-    bc_event_action_events: str = "delivered,sync_complete,recharged,joint_target_scan"
+    bc_event_action_events: str = "picked_resource,delivered,sync_complete,recharged,joint_target_scan"
     bc_signal_target_interact_weight: float = 1.0
     bc_signal_redundant_target_interact_weight: float = 1.0
     bc_signal_target_pursuit_weight: float = 1.0
@@ -10664,7 +10664,7 @@ def main():
     )
     p.add_argument(
         "--bc-event-action-events",
-        default="delivered,sync_complete,recharged,joint_target_scan",
+        default="picked_resource,delivered,sync_complete,recharged,joint_target_scan",
         help="Comma-separated event names that receive --bc-event-action-weight in demos/DAgger",
     )
     p.add_argument("--bc-comm-loss-weight", type=float, default=0.1)

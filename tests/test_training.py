@@ -498,6 +498,10 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         bc_eval_episodes=3,
         bc_eval_seed_count=2,
         bc_restore_best_eval_epoch=True,
+        bc_action_class_balance=True,
+        bc_action_class_balance_max_weight=7.0,
+        bc_event_action_weight=2.5,
+        bc_event_action_events="picked_resource,delivered",
         bc_signal_target_pursuit_weight=2.0,
         bc_signal_target_pursuit_action_weight=0.9,
         bc_signal_sync_response_weight=2.5,
@@ -550,6 +554,18 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         dagger_max_failed_parent_replay_snippets_per_episode=2,
         dagger_failed_parent_replay_weight_scale=0.25,
         dagger_expert_max_replay_snippets_per_episode=3,
+        rl_updates=3,
+        rollout_steps=40,
+        rl_epochs=1,
+        minibatch_seqs=4,
+        rl_lr=2e-5,
+        rl_eval_every=2,
+        rl_eval_episodes=5,
+        rl_eval_seed=7000,
+        rl_eval_seed_count=2,
+        rl_eval_seed_list="7000,7001",
+        rl_restore_best=False,
+        rl_save_best=False,
         output_dir=str(tmp_path),
         run_name="recurrent_dry",
         initial_recurrent_checkpoint="logs/recurrent_curriculum/example.pt",
@@ -588,6 +604,10 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["bc_eval_episodes"] == 3
     assert result["config"]["bc_eval_seed_count"] == 2
     assert result["config"]["bc_restore_best_eval_epoch"] is True
+    assert result["config"]["bc_action_class_balance"] is True
+    assert result["config"]["bc_action_class_balance_max_weight"] == pytest.approx(7.0)
+    assert result["config"]["bc_event_action_weight"] == pytest.approx(2.5)
+    assert result["config"]["bc_event_action_events"] == "picked_resource,delivered"
     assert result["config"]["train_map_sampling_weights"] == "8:1,16:3"
     assert result["config"]["obs_exploration_age"] is True
     assert result["config"]["obs_signal_negative_memory"] is True
@@ -614,7 +634,20 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["dagger_max_failed_parent_replay_snippets_per_episode"] == 2
     assert result["config"]["dagger_failed_parent_replay_weight_scale"] == pytest.approx(0.25)
     assert result["config"]["dagger_expert_max_replay_snippets_per_episode"] == 3
+    assert result["config"]["rl_updates"] == 3
+    assert result["config"]["rollout_steps"] == 40
+    assert result["config"]["rl_epochs"] == 1
+    assert result["config"]["minibatch_seqs"] == 4
+    assert result["config"]["rl_lr"] == pytest.approx(2e-5)
+    assert result["config"]["rl_eval_every"] == 2
+    assert result["config"]["rl_eval_episodes"] == 5
+    assert result["config"]["rl_eval_seed"] == 7000
+    assert result["config"]["rl_eval_seed_count"] == 2
+    assert result["config"]["rl_eval_seed_list"] == "7000,7001"
+    assert result["config"]["rl_restore_best"] is False
+    assert result["config"]["rl_save_best"] is False
     assert result["planned_stages"][0]["train_map_sizes"] == [8]
+    assert result["planned_stages"][0]["rl_updates"] == 3
     assert result["planned_stages"][1]["train_map_sizes"] == [8, 16]
     assert result["planned_stages"][1]["max_steps"] == {"8": 60, "16": 120}
     assert result["planned_stages"][0]["promotion_success_threshold"] == pytest.approx(0.75)
@@ -640,6 +673,10 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.bc_eval_episodes == 3
     assert stage_cfg.bc_eval_seed_count == 2
     assert stage_cfg.bc_restore_best_eval_epoch is True
+    assert stage_cfg.bc_action_class_balance is True
+    assert stage_cfg.bc_action_class_balance_max_weight == pytest.approx(7.0)
+    assert stage_cfg.bc_event_action_weight == pytest.approx(2.5)
+    assert stage_cfg.bc_event_action_events == "picked_resource,delivered"
     assert stage_cfg.bc_signal_redundant_target_interact_weight == pytest.approx(1.5)
     assert stage_cfg.bc_signal_target_pursuit_weight == pytest.approx(2.0)
     assert stage_cfg.bc_signal_target_pursuit_action_weight == pytest.approx(0.9)
@@ -692,6 +729,18 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.dagger_max_failed_parent_replay_snippets_per_episode == 2
     assert stage_cfg.dagger_failed_parent_replay_weight_scale == pytest.approx(0.25)
     assert stage_cfg.dagger_expert_max_replay_snippets_per_episode == 3
+    assert stage_cfg.rl_updates == 3
+    assert stage_cfg.rollout_steps == 40
+    assert stage_cfg.rl_epochs == 1
+    assert stage_cfg.minibatch_seqs == 4
+    assert stage_cfg.rl_lr == pytest.approx(2e-5)
+    assert stage_cfg.rl_eval_every == 2
+    assert stage_cfg.rl_eval_episodes == 5
+    assert stage_cfg.rl_eval_seed == 7000
+    assert stage_cfg.rl_eval_seed_count == 2
+    assert stage_cfg.rl_eval_seed_list == "7000,7001"
+    assert stage_cfg.rl_restore_best is False
+    assert stage_cfg.rl_save_best is False
 
     threshold_checkpoint = tmp_path / "threshold.pt"
     torch.save({"config": {"eval_send_threshold": 0.73}}, threshold_checkpoint)
@@ -703,6 +752,177 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         eval_send_threshold=0.41,
     )
     assert _resolve_initial_eval_send_threshold(override_cfg) == pytest.approx(0.41)
+
+
+def test_recurrent_curriculum_cli_accepts_pipeline_core_args(tmp_path, monkeypatch, capsys):
+    import json
+    import sys
+
+    from syncorsink.train import recurrent_curriculum
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "recurrent_curriculum.py",
+            "--scenario",
+            "pipeline_assembly",
+            "--agents",
+            "3",
+            "--fov-preset",
+            "easy",
+            "--oracle-type",
+            "planner_comm",
+            "--stage-map-suites",
+            "8",
+            "--max-steps-by-map",
+            "8:40",
+            "--demo-episodes",
+            "2",
+            "--bc-epochs",
+            "1",
+            "--bc-seq-len",
+            "12",
+            "--bc-action-class-balance",
+            "--bc-action-class-balance-max-weight",
+            "8",
+            "--bc-event-action-weight",
+            "3",
+            "--bc-event-action-events",
+            "picked_resource,delivered",
+            "--comm-token-limit",
+            "6",
+            "--comm-vocab-size",
+            "48",
+            "--pipeline-stage-count",
+            "1",
+            "--pipeline-required-per-stage-max",
+            "1",
+            "--pipeline-sync-probability",
+            "0",
+            "--pipeline-dependency-probability",
+            "0",
+            "--pipeline-stage-count-schedule",
+            "1,2",
+            "--pipeline-required-per-stage-max-schedule",
+            "1,1",
+            "--pipeline-sync-probability-schedule",
+            "0,0.25",
+            "--rl-updates",
+            "2",
+            "--rollout-steps",
+            "24",
+            "--rl-eval-every",
+            "1",
+            "--rl-eval-episodes",
+            "3",
+            "--rl-eval-seed",
+            "4321",
+            "--eval-seed",
+            "1234",
+            "--eval-seed-count",
+            "1",
+            "--output-dir",
+            str(tmp_path),
+            "--run-name",
+            "pipeline_cli",
+            "--dry-run",
+        ],
+    )
+
+    recurrent_curriculum.main()
+    result = json.loads(capsys.readouterr().out)
+
+    assert result["status"] == "dry_run"
+    assert result["config"]["scenario"] == "pipeline_assembly"
+    assert result["config"]["agents"] == 3
+    assert result["config"]["fov_preset"] == "easy"
+    assert result["config"]["oracle_type"] == "planner_comm"
+    assert result["config"]["bc_seq_len"] == 12
+    assert result["config"]["bc_action_class_balance"] is True
+    assert result["config"]["bc_action_class_balance_max_weight"] == pytest.approx(8.0)
+    assert result["config"]["bc_event_action_weight"] == pytest.approx(3.0)
+    assert result["config"]["bc_event_action_events"] == "picked_resource,delivered"
+    assert result["config"]["comm_token_limit"] == 6
+    assert result["config"]["comm_vocab_size"] == 48
+    assert result["config"]["pipeline_stage_count"] == 1
+    assert result["config"]["pipeline_required_per_stage_max"] == 1
+    assert result["config"]["pipeline_sync_probability"] == pytest.approx(0.0)
+    assert result["config"]["pipeline_dependency_probability"] == pytest.approx(0.0)
+    assert result["config"]["pipeline_stage_count_schedule"] == "1,2"
+    assert result["planned_stages"][0]["pipeline"]["stage_count"] == 1
+    assert result["planned_stages"][0]["pipeline"]["required_per_stage_max"] == 1
+    assert result["planned_stages"][0]["pipeline"]["sync_probability"] == pytest.approx(0.0)
+    assert result["config"]["rl_updates"] == 2
+    assert result["config"]["rollout_steps"] == 24
+    assert result["config"]["rl_eval_every"] == 1
+    assert result["config"]["rl_eval_episodes"] == 3
+    assert result["config"]["rl_eval_seed"] == 4321
+    assert result["planned_stages"][0]["rl_updates"] == 2
+    assert result["config"]["eval_seed"] == 1234
+    assert result["planned_stages"][0]["train_map_sizes"] == [8]
+
+
+def test_recurrent_curriculum_pipeline_schedules_override_stage_defaults(tmp_path):
+    from syncorsink.train.recurrent_curriculum import (
+        RecurrentCurriculumConfig,
+        _stage_recurrent_config,
+        run_recurrent_curriculum,
+    )
+
+    cfg = RecurrentCurriculumConfig(
+        scenario="pipeline_assembly",
+        agents=3,
+        oracle_type="planner_comm",
+        stage_map_suites="8;8",
+        max_steps_by_map="8:60",
+        pipeline_stage_count=4,
+        pipeline_required_per_stage_min=1,
+        pipeline_required_per_stage_max=2,
+        pipeline_sync_probability=0.5,
+        pipeline_dependency_probability=0.7,
+        pipeline_stage_count_schedule="1,2",
+        pipeline_required_per_stage_min_schedule="1,1",
+        pipeline_required_per_stage_max_schedule="1,1",
+        pipeline_sync_probability_schedule="0,0.25",
+        pipeline_dependency_probability_schedule="0,0.5",
+        output_dir=str(tmp_path),
+        run_name="pipeline_schedule",
+        dry_run=True,
+    )
+    result = run_recurrent_curriculum(cfg)
+
+    assert result["planned_stages"][0]["pipeline"] == {
+        "stage_count": 1,
+        "required_per_stage_min": 1,
+        "required_per_stage_max": 1,
+        "sync_probability": 0.0,
+        "dependency_probability": 0.0,
+    }
+    assert result["planned_stages"][1]["pipeline"] == {
+        "stage_count": 2,
+        "required_per_stage_min": 1,
+        "required_per_stage_max": 1,
+        "sync_probability": 0.25,
+        "dependency_probability": 0.5,
+    }
+
+    stage_cfg = _stage_recurrent_config(
+        cfg,
+        stage_idx=1,
+        suite=(8,),
+        max_steps={8: 60},
+        checkpoint_path=tmp_path / "stage1.pt",
+        eval_send_threshold=0.25,
+        has_initial_model=True,
+    )
+    assert stage_cfg.scenario == "pipeline_assembly"
+    assert stage_cfg.agents == 3
+    assert stage_cfg.oracle_type == "planner_comm"
+    assert stage_cfg.pipeline_stage_count == 2
+    assert stage_cfg.pipeline_required_per_stage_max == 1
+    assert stage_cfg.pipeline_sync_probability == pytest.approx(0.25)
+    assert stage_cfg.pipeline_dependency_probability == pytest.approx(0.5)
 
 
 def test_recurrent_dagger_collection_seed_schedule():
