@@ -168,6 +168,8 @@ class RecurrentCurriculumConfig:
     dagger_expert_max_replay_snippets_per_episode: int = -1
 
     rl_updates: int = 0
+    rl_updates_schedule: str = ""
+    rl_early_stop_eval_patience: int = 0
     rollout_steps: int = 256
     rl_balanced_rollouts: bool = False
     rl_rollout_map_steps: str = ""
@@ -187,7 +189,9 @@ class RecurrentCurriculumConfig:
     bc_comm_kl_coeff: float = 0.5
     rl_eval_every: int = 5
     rl_eval_episodes: int = 20
+    rl_eval_use_eval_seeds: bool = True
     rl_eval_seed: int = 10000
+    rl_eval_seed_stage_stride: int = 100000
     rl_eval_seed_count: int = 1
     rl_eval_seed_list: str = ""
     rl_restore_best: bool = True
@@ -327,6 +331,7 @@ def run_recurrent_curriculum(cfg: RecurrentCurriculumConfig) -> dict[str, Any]:
             "initial_recurrent_checkpoint": cfg.initial_recurrent_checkpoint if stage_idx == 0 else None,
             "eval": eval_result,
             "mastery": mastery,
+            "rl_early_stop_eval_patience": int(stage_cfg.rl_early_stop_eval_patience),
             "calibrated_send_threshold": current_threshold,
         }
         result["stages"].append(stage_row)
@@ -468,7 +473,9 @@ def _planned_stage_row(
         "eval_map_sizes": list(suite),
         "max_steps": {str(size): int(max_steps.get(size, _stage_max_steps((size,), max_steps))) for size in suite},
         "pipeline": _stage_pipeline_settings(cfg, stage_idx),
-        "rl_updates": int(cfg.rl_updates),
+        "rl_updates": _stage_rl_updates(cfg, stage_idx),
+        "rl_early_stop_eval_patience": int(cfg.rl_early_stop_eval_patience),
+        "rl_eval_use_eval_seeds": bool(cfg.rl_eval_use_eval_seeds),
         "promotion_success_threshold": float(cfg.promotion_success_threshold),
         "checkpoint": str(_stage_checkpoint_path(checkpoints_dir, stage_idx, suite)),
     }
@@ -622,7 +629,8 @@ def _stage_recurrent_config(
         ),
         dagger_failed_parent_replay_weight_scale=cfg.dagger_failed_parent_replay_weight_scale,
         dagger_expert_max_replay_snippets_per_episode=cfg.dagger_expert_max_replay_snippets_per_episode,
-        rl_updates=cfg.rl_updates,
+        rl_updates=_stage_rl_updates(cfg, stage_idx),
+        rl_early_stop_eval_patience=cfg.rl_early_stop_eval_patience,
         rollout_steps=cfg.rollout_steps,
         rl_balanced_rollouts=cfg.rl_balanced_rollouts,
         rl_rollout_map_steps=cfg.rl_rollout_map_steps,
@@ -642,7 +650,8 @@ def _stage_recurrent_config(
         bc_comm_kl_coeff=cfg.bc_comm_kl_coeff,
         rl_eval_every=cfg.rl_eval_every,
         rl_eval_episodes=cfg.rl_eval_episodes,
-        rl_eval_seed=cfg.rl_eval_seed,
+        rl_eval_use_eval_seeds=cfg.rl_eval_use_eval_seeds,
+        rl_eval_seed=int(cfg.rl_eval_seed) + stage_idx * int(cfg.rl_eval_seed_stage_stride),
         rl_eval_seed_count=cfg.rl_eval_seed_count,
         rl_eval_seed_list=cfg.rl_eval_seed_list,
         rl_restore_best=cfg.rl_restore_best,
@@ -704,6 +713,10 @@ def _stage_pipeline_settings(cfg: RecurrentCurriculumConfig, stage_idx: int) -> 
             cfg.pipeline_dependency_probability,
         ),
     }
+
+
+def _stage_rl_updates(cfg: RecurrentCurriculumConfig, stage_idx: int) -> int:
+    return _stage_int_schedule_value(cfg.rl_updates_schedule, stage_idx, cfg.rl_updates)
 
 
 def _stage_schedule_items(raw_value: str) -> list[str]:
@@ -963,6 +976,23 @@ def main() -> None:
     parser.add_argument("--dagger-failed-parent-replay-weight-scale", type=float, default=1.0)
     parser.add_argument("--dagger-expert-max-replay-snippets-per-episode", type=int, default=-1)
     parser.add_argument("--rl-updates", type=int, default=0)
+    parser.add_argument(
+        "--rl-updates-schedule",
+        default="",
+        help=(
+            "Comma- or semicolon-separated per-curriculum-stage PPO update override. "
+            "For example, 0,0,60 skips PPO on the first two stages and fine-tunes the third."
+        ),
+    )
+    parser.add_argument(
+        "--rl-early-stop-eval-patience",
+        type=int,
+        default=0,
+        help=(
+            "Stop recurrent PPO within a stage after this many eval checkpoints fail to improve. "
+            "Use 0 to disable."
+        ),
+    )
     parser.add_argument("--rollout-steps", type=int, default=256)
     parser.add_argument("--rl-balanced-rollouts", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--rl-rollout-map-steps", default="")
@@ -982,7 +1012,25 @@ def main() -> None:
     parser.add_argument("--bc-comm-kl-coeff", type=float, default=0.5)
     parser.add_argument("--rl-eval-every", type=int, default=5)
     parser.add_argument("--rl-eval-episodes", type=int, default=20)
+    parser.add_argument(
+        "--rl-eval-use-eval-seeds",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use each curriculum stage's main eval seed/list for PPO best-checkpoint selection. "
+            "Disable to use --rl-eval-seed/--rl-eval-seed-list instead."
+        ),
+    )
     parser.add_argument("--rl-eval-seed", type=int, default=10000)
+    parser.add_argument(
+        "--rl-eval-seed-stage-stride",
+        type=int,
+        default=100000,
+        help=(
+            "Added to --rl-eval-seed for each curriculum stage. Use 0 to reuse the same PPO "
+            "eval seed base on every stage."
+        ),
+    )
     parser.add_argument("--rl-eval-seed-count", type=int, default=1)
     parser.add_argument("--rl-eval-seed-list", default="")
     parser.add_argument("--rl-restore-best", action=argparse.BooleanOptionalAction, default=True)
@@ -1160,6 +1208,8 @@ def main() -> None:
         dagger_failed_parent_replay_weight_scale=args.dagger_failed_parent_replay_weight_scale,
         dagger_expert_max_replay_snippets_per_episode=args.dagger_expert_max_replay_snippets_per_episode,
         rl_updates=args.rl_updates,
+        rl_updates_schedule=args.rl_updates_schedule,
+        rl_early_stop_eval_patience=args.rl_early_stop_eval_patience,
         rollout_steps=args.rollout_steps,
         rl_balanced_rollouts=args.rl_balanced_rollouts,
         rl_rollout_map_steps=args.rl_rollout_map_steps,
@@ -1179,7 +1229,9 @@ def main() -> None:
         bc_comm_kl_coeff=args.bc_comm_kl_coeff,
         rl_eval_every=args.rl_eval_every,
         rl_eval_episodes=args.rl_eval_episodes,
+        rl_eval_use_eval_seeds=args.rl_eval_use_eval_seeds,
         rl_eval_seed=args.rl_eval_seed,
+        rl_eval_seed_stage_stride=args.rl_eval_seed_stage_stride,
         rl_eval_seed_count=args.rl_eval_seed_count,
         rl_eval_seed_list=args.rl_eval_seed_list,
         rl_restore_best=args.rl_restore_best,

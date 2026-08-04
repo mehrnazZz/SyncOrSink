@@ -555,6 +555,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         dagger_failed_parent_replay_weight_scale=0.25,
         dagger_expert_max_replay_snippets_per_episode=3,
         rl_updates=3,
+        rl_updates_schedule="3,5",
+        rl_early_stop_eval_patience=2,
         rollout_steps=40,
         rl_epochs=1,
         minibatch_seqs=4,
@@ -562,6 +564,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         rl_eval_every=2,
         rl_eval_episodes=5,
         rl_eval_seed=7000,
+        rl_eval_seed_stage_stride=250,
         rl_eval_seed_count=2,
         rl_eval_seed_list="7000,7001",
         rl_restore_best=False,
@@ -635,13 +638,17 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["dagger_failed_parent_replay_weight_scale"] == pytest.approx(0.25)
     assert result["config"]["dagger_expert_max_replay_snippets_per_episode"] == 3
     assert result["config"]["rl_updates"] == 3
+    assert result["config"]["rl_updates_schedule"] == "3,5"
+    assert result["config"]["rl_early_stop_eval_patience"] == 2
     assert result["config"]["rollout_steps"] == 40
     assert result["config"]["rl_epochs"] == 1
     assert result["config"]["minibatch_seqs"] == 4
     assert result["config"]["rl_lr"] == pytest.approx(2e-5)
     assert result["config"]["rl_eval_every"] == 2
     assert result["config"]["rl_eval_episodes"] == 5
+    assert result["config"]["rl_eval_use_eval_seeds"] is True
     assert result["config"]["rl_eval_seed"] == 7000
+    assert result["config"]["rl_eval_seed_stage_stride"] == 250
     assert result["config"]["rl_eval_seed_count"] == 2
     assert result["config"]["rl_eval_seed_list"] == "7000,7001"
     assert result["config"]["rl_restore_best"] is False
@@ -649,6 +656,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["planned_stages"][0]["train_map_sizes"] == [8]
     assert result["planned_stages"][0]["rl_updates"] == 3
     assert result["planned_stages"][1]["train_map_sizes"] == [8, 16]
+    assert result["planned_stages"][1]["rl_updates"] == 5
     assert result["planned_stages"][1]["max_steps"] == {"8": 60, "16": 120}
     assert result["planned_stages"][0]["promotion_success_threshold"] == pytest.approx(0.75)
     assert result["planned_stages"][0]["checkpoint"].endswith("stage0_maps_8.pt")
@@ -730,12 +738,14 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.dagger_failed_parent_replay_weight_scale == pytest.approx(0.25)
     assert stage_cfg.dagger_expert_max_replay_snippets_per_episode == 3
     assert stage_cfg.rl_updates == 3
+    assert stage_cfg.rl_early_stop_eval_patience == 2
     assert stage_cfg.rollout_steps == 40
     assert stage_cfg.rl_epochs == 1
     assert stage_cfg.minibatch_seqs == 4
     assert stage_cfg.rl_lr == pytest.approx(2e-5)
     assert stage_cfg.rl_eval_every == 2
     assert stage_cfg.rl_eval_episodes == 5
+    assert stage_cfg.rl_eval_use_eval_seeds is True
     assert stage_cfg.rl_eval_seed == 7000
     assert stage_cfg.rl_eval_seed_count == 2
     assert stage_cfg.rl_eval_seed_list == "7000,7001"
@@ -810,14 +820,21 @@ def test_recurrent_curriculum_cli_accepts_pipeline_core_args(tmp_path, monkeypat
             "0,0.25",
             "--rl-updates",
             "2",
+            "--rl-updates-schedule",
+            "0,2",
+            "--rl-early-stop-eval-patience",
+            "1",
             "--rollout-steps",
             "24",
             "--rl-eval-every",
             "1",
             "--rl-eval-episodes",
             "3",
+            "--no-rl-eval-use-eval-seeds",
             "--rl-eval-seed",
             "4321",
+            "--rl-eval-seed-stage-stride",
+            "123",
             "--eval-seed",
             "1234",
             "--eval-seed-count",
@@ -854,11 +871,16 @@ def test_recurrent_curriculum_cli_accepts_pipeline_core_args(tmp_path, monkeypat
     assert result["planned_stages"][0]["pipeline"]["required_per_stage_max"] == 1
     assert result["planned_stages"][0]["pipeline"]["sync_probability"] == pytest.approx(0.0)
     assert result["config"]["rl_updates"] == 2
+    assert result["config"]["rl_updates_schedule"] == "0,2"
+    assert result["config"]["rl_early_stop_eval_patience"] == 1
     assert result["config"]["rollout_steps"] == 24
     assert result["config"]["rl_eval_every"] == 1
     assert result["config"]["rl_eval_episodes"] == 3
+    assert result["config"]["rl_eval_use_eval_seeds"] is False
     assert result["config"]["rl_eval_seed"] == 4321
-    assert result["planned_stages"][0]["rl_updates"] == 2
+    assert result["config"]["rl_eval_seed_stage_stride"] == 123
+    assert result["planned_stages"][0]["rl_updates"] == 0
+    assert result["planned_stages"][0]["rl_eval_use_eval_seeds"] is False
     assert result["config"]["eval_seed"] == 1234
     assert result["planned_stages"][0]["train_map_sizes"] == [8]
 
@@ -886,6 +908,12 @@ def test_recurrent_curriculum_pipeline_schedules_override_stage_defaults(tmp_pat
         pipeline_required_per_stage_max_schedule="1,1",
         pipeline_sync_probability_schedule="0,0.25",
         pipeline_dependency_probability_schedule="0,0.5",
+        rl_updates=9,
+        rl_updates_schedule="0,4",
+        rl_early_stop_eval_patience=1,
+        rl_eval_use_eval_seeds=True,
+        rl_eval_seed=5000,
+        rl_eval_seed_stage_stride=100,
         output_dir=str(tmp_path),
         run_name="pipeline_schedule",
         dry_run=True,
@@ -906,6 +934,9 @@ def test_recurrent_curriculum_pipeline_schedules_override_stage_defaults(tmp_pat
         "sync_probability": 0.25,
         "dependency_probability": 0.5,
     }
+    assert result["planned_stages"][0]["rl_updates"] == 0
+    assert result["planned_stages"][1]["rl_updates"] == 4
+    assert result["planned_stages"][1]["rl_eval_use_eval_seeds"] is True
 
     stage_cfg = _stage_recurrent_config(
         cfg,
@@ -923,6 +954,10 @@ def test_recurrent_curriculum_pipeline_schedules_override_stage_defaults(tmp_pat
     assert stage_cfg.pipeline_required_per_stage_max == 1
     assert stage_cfg.pipeline_sync_probability == pytest.approx(0.25)
     assert stage_cfg.pipeline_dependency_probability == pytest.approx(0.5)
+    assert stage_cfg.rl_updates == 4
+    assert stage_cfg.rl_early_stop_eval_patience == 1
+    assert stage_cfg.rl_eval_use_eval_seeds is True
+    assert stage_cfg.rl_eval_seed == 5100
 
 
 def test_recurrent_dagger_collection_seed_schedule():

@@ -186,6 +186,16 @@ scalars include:
 - `rollout/*` PPO reward, communication, KL, action histogram, learning rate,
   and optional guided-decoding indicators
 
+PPO stability controls:
+
+- `--rl-restore-best` keeps the best eval checkpoint after PPO fine-tuning.
+- `--rl-eval-use-eval-seeds` selects PPO checkpoints using the main eval
+  seed/list instead of the separate PPO eval seed/list. This is recommended
+  when PPO is part of a benchmark-facing curriculum stage.
+- `--rl-early-stop-eval-patience N` stops PPO after `N` eval checkpoints fail
+  to improve the best eval score, which is useful when PPO starts degrading a
+  strong BC/DAgger policy.
+
 Seed schedules:
 
 - `--dagger-seed-list 3000,3001,3002` cycles global DAgger collection seeds.
@@ -286,6 +296,15 @@ planner_comm --agents 3` plus the per-stage Pipeline difficulty schedules:
 generic rare-action BC controls `--bc-action-class-balance` and
 `--bc-event-action-weight`; the default event list includes `picked_resource`,
 `delivered`, and `sync_complete` for Pipeline learning.
+
+Curriculum PPO can be gated per stage with `--rl-updates-schedule`, for example
+`--rl-updates-schedule 0,0,60` to keep early stages BC/DAgger-only and reserve
+PPO for the harder stage. The curriculum runner defaults
+`--rl-eval-use-eval-seeds` on so PPO best-checkpoint selection follows each
+stage's final eval seeds. PPO eval seeds are still offset by
+`--rl-eval-seed-stage-stride` per stage by default so W&B plots do not reuse the
+same eval seed base across curriculum stages; set the stride to `0` to keep the
+old fixed-seed behavior when `--no-rl-eval-use-eval-seeds` is set.
 
 `examples/train_eval_workbench.py` is the single-run MAPPO checkpoint
 round-trip smoke. It exposes the MAPPO trainer's communication send-rate

@@ -218,6 +218,7 @@ class RecurrentConfig:
     dagger_oracle_action_rollin_rate: float = 0.0
     # RL
     rl_updates: int = 3000
+    rl_early_stop_eval_patience: int = 0
     rollout_steps: int = 256
     rl_balanced_rollouts: bool = False
     rl_rollout_map_steps: str = ""
@@ -237,6 +238,7 @@ class RecurrentConfig:
     bc_comm_kl_coeff: float = 0.5
     rl_eval_every: int = 5
     rl_eval_episodes: int = 20
+    rl_eval_use_eval_seeds: bool = False
     rl_eval_seed: int = 10000
     rl_eval_seed_count: int = 1
     rl_eval_seed_list: str = ""
@@ -10164,14 +10166,23 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
         wandb_run = _init_recurrent_wandb(cfg)
         owns_wandb_run = wandb_run is not None
 
-    eval_cfg = replace(
-        cfg,
-        eval_episodes=max(1, int(cfg.rl_eval_episodes)),
-        eval_seed=int(cfg.rl_eval_seed),
-    )
-    rl_eval_seed_count = max(1, int(cfg.rl_eval_seed_count))
-    rl_eval_seed_list = cfg.rl_eval_seed_list or cfg.eval_seed_list
-    rl_eval_seed_field = "rl_eval_seed_list" if cfg.rl_eval_seed_list else "eval_seed_list"
+    if bool(getattr(cfg, "rl_eval_use_eval_seeds", False)):
+        eval_cfg = replace(
+            cfg,
+            eval_episodes=max(1, int(cfg.rl_eval_episodes)),
+        )
+        rl_eval_seed_count = max(1, int(cfg.eval_seed_count))
+        rl_eval_seed_list = cfg.eval_seed_list
+        rl_eval_seed_field = "eval_seed_list"
+    else:
+        eval_cfg = replace(
+            cfg,
+            eval_episodes=max(1, int(cfg.rl_eval_episodes)),
+            eval_seed=int(cfg.rl_eval_seed),
+        )
+        rl_eval_seed_count = max(1, int(cfg.rl_eval_seed_count))
+        rl_eval_seed_list = cfg.rl_eval_seed_list or cfg.eval_seed_list
+        rl_eval_seed_field = "rl_eval_seed_list" if cfg.rl_eval_seed_list else "eval_seed_list"
     best_path = _recurrent_rl_best_path(cfg)
     initial_eval = evaluate_recurrent_policy_multi_seed(
         eval_cfg,
@@ -10205,8 +10216,10 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
             is_best=True,
             best_eval=best_eval,
         )
+        eval_log["rl/eval_use_eval_seeds"] = int(bool(getattr(cfg, "rl_eval_use_eval_seeds", False)))
         _wandb_log(wandb_run, eval_log, context="initial eval log")
 
+    non_improving_eval_count = 0
     for update in range(cfg.rl_updates):
         # LR annealing
         frac = 1.0 - update / max(cfg.rl_updates, 1)
@@ -10496,6 +10509,7 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
             eval_score = _recurrent_eval_score(eval_result)
             is_best = eval_score > best_score
             if is_best:
+                non_improving_eval_count = 0
                 best_score = eval_score
                 best_eval = dict(eval_row)
                 best_state = copy.deepcopy(model.state_dict())
@@ -10511,8 +10525,16 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
                         restored_best=True,
                     )
                     print(f"Saved best recurrent RL checkpoint to {best_path}")
+            else:
+                non_improving_eval_count += 1
             final_eval = dict(eval_row)
-            print(json.dumps({"recurrent_rl_eval": {**eval_row, "is_best": is_best}}, indent=2, sort_keys=True))
+            eval_log_row = {
+                **eval_row,
+                "is_best": is_best,
+                "non_improving_evals": int(non_improving_eval_count),
+                "early_stop_patience": int(cfg.rl_early_stop_eval_patience),
+            }
+            print(json.dumps({"recurrent_rl_eval": eval_log_row}, indent=2, sort_keys=True))
             if wandb_run is not None:
                 eval_log = _recurrent_eval_wandb_payload(
                     eval_result,
@@ -10520,7 +10542,31 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
                     is_best=is_best,
                     best_eval=best_eval,
                 )
+                eval_log["rl/non_improving_evals"] = int(non_improving_eval_count)
+                eval_log["rl/early_stop_patience"] = int(cfg.rl_early_stop_eval_patience)
+                eval_log["rl/eval_use_eval_seeds"] = int(bool(getattr(cfg, "rl_eval_use_eval_seeds", False)))
                 _wandb_log(wandb_run, eval_log, context="eval log")
+            if (
+                int(cfg.rl_early_stop_eval_patience) > 0
+                and non_improving_eval_count >= int(cfg.rl_early_stop_eval_patience)
+            ):
+                early_stop_row = {
+                    "update": int(update),
+                    "non_improving_evals": int(non_improving_eval_count),
+                    "patience": int(cfg.rl_early_stop_eval_patience),
+                    "best_eval": best_eval,
+                }
+                print(json.dumps({"recurrent_rl_early_stop": early_stop_row}, indent=2, sort_keys=True))
+                if wandb_run is not None:
+                    _wandb_log(
+                        wandb_run,
+                        {
+                            "rl/early_stopped": 1,
+                            "rl/early_stop_update": int(update),
+                        },
+                        context="early stop log",
+                    )
+                break
 
     restored_best = False
     if cfg.rl_restore_best and best_state is not None:
@@ -10913,6 +10959,15 @@ def main():
         ),
     )
     p.add_argument("--rl-updates", type=int, default=3000)
+    p.add_argument(
+        "--rl-early-stop-eval-patience",
+        type=int,
+        default=0,
+        help=(
+            "Stop recurrent PPO after this many eval checkpoints fail to improve over the "
+            "best eval score. Use 0 to disable."
+        ),
+    )
     p.add_argument("--rollout-steps", type=int, default=256)
     p.add_argument("--rl-balanced-rollouts", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument(
@@ -10946,6 +11001,15 @@ def main():
     p.add_argument("--bc-comm-kl-coeff", type=float, default=0.5)
     p.add_argument("--rl-eval-every", type=int, default=5)
     p.add_argument("--rl-eval-episodes", type=int, default=20)
+    p.add_argument(
+        "--rl-eval-use-eval-seeds",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use the main eval seed/list for recurrent PPO best-checkpoint selection. "
+            "When disabled, PPO uses --rl-eval-seed/--rl-eval-seed-list."
+        ),
+    )
     p.add_argument("--rl-eval-seed", type=int, default=10000)
     p.add_argument("--rl-eval-seed-count", type=int, default=1)
     p.add_argument(
@@ -11256,6 +11320,7 @@ def main():
         dagger_oracle_message_rollin_rate=args.dagger_oracle_message_rollin_rate,
         dagger_oracle_action_rollin_rate=args.dagger_oracle_action_rollin_rate,
         rl_updates=args.rl_updates,
+        rl_early_stop_eval_patience=args.rl_early_stop_eval_patience,
         rollout_steps=args.rollout_steps,
         rl_balanced_rollouts=args.rl_balanced_rollouts,
         rl_rollout_map_steps=args.rl_rollout_map_steps,
@@ -11274,6 +11339,7 @@ def main():
         bc_comm_kl_coeff=args.bc_comm_kl_coeff,
         rl_eval_every=args.rl_eval_every,
         rl_eval_episodes=args.rl_eval_episodes,
+        rl_eval_use_eval_seeds=args.rl_eval_use_eval_seeds,
         rl_eval_seed=args.rl_eval_seed,
         rl_eval_seed_count=args.rl_eval_seed_count,
         rl_eval_seed_list=args.rl_eval_seed_list,
