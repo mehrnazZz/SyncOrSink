@@ -127,6 +127,9 @@ RECURRENT_PPO_PROFILES = {
         "recurrent_bc_comm_kl_coeff": 0.5,
         "recurrent_rl_balanced_rollouts": False,
         "recurrent_rl_rollout_eval_decoding": False,
+        "recurrent_rl_rollout_pipeline_navigation_assist": False,
+        "recurrent_rl_rollout_pipeline_navigation_assist_trust_messages": False,
+        "recurrent_rl_early_stop_eval_patience": 0,
     },
     "guarded": {
         "recurrent_rl_lr": 1e-5,
@@ -137,8 +140,50 @@ RECURRENT_PPO_PROFILES = {
         "recurrent_bc_comm_kl_coeff": 2.0,
         "recurrent_rl_balanced_rollouts": True,
         "recurrent_rl_rollout_eval_decoding": True,
+        "recurrent_rl_rollout_pipeline_navigation_assist": False,
+        "recurrent_rl_rollout_pipeline_navigation_assist_trust_messages": False,
+        "recurrent_rl_early_stop_eval_patience": 4,
     },
 }
+
+
+def _expand_contiguous_seed_range(spec: str) -> str:
+    match = re.fullmatch(r"(\d+):(\d+)", spec.strip())
+    if match is None:
+        raise ValueError(
+            "seed range entries must use START:COUNT, for example 3000:40"
+        )
+    start = int(match.group(1))
+    count = int(match.group(2))
+    if count <= 0:
+        raise ValueError("seed range COUNT must be positive")
+    return ",".join(str(start + offset) for offset in range(count))
+
+
+def _expand_seed_range(spec: str) -> str:
+    """Expand compact audit seed panels into the trainer's seed-list format."""
+    spec = spec.strip()
+    if not spec:
+        return ""
+    entries = []
+    for raw_entry in re.split(r"[;+]", spec):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        if "=" in entry:
+            map_size, range_spec = entry.split("=", 1)
+            map_size = map_size.strip()
+            if not map_size.isdigit() or int(map_size) <= 0:
+                raise ValueError(
+                    "map-specific seed ranges must use MAP_SIZE=START:COUNT, "
+                    "for example 16=13000:40"
+                )
+            entries.append(f"{int(map_size)}:{_expand_contiguous_seed_range(range_spec)}")
+        else:
+            entries.append(_expand_contiguous_seed_range(entry))
+    if not entries:
+        raise ValueError("seed range cannot be empty")
+    return "+".join(entries)
 
 
 def build_command(
@@ -249,6 +294,12 @@ def _build_recurrent_command(
     rl_updates = args.recurrent_rl_updates
     if rl_updates is None:
         rl_updates = args.updates
+    eval_episodes = args.recurrent_eval_episodes
+    if eval_episodes is None:
+        eval_episodes = args.eval_episodes
+    rl_eval_episodes = args.recurrent_rl_eval_episodes
+    if rl_eval_episodes is None:
+        rl_eval_episodes = eval_episodes
 
     cmd = [
         sys.executable,
@@ -280,6 +331,20 @@ def _build_recurrent_command(
         str(args.recurrent_bc_event_action_weight),
         "--bc-event-action-events",
         args.recurrent_bc_event_action_events,
+        "--bc-pipeline-pickup-action-loss-weight",
+        str(args.recurrent_bc_pipeline_pickup_action_loss_weight),
+        "--bc-pipeline-delivery-action-loss-weight",
+        str(args.recurrent_bc_pipeline_delivery_action_loss_weight),
+        "--bc-pipeline-plan-action-loss-weight",
+        str(args.recurrent_bc_pipeline_plan_action_loss_weight),
+        "--bc-pipeline-message-loss-weight",
+        str(args.recurrent_bc_pipeline_message_loss_weight),
+        "--bc-pipeline-bad-pickup-action-loss-weight",
+        str(args.recurrent_bc_pipeline_bad_pickup_action_loss_weight),
+        "--bc-pipeline-bad-drop-action-loss-weight",
+        str(args.recurrent_bc_pipeline_bad_drop_action_loss_weight),
+        "--bc-pipeline-bad-interact-action-loss-weight",
+        str(args.recurrent_bc_pipeline_bad_interact_action_loss_weight),
         "--pipeline-required-per-stage-min",
         str(args.recurrent_pipeline_required_per_stage_min),
         "--pipeline-required-per-stage-max",
@@ -306,6 +371,8 @@ def _build_recurrent_command(
         str(args.recurrent_dagger_oracle_message_rollin_rate),
         "--rl-updates",
         str(rl_updates),
+        "--rl-early-stop-eval-patience",
+        str(args.recurrent_rl_early_stop_eval_patience),
         "--rollout-steps",
         str(args.rollout_steps),
         "--rl-epochs",
@@ -327,9 +394,9 @@ def _build_recurrent_command(
         "--rl-eval-every",
         str(args.eval_every),
         "--rl-eval-episodes",
-        str(args.eval_episodes),
+        str(rl_eval_episodes),
         "--eval-episodes",
-        str(args.eval_episodes),
+        str(eval_episodes),
         "--eval-seed-count",
         str(args.recurrent_eval_seed_count),
         "--eval-send-threshold",
@@ -377,6 +444,8 @@ def _build_recurrent_command(
         seed=seed,
         run_name=run_name,
     )
+    if args.recurrent_skip_bc:
+        cmd.append("--skip-bc")
     if recurrent_init:
         cmd.extend(["--recurrent-init", recurrent_init])
     if args.recurrent_init_for_dagger:
@@ -387,6 +456,15 @@ def _build_recurrent_command(
         cmd.append("--rl-balanced-rollouts")
     if args.recurrent_rl_rollout_eval_decoding:
         cmd.append("--rl-rollout-eval-decoding")
+    if args.recurrent_rl_eval_use_eval_seeds:
+        cmd.append("--rl-eval-use-eval-seeds")
+    if args.recurrent_rl_rollout_pipeline_navigation_assist and case.scenario == "pipeline_assembly":
+        cmd.append("--rl-rollout-pipeline-navigation-assist")
+    if (
+        args.recurrent_rl_rollout_pipeline_navigation_assist_trust_messages
+        and case.scenario == "pipeline_assembly"
+    ):
+        cmd.append("--rl-rollout-pipeline-navigation-assist-trust-messages")
     if not args.recurrent_rl_restore_best:
         cmd.append("--no-rl-restore-best")
     if not args.recurrent_rl_save_best:
@@ -395,6 +473,30 @@ def _build_recurrent_command(
         cmd.append("--comm")
     if args.recurrent_calibrate_send_threshold:
         cmd.append("--bc-calibrate-send-threshold")
+    if args.recurrent_obs_exploration_memory:
+        cmd.append("--obs-exploration-memory")
+    if args.recurrent_obs_feedback:
+        cmd.append("--obs-feedback")
+    if args.recurrent_obs_normalize_tokens:
+        cmd.append("--obs-normalize-tokens")
+    if args.recurrent_obs_navigation_features:
+        cmd.append("--obs-navigation-features")
+    if args.recurrent_obs_signal_features:
+        cmd.append("--obs-signal-features")
+    if args.recurrent_obs_signal_target_match_features:
+        cmd.append("--obs-signal-target-match-features")
+    if args.recurrent_obs_signal_sync_feedback:
+        cmd.append("--obs-signal-sync-feedback")
+    if args.recurrent_obs_signal_scan_state:
+        cmd.append("--obs-signal-scan-state")
+    if args.recurrent_bc_pipeline_proactive_bad_action_labels:
+        cmd.append("--bc-pipeline-proactive-bad-action-labels")
+    if args.recurrent_obs_pipeline_features and case.scenario == "pipeline_assembly":
+        cmd.append("--obs-pipeline-features")
+    if args.recurrent_eval_pipeline_navigation_assist and case.scenario == "pipeline_assembly":
+        cmd.append("--eval-pipeline-navigation-assist")
+    if args.recurrent_eval_pipeline_navigation_assist_trust_messages and case.scenario == "pipeline_assembly":
+        cmd.append("--eval-pipeline-navigation-assist-trust-messages")
     if args.recurrent_signal_preset == "specialist" and case.scenario == "signal_hunt":
         cmd.extend([
             "--obs-exploration-memory",
@@ -536,6 +638,7 @@ def run_suite(args) -> dict:
             "minibatch": args.minibatch,
             "eval_every": args.eval_every,
             "eval_episodes": args.eval_episodes,
+            "recurrent_eval_episodes": args.recurrent_eval_episodes,
             "device": args.device,
             "seeds": args.seeds,
             "learning_profile": args.learning_profile,
@@ -570,11 +673,40 @@ def run_suite(args) -> dict:
             "recurrent_bc_action_class_balance_max_weight": args.recurrent_bc_action_class_balance_max_weight,
             "recurrent_bc_event_action_weight": args.recurrent_bc_event_action_weight,
             "recurrent_bc_event_action_events": args.recurrent_bc_event_action_events,
+            "recurrent_bc_pipeline_pickup_action_loss_weight": (
+                args.recurrent_bc_pipeline_pickup_action_loss_weight
+            ),
+            "recurrent_bc_pipeline_delivery_action_loss_weight": (
+                args.recurrent_bc_pipeline_delivery_action_loss_weight
+            ),
+            "recurrent_bc_pipeline_plan_action_loss_weight": (
+                args.recurrent_bc_pipeline_plan_action_loss_weight
+            ),
+            "recurrent_bc_pipeline_message_loss_weight": (
+                args.recurrent_bc_pipeline_message_loss_weight
+            ),
+            "recurrent_bc_pipeline_bad_pickup_action_loss_weight": (
+                args.recurrent_bc_pipeline_bad_pickup_action_loss_weight
+            ),
+            "recurrent_bc_pipeline_bad_drop_action_loss_weight": (
+                args.recurrent_bc_pipeline_bad_drop_action_loss_weight
+            ),
+            "recurrent_bc_pipeline_bad_interact_action_loss_weight": (
+                args.recurrent_bc_pipeline_bad_interact_action_loss_weight
+            ),
+            "recurrent_bc_pipeline_proactive_bad_action_labels": (
+                args.recurrent_bc_pipeline_proactive_bad_action_labels
+            ),
             "recurrent_pipeline_stage_count": args.recurrent_pipeline_stage_count,
             "recurrent_pipeline_required_per_stage_min": args.recurrent_pipeline_required_per_stage_min,
             "recurrent_pipeline_required_per_stage_max": args.recurrent_pipeline_required_per_stage_max,
             "recurrent_pipeline_sync_probability": args.recurrent_pipeline_sync_probability,
             "recurrent_pipeline_dependency_probability": args.recurrent_pipeline_dependency_probability,
+            "recurrent_obs_pipeline_features": args.recurrent_obs_pipeline_features,
+            "recurrent_eval_pipeline_navigation_assist": args.recurrent_eval_pipeline_navigation_assist,
+            "recurrent_eval_pipeline_navigation_assist_trust_messages": (
+                args.recurrent_eval_pipeline_navigation_assist_trust_messages
+            ),
             "recurrent_bc_calibrate_send_threshold": args.recurrent_bc_calibrate_send_threshold,
             "recurrent_bc_send_threshold_target_rate": args.recurrent_bc_send_threshold_target_rate,
             "recurrent_bc_comm_send_rate_penalty_weight": args.recurrent_bc_comm_send_rate_penalty_weight,
@@ -585,6 +717,9 @@ def run_suite(args) -> dict:
             "recurrent_dagger_oracle_action_rollin_rate": args.recurrent_dagger_oracle_action_rollin_rate,
             "recurrent_dagger_oracle_message_rollin_rate": args.recurrent_dagger_oracle_message_rollin_rate,
             "recurrent_rl_updates": args.recurrent_rl_updates,
+            "recurrent_rl_early_stop_eval_patience": args.recurrent_rl_early_stop_eval_patience,
+            "recurrent_rl_eval_episodes": args.recurrent_rl_eval_episodes,
+            "recurrent_rl_eval_use_eval_seeds": args.recurrent_rl_eval_use_eval_seeds,
             "recurrent_ppo_profile": args.recurrent_ppo_profile,
             "recurrent_rl_epochs": args.recurrent_rl_epochs,
             "recurrent_minibatch_seqs": args.recurrent_minibatch_seqs,
@@ -596,6 +731,12 @@ def run_suite(args) -> dict:
             "recurrent_bc_comm_kl_coeff": args.recurrent_bc_comm_kl_coeff,
             "recurrent_rl_balanced_rollouts": args.recurrent_rl_balanced_rollouts,
             "recurrent_rl_rollout_eval_decoding": args.recurrent_rl_rollout_eval_decoding,
+            "recurrent_rl_rollout_pipeline_navigation_assist": (
+                args.recurrent_rl_rollout_pipeline_navigation_assist
+            ),
+            "recurrent_rl_rollout_pipeline_navigation_assist_trust_messages": (
+                args.recurrent_rl_rollout_pipeline_navigation_assist_trust_messages
+            ),
             "recurrent_rl_restore_best": args.recurrent_rl_restore_best,
             "recurrent_rl_save_best": args.recurrent_rl_save_best,
             "recurrent_train_map_sizes": args.recurrent_train_map_sizes,
@@ -603,8 +744,10 @@ def run_suite(args) -> dict:
             "recurrent_map_max_steps": args.recurrent_map_max_steps,
             "recurrent_eval_map_sizes": args.recurrent_eval_map_sizes,
             "recurrent_eval_seed_count": args.recurrent_eval_seed_count,
+            "recurrent_eval_seed_range": args.recurrent_eval_seed_range,
             "recurrent_eval_seed_list": args.recurrent_eval_seed_list,
             "recurrent_dagger_seed_list": args.recurrent_dagger_seed_list,
+            "recurrent_skip_bc": args.recurrent_skip_bc,
             "recurrent_init": args.recurrent_init,
             "recurrent_init_template": args.recurrent_init_template,
             "recurrent_init_for_dagger": args.recurrent_init_for_dagger,
@@ -613,6 +756,16 @@ def run_suite(args) -> dict:
             "recurrent_comm_token_limit": args.recurrent_comm_token_limit,
             "recurrent_comm_vocab_size": args.recurrent_comm_vocab_size,
             "recurrent_hidden_dim": args.recurrent_hidden_dim,
+            "recurrent_obs_exploration_memory": args.recurrent_obs_exploration_memory,
+            "recurrent_obs_feedback": args.recurrent_obs_feedback,
+            "recurrent_obs_normalize_tokens": args.recurrent_obs_normalize_tokens,
+            "recurrent_obs_navigation_features": args.recurrent_obs_navigation_features,
+            "recurrent_obs_signal_features": args.recurrent_obs_signal_features,
+            "recurrent_obs_signal_target_match_features": (
+                args.recurrent_obs_signal_target_match_features
+            ),
+            "recurrent_obs_signal_sync_feedback": args.recurrent_obs_signal_sync_feedback,
+            "recurrent_obs_signal_scan_state": args.recurrent_obs_signal_scan_state,
             "recurrent_eval_send_threshold": args.recurrent_eval_send_threshold,
             "recurrent_calibrate_send_threshold": args.recurrent_calibrate_send_threshold,
             "recurrent_obs_memory_mode": args.recurrent_obs_memory_mode,
@@ -1110,13 +1263,27 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-bc-event-action-weight", type=float, default=2.0)
     parser.add_argument(
         "--recurrent-bc-event-action-events",
-        default="delivered,sync_complete,recharged,joint_target_scan",
+        default="picked_resource,dropped_resource,delivered,stage_completed,sync_complete,"
+        "recharged,joint_target_scan",
+    )
+    parser.add_argument("--recurrent-bc-pipeline-pickup-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--recurrent-bc-pipeline-delivery-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--recurrent-bc-pipeline-plan-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--recurrent-bc-pipeline-message-loss-weight", type=float, default=0.0)
+    parser.add_argument("--recurrent-bc-pipeline-bad-pickup-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--recurrent-bc-pipeline-bad-drop-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--recurrent-bc-pipeline-bad-interact-action-loss-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--recurrent-bc-pipeline-proactive-bad-action-labels",
+        action=argparse.BooleanOptionalAction,
+        default=False,
     )
     parser.add_argument("--recurrent-pipeline-stage-count", type=int, default=None)
     parser.add_argument("--recurrent-pipeline-required-per-stage-min", type=int, default=1)
     parser.add_argument("--recurrent-pipeline-required-per-stage-max", type=int, default=2)
     parser.add_argument("--recurrent-pipeline-sync-probability", type=float, default=0.5)
     parser.add_argument("--recurrent-pipeline-dependency-probability", type=float, default=0.7)
+    parser.add_argument("--recurrent-obs-pipeline-features", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--recurrent-bc-calibrate-send-threshold",
         action=argparse.BooleanOptionalAction,
@@ -1131,10 +1298,28 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-dagger-oracle-action-rollin-rate", type=float, default=0.25)
     parser.add_argument("--recurrent-dagger-oracle-message-rollin-rate", type=float, default=0.0)
     parser.add_argument(
+        "--recurrent-eval-episodes",
+        type=int,
+        default=None,
+        help="Override final recurrent eval episodes; defaults to the shared --eval-episodes value",
+    )
+    parser.add_argument(
         "--recurrent-rl-updates",
         type=int,
         default=None,
         help="Override recurrent PPO updates; defaults to the shared --updates value",
+    )
+    parser.add_argument(
+        "--recurrent-rl-eval-episodes",
+        type=int,
+        default=None,
+        help="Override recurrent PPO best-checkpoint eval episodes; defaults to recurrent final eval episodes",
+    )
+    parser.add_argument(
+        "--recurrent-rl-eval-use-eval-seeds",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use the recurrent final eval seed panel for PPO best-checkpoint selection",
     )
     parser.add_argument(
         "--recurrent-ppo-profile",
@@ -1144,6 +1329,7 @@ def parse_args(argv: list[str] | None = None):
     )
     parser.add_argument("--recurrent-rl-epochs", type=int, default=2)
     parser.add_argument("--recurrent-minibatch-seqs", type=int, default=8)
+    parser.add_argument("--recurrent-rl-early-stop-eval-patience", type=int, default=None)
     parser.add_argument("--recurrent-rl-lr", type=float, default=None)
     parser.add_argument("--recurrent-clip", type=float, default=None)
     parser.add_argument("--recurrent-entropy-coeff", type=float, default=None)
@@ -1152,6 +1338,16 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-bc-comm-kl-coeff", type=float, default=None)
     parser.add_argument("--recurrent-rl-balanced-rollouts", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--recurrent-rl-rollout-eval-decoding", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument(
+        "--recurrent-rl-rollout-pipeline-navigation-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-rl-rollout-pipeline-navigation-assist-trust-messages",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument("--recurrent-rl-restore-best", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--recurrent-rl-save-best", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--recurrent-train-map-sizes", default="")
@@ -1159,8 +1355,17 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-map-max-steps", default="")
     parser.add_argument("--recurrent-eval-map-sizes", default="")
     parser.add_argument("--recurrent-eval-seed-count", type=int, default=1)
+    parser.add_argument(
+        "--recurrent-eval-seed-range",
+        default="",
+        help=(
+            "Compact recurrent eval seed panel. Use START:COUNT, for example 3000:40, "
+            "or MAP_SIZE=START:COUNT entries joined by '+'."
+        ),
+    )
     parser.add_argument("--recurrent-eval-seed-list", default="")
     parser.add_argument("--recurrent-dagger-seed-list", default="")
+    parser.add_argument("--recurrent-skip-bc", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-init", default=None)
     parser.add_argument(
         "--recurrent-init-template",
@@ -1176,11 +1381,29 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-comm-token-limit", type=int, default=8)
     parser.add_argument("--recurrent-comm-vocab-size", type=int, default=32)
     parser.add_argument("--recurrent-hidden-dim", type=int, default=128)
+    parser.add_argument("--recurrent-obs-exploration-memory", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--recurrent-obs-feedback", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--recurrent-obs-normalize-tokens", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--recurrent-obs-navigation-features", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--recurrent-obs-signal-features", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--recurrent-obs-signal-target-match-features",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--recurrent-obs-signal-sync-feedback", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--recurrent-obs-signal-scan-state", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-eval-send-threshold", type=float, default=0.25)
     parser.add_argument("--recurrent-calibrate-send-threshold", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-obs-memory-mode", default="egocentric", choices=["full", "egocentric"])
     parser.add_argument("--recurrent-obs-memory-radius", type=int, default=4)
     parser.add_argument("--recurrent-eval-signal-exact-target-memory-steps", type=int, default=32)
+    parser.add_argument("--recurrent-eval-pipeline-navigation-assist", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--recurrent-eval-pipeline-navigation-assist-trust-messages",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-mode", default="offline", choices=["online", "offline", "disabled"])
     parser.add_argument("--wandb-project", default="syncorsink-core-training")
@@ -1196,6 +1419,21 @@ def parse_args(argv: list[str] | None = None):
     elif args.seed is not None and args.seed not in args.seeds:
         args.seeds = sorted([*args.seeds, args.seed])
     args.seeds = sorted(set(args.seeds))
+    if args.recurrent_eval_seed_range:
+        if args.recurrent_eval_seed_list:
+            parser.error("--recurrent-eval-seed-range cannot be combined with --recurrent-eval-seed-list")
+        try:
+            args.recurrent_eval_seed_list = _expand_seed_range(args.recurrent_eval_seed_range)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.recurrent_eval_episodes is None:
+            args.recurrent_eval_episodes = 1
+        if args.recurrent_rl_eval_episodes is None:
+            args.recurrent_rl_eval_episodes = 1
+        if args.recurrent_rl_eval_use_eval_seeds is None:
+            args.recurrent_rl_eval_use_eval_seeds = True
+    if args.recurrent_rl_eval_use_eval_seeds is None:
+        args.recurrent_rl_eval_use_eval_seeds = False
     return _apply_recurrent_ppo_profile(args)
 
 

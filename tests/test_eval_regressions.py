@@ -59,6 +59,59 @@ def test_signal_trajectory_audit_failure_classifier():
     }) == "unsynchronized_target_scan"
 
 
+def test_pipeline_trajectory_audit_failure_classifier():
+    from syncorsink.eval.trajectory_audit import pipeline_failure_type
+
+    base = {
+        "success": False,
+        "event_counts": {},
+        "pipeline": {
+            "stages_completed": 0,
+            "stages_total": 2,
+            "max_stages_completed": 0,
+            "max_delivered_resources": 0,
+            "missed_pickup_opportunities": 0,
+            "missed_delivery_opportunities": 0,
+            "missed_sync_interacts": 0,
+        },
+    }
+
+    assert pipeline_failure_type({"success": True, "pipeline": {}}) == "success"
+    assert pipeline_failure_type({
+        **base,
+        "event_counts": {"pipeline_wrong_delivery": 1},
+    }) == "wrong_delivery"
+    assert pipeline_failure_type({
+        **base,
+        "event_counts": {"pipeline_dependency_blocked": 1},
+    }) == "dependency_blocked"
+    assert pipeline_failure_type({
+        **base,
+        "event_counts": {"pipeline_sync_wait": 1},
+    }) == "sync_wait"
+    assert pipeline_failure_type({
+        **base,
+        "pipeline": {**base["pipeline"], "missed_pickup_opportunities": 2},
+    }) == "missed_pickup"
+    assert pipeline_failure_type({
+        **base,
+        "pipeline": {
+            **base["pipeline"],
+            "max_delivered_resources": 1,
+            "missed_delivery_opportunities": 1,
+        },
+    }) == "missed_delivery"
+    assert pipeline_failure_type({
+        **base,
+        "pipeline": {
+            **base["pipeline"],
+            "stages_completed": 1,
+            "max_stages_completed": 1,
+            "max_delivered_resources": 1,
+        },
+    }) == "partial_pipeline"
+
+
 def test_signal_trajectory_audit_oracle_smoke():
     from syncorsink.envs import SyncOrSinkConfig
     from syncorsink.eval.trajectory_audit import (
@@ -125,6 +178,45 @@ def test_signal_trajectory_audit_oracle_smoke():
     assert trace
     assert "positions_before" in trace[0]
     assert "actions" in trace[0]
+
+
+def test_pipeline_trajectory_audit_oracle_smoke():
+    from syncorsink.envs import SyncOrSinkConfig
+    from syncorsink.eval.trajectory_audit import (
+        AuditPolicySpec,
+        make_oracle_policy_factory,
+        run_trajectory_audit,
+    )
+
+    result = run_trajectory_audit(
+        SyncOrSinkConfig(
+            scenario="pipeline_assembly",
+            map_size=8,
+            num_agents=3,
+            fov_preset="easy",
+            max_steps=180,
+            comm_token_limit=8,
+            token_vocab_size=32,
+            max_messages=8,
+        ),
+        [
+            AuditPolicySpec(
+                label="oracle",
+                factory=make_oracle_policy_factory("pipeline_assembly", "planner_comm"),
+            )
+        ],
+        episodes=1,
+        seed=0,
+    )
+
+    policy = result["policies"][0]
+    episode = policy["episodes"][0]
+    assert policy["summary"]["success_rate"] == 1.0
+    assert policy["diagnostics"]["failure_type_counts"] == {"success": 1}
+    assert policy["diagnostics"]["pipeline"]["episodes_with_all_stages_completed"] == 1
+    assert episode["pipeline"]["stages_completed"] == episode["pipeline"]["stages_total"]
+    assert episode["pipeline"]["delivered_resources"] == episode["pipeline"]["required_resources"]
+    assert result["comparison"][0]["oracle"]["pipeline"]["completion_ratio"] == 1.0
 
 
 def test_signal_hint_comm_audit_avoids_decoy_loops():

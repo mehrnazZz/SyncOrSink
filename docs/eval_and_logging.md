@@ -186,6 +186,60 @@ scalars include:
 - `rollout/*` PPO reward, communication, KL, action histogram, learning rate,
   and optional guided-decoding indicators
 
+Pipeline Assembly diagnostics:
+
+- Positive training events include `picked_resource`, `delivered`,
+  `stage_completed`, `sync_complete`, and `pipeline_complete`.
+- Pipeline focus events include `pipeline_wrong_delivery`,
+  `pipeline_dependency_blocked`, `pipeline_sync_wait`,
+  `pipeline_pickup_miss`, `pipeline_delivery_miss`,
+  `pipeline_station_stall_miss`, and `pipeline_drop_miss`.
+- Pipeline BC action-supervision knobs include
+  `--bc-pipeline-pickup-action-loss-weight`,
+  `--bc-pipeline-delivery-action-loss-weight`,
+  `--bc-pipeline-plan-action-loss-weight`,
+  `--bc-pipeline-bad-pickup-action-loss-weight`,
+  `--bc-pipeline-bad-drop-action-loss-weight`, and
+  `--bc-pipeline-bad-interact-action-loss-weight`. Structured planner-message
+  supervision can be upweighted with `--bc-pipeline-message-loss-weight`. W&B
+  logs matching `bc/pipeline_*`, `bc/pipeline_plan_*`,
+  `bc/pipeline_message_*`, and `dagger/collect_pipeline_*` metrics.
+- `--dagger-pipeline-wrong-delivery-provenance-labels` is an experimental
+  Pipeline DAgger option that traces an actual `pipeline_wrong_delivery` event
+  back to the earlier model-only pickup of the same carried resource. When this
+  fires it labels the source pickup as a `pipeline_bad_pickup` example and adds
+  a `pipeline_wrong_delivery_root_pickup` root-cause replay trigger. Tune it
+  with `--dagger-pipeline-wrong-delivery-provenance-weight`; negative values
+  reuse `--dagger-focus-error-weight`. The root event can also be bounded with
+  `--dagger-replay-event-weights pipeline_wrong_delivery_root_pickup:0.5` and
+  `--dagger-replay-event-caps pipeline_wrong_delivery_root_pickup:1`. Keep it
+  opt-in until the replay balance is tuned.
+- `--bc-pipeline-proactive-bad-action-labels` is an experimental opt-in that
+  adds trusted-plan negative labels for picking up unneeded resources,
+  wrong-station interacts, and dropping a still-needed resource, plus
+  wrong-item station recovery labels. Keep runs with this flag separate until
+  tuned.
+- `--obs-pipeline-features` adds a compact recurrent observation block decoded
+  from local observations, private Pipeline hints, and planner messages:
+  active-station direction, needed resource types, held-resource match,
+  pickup/delivery affordances, and wrong-station interact context.
+- `--eval-pipeline-navigation-assist` is an opt-in diagnostic decoder assist:
+  it trusts private Pipeline hints by default and uses the local action mask to
+  steer required-resource pickup, active-station delivery, and wrong-station
+  suppression. Add `--eval-pipeline-navigation-assist-trust-messages` only when
+  you want the assist to trust learned planner messages without a matching hint.
+  Treat assisted scores separately from plain benchmark scores.
+- `--rl-rollout-pipeline-navigation-assist` applies the same Pipeline assist
+  only during recurrent PPO rollout collection. This is the preferred guided
+  fine-tuning mode when you want unassisted eval plots/checkpoint selection but
+  still want high-reward assisted trajectories to shape the policy. Pair it with
+  `--rl-rollout-eval-decoding`; use
+  `--rl-rollout-pipeline-navigation-assist-trust-messages` only for runs that
+  intentionally train from teammate-message plans.
+- The trajectory audit reports Pipeline failure types such as `missed_pickup`,
+  `missed_delivery`, `sync_wait`, `dependency_blocked`, `wrong_delivery`, and
+  `partial_pipeline`, plus aggregate stage-completion and delivery ratios.
+
 PPO stability controls:
 
 - `--rl-restore-best` keeps the best eval checkpoint after PPO fine-tuning.
@@ -267,19 +321,36 @@ BC/communication KL, balanced rollouts, and eval-decoding rollouts. Use
 `--recurrent-ppo-profile standard` to recover the trainer defaults, or override
 individual knobs such as `--recurrent-rl-lr`, `--recurrent-clip`,
 `--recurrent-bc-kl-coeff`, and `--recurrent-bc-comm-kl-coeff`. Use
-`--recurrent-init-template` with `{seed}` to fine-tune each seed from its own
+`--recurrent-rl-early-stop-eval-patience` to tune PPO early stopping; the
+guarded profile defaults this to `4`, while the standard profile disables it.
+Use `--recurrent-init-template` with `{seed}` to fine-tune each seed from its own
 BC/DAgger checkpoint. For non-Signal scenarios,
 `--recurrent-bc-calibrate-send-threshold` passes the recurrent trainer's
 post-BC communication threshold calibration into the sweep;
 `--recurrent-bc-send-threshold-target-rate` and
 `--recurrent-bc-comm-send-rate-*` expose the trainer's existing send-rate
-controls. Recurrent JSON eval output and saved checkpoint eval
+controls. For audit-panel PPO selection, `--recurrent-eval-seed-range 3000:40`
+expands to `--eval-seed-list 3000,...,3039`, sets recurrent final/PPO evals to
+one episode per seed unless explicitly overridden, and enables PPO best
+checkpoint selection on the same eval seed panel. Map-specific ranges use
+`MAP_SIZE=START:COUNT`, such as `16=13000:40+32=17000:40`. Recurrent JSON eval
+output and saved checkpoint eval
 metadata are normalized into the same aggregate `success_rate`, `return`, and
 `steps` fields as MAPPO/Comm-MAT/TarMAC. When recurrent PPO restores the best
 checkpoint before saving, `eval_metrics` describes that saved checkpoint;
 recurrent summaries also preserve separate `final_eval_metrics` and
-`best_eval_metrics` so PPO regressions are visible. Recurrent PPO W&B logs also
-report `rollout/completed_episodes` and `rollout/partial_segments`; when a
+`best_eval_metrics` so PPO regressions are visible. Recurrent trajectory audits
+inherit the checkpoint observation contract and send threshold; recurrent
+trainer runs that load `--recurrent-init` also inherit the checkpoint's
+`eval_send_threshold` when the caller leaves the default threshold in place.
+Use `--recurrent-send-threshold` in audits or `--recurrent-eval-send-threshold`
+in sweeps only for intentional decode overrides. The sweep exposes recurrent
+observation-contract flags such as `--recurrent-obs-exploration-memory`,
+`--recurrent-obs-feedback`, `--recurrent-obs-normalize-tokens`,
+`--recurrent-obs-navigation-features`, and `--recurrent-obs-signal-*` so PPO
+fine-tuning can match checkpoints trained with richer observation blocks.
+Recurrent PPO W&B logs also report `rollout/completed_episodes` and
+`rollout/partial_segments`; when a
 rollout chunk has no completed episodes, `rollout/mean_ep_return`,
 `rollout/mean_ep_len`, and `rollout/mean_ep_comm_tokens` fall back to partial
 segment means so plots do not show misleading zeros.
@@ -293,9 +364,14 @@ planner_comm --agents 3` plus the per-stage Pipeline difficulty schedules:
 `--pipeline-dependency-probability-schedule`. The runner writes
 `summary.json`, one checkpoint per stage, and a `_best.pt` RL checkpoint when
 `--rl-updates > 0` and `--rl-save-best` is enabled. It also forwards the
-generic rare-action BC controls `--bc-action-class-balance` and
+Pipeline observation default `--obs-pipeline-features`, plus the generic
+rare-action BC controls `--bc-action-class-balance` and
 `--bc-event-action-weight`; the default event list includes `picked_resource`,
-`delivered`, and `sync_complete` for Pipeline learning.
+`dropped_resource`, `delivered`, `stage_completed`, and `sync_complete` for
+Pipeline learning.
+Use the Pipeline-specific action losses above when audits show persistent
+missed pickups, missed deliveries, excessive drops, or wrong-station
+interactions.
 
 Curriculum PPO can be gated per stage with `--rl-updates-schedule`, for example
 `--rl-updates-schedule 0,0,60` to keep early stages BC/DAgger-only and reserve

@@ -59,6 +59,17 @@ class PipelineAssembly(ScenarioBase):
         max_required = max(min_required, int(getattr(config, "pipeline_required_per_stage_max", 2)))
         return min_required, max_required
 
+    @staticmethod
+    def _stage_requirements_met(stage: dict) -> bool:
+        return all(
+            stage["delivered"].count(req) >= stage["required"].count(req)
+            for req in stage["required"]
+        )
+
+    @staticmethod
+    def _stage_deps_done(stages: list[dict], stage: dict) -> bool:
+        return all(stages[d]["done"] for d in stage["deps"])
+
     def build_map(self, size: int, rng: np.random.Generator, config) -> tuple[np.ndarray, dict]:
         station_count = max(3, min(5, size // 6))
         resource_count = station_count * 3
@@ -203,9 +214,10 @@ class PipelineAssembly(ScenarioBase):
     def step(self, env, actions: dict[int, dict]) -> tuple[dict[int, float], bool, dict]:
         rewards = {i: 0.0 for i in range(env.num_agents)}
         events = {i: [] for i in range(env.num_agents)}
+        stages = env.scenario_state.data["stages"]
 
         # check for completion
-        if all(s["done"] for s in env.scenario_state.data["stages"]):
+        if all(s["done"] for s in stages):
             for i in rewards:
                 rewards[i] += env.reward_complete
             return rewards, True, {"events": events}
@@ -218,46 +230,73 @@ class PipelineAssembly(ScenarioBase):
                 station_interactors.setdefault(pos, []).append(agent_id)
 
         # process deliveries
+        delivery_agents_by_stage: dict[int, set[int]] = {}
         for agent_id, action in actions.items():
             if action.get("action") != env.ACTION_INTERACT:
                 continue
             pos = env.agent_positions[agent_id]
-            for stage in env.scenario_state.data["stages"]:
+            inventory = int(env.inventories[agent_id])
+            touched_station = False
+            delivered = False
+            for stage in stages:
                 if stage["done"]:
                     continue
                 if pos != stage["station"]:
                     continue
-                if env.inventories[agent_id] == 0:
+                touched_station = True
+                if inventory == 0:
                     continue
-                if env.inventories[agent_id] in stage["required"]:
+                if inventory in stage["required"]:
                     # allow duplicate deliveries if required multiple times
-                    req_count = stage["required"].count(env.inventories[agent_id])
-                    del_count = stage["delivered"].count(env.inventories[agent_id])
+                    req_count = stage["required"].count(inventory)
+                    del_count = stage["delivered"].count(inventory)
                     if del_count < req_count:
-                        stage["delivered"].append(env.inventories[agent_id])
+                        stage["delivered"].append(inventory)
                         env.inventories[agent_id] = 0
                         rewards[agent_id] += env.reward_stage
                         events[agent_id].append({"event": "delivered", "stage": stage["stage"]})
+                        delivery_agents_by_stage.setdefault(int(stage["stage"]), set()).add(int(agent_id))
+                        delivered = True
+                        break
+            if touched_station and inventory != 0 and not delivered:
+                events[agent_id].append({
+                    "event": "pipeline_wrong_delivery",
+                    "resource_type": inventory,
+                })
 
         # finalize stages
-        for stage in env.scenario_state.data["stages"]:
+        for stage in stages:
             if stage["done"]:
                 continue
-            deps_done = all(env.scenario_state.data["stages"][d]["done"] for d in stage["deps"])
+            deps_done = self._stage_deps_done(stages, stage)
             if not deps_done:
+                if self._stage_requirements_met(stage):
+                    for agent_id in station_interactors.get(stage["station"], []):
+                        events[agent_id].append({
+                            "event": "pipeline_dependency_blocked",
+                            "stage": stage["stage"],
+                        })
                 continue
             # check multiset completion
-            if any(stage["delivered"].count(req) < stage["required"].count(req) for req in stage["required"]):
+            if not self._stage_requirements_met(stage):
                 continue
             # require synchronized interaction if sync stage
+            completion_agents = set(delivery_agents_by_stage.get(int(stage["stage"]), set()))
             if stage["sync"]:
                 interactors = station_interactors.get(stage["station"], [])
                 if len(interactors) < 2:
+                    for agent_id in interactors:
+                        events[agent_id].append({"event": "pipeline_sync_wait", "stage": stage["stage"]})
                     continue
                 for agent_id in interactors:
                     rewards[agent_id] += env.reward_stage * 0.5
                     events[agent_id].append({"event": "sync_complete", "stage": stage["stage"]})
+                completion_agents.update(int(agent_id) for agent_id in interactors)
+            elif not completion_agents:
+                completion_agents.update(int(agent_id) for agent_id in station_interactors.get(stage["station"], []))
             stage["done"] = True
+            for agent_id in sorted(completion_agents):
+                events[agent_id].append({"event": "stage_completed", "stage": stage["stage"]})
 
         if env.config.pipeline_shaping:
             shaping = env.scenario_state.data.setdefault("shaping", {"last_target": {}, "last_dist": {}})
@@ -319,10 +358,11 @@ class PipelineAssembly(ScenarioBase):
                 rewards[agent_id] += (last_dist - dist) * env.config.pipeline_shaping_scale
                 shaping["last_dist"][agent_id] = dist
 
-        done = all(s["done"] for s in env.scenario_state.data["stages"])
+        done = all(s["done"] for s in stages)
         if done:
             for i in rewards:
                 rewards[i] += env.reward_complete
+                events[i].append({"event": "pipeline_complete"})
         return rewards, done, {"events": events}
 
 

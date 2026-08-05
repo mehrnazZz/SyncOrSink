@@ -87,7 +87,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mappo-label", action="append", default=None)
     parser.add_argument("--recurrent-checkpoint", action="append", default=[])
     parser.add_argument("--recurrent-label", action="append", default=None)
-    parser.add_argument("--recurrent-send-threshold", type=float, default=0.25)
+    parser.add_argument(
+        "--recurrent-send-threshold",
+        type=float,
+        default=None,
+        help="Override recurrent checkpoint send threshold; omitted uses the checkpoint value.",
+    )
     parser.add_argument("--recurrent-signal-scan-gate-threshold", type=float, default=None)
     parser.add_argument(
         "--recurrent-signal-scan-gate-suppress",
@@ -133,6 +138,16 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
     )
     parser.add_argument("--recurrent-signal-scan-refresh-threshold", type=float, default=None)
+    parser.add_argument(
+        "--recurrent-pipeline-navigation-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-pipeline-navigation-assist-trust-messages",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
 
     parser.add_argument("--mappo-deterministic", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--mappo-action-mode", default="sample", choices=["argmax", "sample"])
@@ -207,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
                 "label": policy["label"],
                 "summary": policy["summary"],
                 "failure_type_counts": policy["diagnostics"]["failure_type_counts"],
+                "pipeline": policy["diagnostics"].get("pipeline"),
                 "signal": policy["diagnostics"].get("signal"),
                 "signal_lifecycle": policy["diagnostics"].get("signal_lifecycle"),
             }
@@ -285,6 +301,10 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 eval_signal_exact_target_memory_steps=args.recurrent_signal_exact_target_memory_steps,
                 eval_signal_scan_refresh_assist=args.recurrent_signal_scan_refresh_assist,
                 eval_signal_scan_refresh_threshold=args.recurrent_signal_scan_refresh_threshold,
+                eval_pipeline_navigation_assist=args.recurrent_pipeline_navigation_assist,
+                eval_pipeline_navigation_assist_trust_messages=(
+                    args.recurrent_pipeline_navigation_assist_trust_messages
+                ),
             ),
             env_config=recurrent_checkpoint_env_config(checkpoint, env_config),
             metadata={
@@ -306,6 +326,10 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 "eval_signal_exact_target_memory_steps": args.recurrent_signal_exact_target_memory_steps,
                 "eval_signal_scan_refresh_assist": args.recurrent_signal_scan_refresh_assist,
                 "eval_signal_scan_refresh_threshold": args.recurrent_signal_scan_refresh_threshold,
+                "eval_pipeline_navigation_assist": args.recurrent_pipeline_navigation_assist,
+                "eval_pipeline_navigation_assist_trust_messages": (
+                    args.recurrent_pipeline_navigation_assist_trust_messages
+                ),
             },
         ))
     return specs

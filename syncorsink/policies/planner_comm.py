@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from typing import Dict
 
 from .planner import pipeline_central_planner
@@ -15,7 +16,20 @@ def _clip_tokens(tokens: list[int], vocab_size: int, limit: int) -> list[int]:
 def _planner_message(env) -> list[int]:
     stages = env.scenario_state.data.get("stages", [])
     open_stages = [s for s in stages if not s["done"]]
-    stage = open_stages[0] if open_stages else None
+    available = []
+    for stage in open_stages:
+        deps_done = all(stages[d]["done"] for d in stage.get("deps", []))
+        if deps_done:
+            available.append(stage)
+    open_stages = available if available else open_stages
+    stage = None
+    if open_stages:
+        def _need_count(candidate):
+            return sum(
+                (Counter(candidate["required"]) - Counter(candidate.get("delivered", []))).values()
+            )
+
+        stage = sorted(open_stages, key=_need_count)[0]
     if stage is None:
         return [12, 0]
     sx, sy = stage["station"]

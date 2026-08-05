@@ -1,5 +1,6 @@
 import json
 
+import pytest
 import torch
 
 
@@ -194,20 +195,35 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert payload["config"]["recurrent_bc_action_class_balance_max_weight"] == 5.0
     assert payload["config"]["recurrent_bc_event_action_weight"] == 2.0
     assert payload["config"]["recurrent_bc_event_action_events"] == (
-        "delivered,sync_complete,recharged,joint_target_scan"
+        "picked_resource,dropped_resource,delivered,stage_completed,sync_complete,"
+        "recharged,joint_target_scan"
     )
+    assert payload["config"]["recurrent_bc_pipeline_pickup_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_delivery_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_plan_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_message_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_bad_pickup_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_bad_drop_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_bad_interact_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_proactive_bad_action_labels"] is False
     assert payload["config"]["recurrent_pipeline_stage_count"] is None
     assert payload["config"]["recurrent_pipeline_required_per_stage_min"] == 1
     assert payload["config"]["recurrent_pipeline_required_per_stage_max"] == 2
     assert payload["config"]["recurrent_pipeline_sync_probability"] == 0.5
     assert payload["config"]["recurrent_pipeline_dependency_probability"] == 0.7
+    assert payload["config"]["recurrent_obs_pipeline_features"] is True
+    assert payload["config"]["recurrent_eval_pipeline_navigation_assist"] is False
+    assert payload["config"]["recurrent_eval_pipeline_navigation_assist_trust_messages"] is False
     assert payload["config"]["recurrent_bc_kl_coeff"] == 2.0
     assert payload["config"]["recurrent_bc_comm_kl_coeff"] == 2.0
     assert payload["config"]["recurrent_dagger_failed_effective_ratio_cap"] == 0.25
     assert payload["config"]["recurrent_dagger_oracle_action_rollin_rate"] == 0.25
     assert payload["config"]["recurrent_dagger_oracle_message_rollin_rate"] == 0.0
+    assert payload["config"]["recurrent_rl_early_stop_eval_patience"] == 4
     assert payload["config"]["recurrent_rl_balanced_rollouts"] is True
     assert payload["config"]["recurrent_rl_rollout_eval_decoding"] is True
+    assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist"] is False
+    assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist_trust_messages"] is False
 
     assert commands["signal_hunt"][commands["signal_hunt"].index("--oracle") + 1] == "signal_hint_comm"
     assert commands["energy_grid"][commands["energy_grid"].index("--oracle") + 1] == "planner_comm"
@@ -224,7 +240,22 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     ] == "2.0"
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--bc-event-action-events") + 1
-    ] == "delivered,sync_complete,recharged,joint_target_scan"
+    ] == (
+        "picked_resource,dropped_resource,delivered,stage_completed,sync_complete,"
+        "recharged,joint_target_scan"
+    )
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-pickup-action-loss-weight") + 1
+    ] == "0.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-delivery-action-loss-weight") + 1
+    ] == "0.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-bad-pickup-action-loss-weight") + 1
+    ] == "0.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-bad-drop-action-loss-weight") + 1
+    ] == "0.0"
     assert "--pipeline-stage-count" not in commands["pipeline_assembly"]
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--pipeline-required-per-stage-min") + 1
@@ -238,6 +269,9 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--pipeline-dependency-probability") + 1
     ] == "0.7"
+    assert "--obs-pipeline-features" in commands["pipeline_assembly"]
+    assert "--eval-pipeline-navigation-assist" not in commands["pipeline_assembly"]
+    assert "--eval-pipeline-navigation-assist-trust-messages" not in commands["pipeline_assembly"]
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--dagger-failed-effective-ratio-cap") + 1
     ] == "0.25"
@@ -249,6 +283,140 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     ] == "0.0"
     assert "--rl-balanced-rollouts" in commands["energy_grid"]
     assert "--rl-rollout-eval-decoding" in commands["pipeline_assembly"]
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--rl-early-stop-eval-patience") + 1
+    ] == "4"
+    assert "--rl-rollout-pipeline-navigation-assist" not in commands["pipeline_assembly"]
+    assert "--rl-rollout-pipeline-navigation-assist-trust-messages" not in commands["pipeline_assembly"]
+
+
+def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp_path):
+    from examples.core_training_sweep import parse_args, run_suite
+
+    args = parse_args([
+        "--algorithms",
+        "recurrent_bc_rl",
+        "--scenarios",
+        "signal_hunt",
+        "pipeline_assembly",
+        "--updates",
+        "1",
+        "--rollout-steps",
+        "8",
+        "--eval-every",
+        "1",
+        "--eval-episodes",
+        "1",
+        "--seeds",
+        "0",
+        "--recurrent-eval-pipeline-navigation-assist",
+        "--recurrent-eval-pipeline-navigation-assist-trust-messages",
+        "--recurrent-rl-rollout-pipeline-navigation-assist",
+        "--recurrent-rl-rollout-pipeline-navigation-assist-trust-messages",
+        "--recurrent-obs-exploration-memory",
+        "--recurrent-obs-feedback",
+        "--recurrent-obs-normalize-tokens",
+        "--recurrent-obs-navigation-features",
+        "--recurrent-obs-signal-features",
+        "--recurrent-obs-signal-target-match-features",
+        "--recurrent-obs-signal-sync-feedback",
+        "--recurrent-obs-signal-scan-state",
+        "--output-dir",
+        str(tmp_path / "runs"),
+        "--run-name",
+        "recurrent-pipeline-assist",
+        "--dry-run",
+    ])
+
+    payload = run_suite(args)
+    commands = {run["scenario"]: run["command"] for run in payload["runs"]}
+
+    assert payload["config"]["recurrent_eval_pipeline_navigation_assist"] is True
+    assert payload["config"]["recurrent_eval_pipeline_navigation_assist_trust_messages"] is True
+    assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist"] is True
+    assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist_trust_messages"] is True
+    assert payload["config"]["recurrent_obs_exploration_memory"] is True
+    assert payload["config"]["recurrent_obs_feedback"] is True
+    assert payload["config"]["recurrent_obs_normalize_tokens"] is True
+    assert payload["config"]["recurrent_obs_navigation_features"] is True
+    assert payload["config"]["recurrent_obs_signal_features"] is True
+    assert payload["config"]["recurrent_obs_signal_target_match_features"] is True
+    assert payload["config"]["recurrent_obs_signal_sync_feedback"] is True
+    assert payload["config"]["recurrent_obs_signal_scan_state"] is True
+    assert "--eval-pipeline-navigation-assist" in commands["pipeline_assembly"]
+    assert "--eval-pipeline-navigation-assist-trust-messages" in commands["pipeline_assembly"]
+    assert "--rl-rollout-pipeline-navigation-assist" in commands["pipeline_assembly"]
+    assert "--rl-rollout-pipeline-navigation-assist-trust-messages" in commands["pipeline_assembly"]
+    assert "--obs-exploration-memory" in commands["pipeline_assembly"]
+    assert "--obs-feedback" in commands["pipeline_assembly"]
+    assert "--obs-normalize-tokens" in commands["pipeline_assembly"]
+    assert "--obs-navigation-features" in commands["pipeline_assembly"]
+    assert "--obs-signal-features" in commands["pipeline_assembly"]
+    assert "--obs-signal-target-match-features" in commands["pipeline_assembly"]
+    assert "--obs-signal-sync-feedback" in commands["pipeline_assembly"]
+    assert "--obs-signal-scan-state" in commands["pipeline_assembly"]
+    assert "--eval-pipeline-navigation-assist" not in commands["signal_hunt"]
+    assert "--eval-pipeline-navigation-assist-trust-messages" not in commands["signal_hunt"]
+    assert "--rl-rollout-pipeline-navigation-assist" not in commands["signal_hunt"]
+    assert "--rl-rollout-pipeline-navigation-assist-trust-messages" not in commands["signal_hunt"]
+
+
+def test_core_training_sweep_recurrent_eval_seed_range_sets_audit_panel_defaults(tmp_path):
+    from examples.core_training_sweep import parse_args, run_suite
+
+    args = parse_args([
+        "--algorithms",
+        "recurrent_bc_rl",
+        "--scenarios",
+        "pipeline_assembly",
+        "--updates",
+        "6",
+        "--rollout-steps",
+        "16",
+        "--eval-every",
+        "1",
+        "--eval-episodes",
+        "40",
+        "--seeds",
+        "0",
+        "--recurrent-eval-seed-range",
+        "3000:4",
+        "--output-dir",
+        str(tmp_path / "runs"),
+        "--run-name",
+        "recurrent-audit-panel",
+        "--dry-run",
+    ])
+
+    payload = run_suite(args)
+    command = payload["runs"][0]["command"]
+
+    assert payload["config"]["eval_episodes"] == 40
+    assert payload["config"]["recurrent_eval_episodes"] == 1
+    assert payload["config"]["recurrent_rl_eval_episodes"] == 1
+    assert payload["config"]["recurrent_rl_eval_use_eval_seeds"] is True
+    assert payload["config"]["recurrent_eval_seed_range"] == "3000:4"
+    assert payload["config"]["recurrent_eval_seed_list"] == "3000,3001,3002,3003"
+    assert command[command.index("--eval-episodes") + 1] == "1"
+    assert command[command.index("--rl-eval-episodes") + 1] == "1"
+    assert command[command.index("--eval-seed-list") + 1] == "3000,3001,3002,3003"
+    assert "--rl-eval-use-eval-seeds" in command
+
+
+def test_core_training_sweep_recurrent_eval_seed_range_validation():
+    from examples.core_training_sweep import parse_args
+
+    with pytest.raises(SystemExit):
+        parse_args(["--recurrent-eval-seed-range", "3000"])
+    with pytest.raises(SystemExit):
+        parse_args(["--recurrent-eval-seed-range", "3000:0"])
+    with pytest.raises(SystemExit):
+        parse_args([
+            "--recurrent-eval-seed-range",
+            "3000:4",
+            "--recurrent-eval-seed-list",
+            "3000,3001,3002,3003",
+        ])
 
 
 def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path):
@@ -286,6 +454,21 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "6.0",
         "--recurrent-bc-event-action-events",
         "delivered,sync_complete",
+        "--recurrent-bc-pipeline-pickup-action-loss-weight",
+        "0.25",
+        "--recurrent-bc-pipeline-delivery-action-loss-weight",
+        "0.5",
+        "--recurrent-bc-pipeline-plan-action-loss-weight",
+        "1.75",
+        "--recurrent-bc-pipeline-message-loss-weight",
+        "2.25",
+        "--recurrent-bc-pipeline-bad-pickup-action-loss-weight",
+        "0.6",
+        "--recurrent-bc-pipeline-bad-drop-action-loss-weight",
+        "0.75",
+        "--recurrent-bc-pipeline-bad-interact-action-loss-weight",
+        "1.25",
+        "--recurrent-bc-pipeline-proactive-bad-action-labels",
         "--recurrent-pipeline-stage-count",
         "2",
         "--recurrent-pipeline-required-per-stage-min",
@@ -296,6 +479,7 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "0.0",
         "--recurrent-pipeline-dependency-probability",
         "0.0",
+        "--no-recurrent-obs-pipeline-features",
         "--recurrent-bc-calibrate-send-threshold",
         "--recurrent-bc-send-threshold-target-rate",
         "0.15",
@@ -327,6 +511,8 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "1.0",
         "--recurrent-bc-comm-kl-coeff",
         "1.5",
+        "--recurrent-rl-early-stop-eval-patience",
+        "2",
         "--recurrent-rl-balanced-rollouts",
         "--recurrent-rl-rollout-eval-decoding",
         "--no-recurrent-rl-restore-best",
@@ -340,6 +526,7 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "8:3000+16:13000",
         "--recurrent-dagger-seed-list",
         "8:3000+16:13000",
+        "--recurrent-skip-bc",
         "--recurrent-init-template",
         "logs/{scenario}/seed{seed}/{algorithm}_{map_size}x.pt",
         "--recurrent-init-for-dagger",
@@ -363,11 +550,22 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_bc_action_class_balance_max_weight"] == 4.0
     assert payload["config"]["recurrent_bc_event_action_weight"] == 6.0
     assert payload["config"]["recurrent_bc_event_action_events"] == "delivered,sync_complete"
+    assert payload["config"]["recurrent_bc_pipeline_pickup_action_loss_weight"] == 0.25
+    assert payload["config"]["recurrent_bc_pipeline_delivery_action_loss_weight"] == 0.5
+    assert payload["config"]["recurrent_bc_pipeline_plan_action_loss_weight"] == 1.75
+    assert payload["config"]["recurrent_bc_pipeline_message_loss_weight"] == 2.25
+    assert payload["config"]["recurrent_bc_pipeline_bad_pickup_action_loss_weight"] == 0.6
+    assert payload["config"]["recurrent_bc_pipeline_bad_drop_action_loss_weight"] == 0.75
+    assert payload["config"]["recurrent_bc_pipeline_bad_interact_action_loss_weight"] == 1.25
+    assert payload["config"]["recurrent_bc_pipeline_proactive_bad_action_labels"] is True
     assert payload["config"]["recurrent_pipeline_stage_count"] == 2
     assert payload["config"]["recurrent_pipeline_required_per_stage_min"] == 1
     assert payload["config"]["recurrent_pipeline_required_per_stage_max"] == 1
     assert payload["config"]["recurrent_pipeline_sync_probability"] == 0.0
     assert payload["config"]["recurrent_pipeline_dependency_probability"] == 0.0
+    assert payload["config"]["recurrent_obs_pipeline_features"] is False
+    assert payload["config"]["recurrent_eval_pipeline_navigation_assist"] is False
+    assert payload["config"]["recurrent_eval_pipeline_navigation_assist_trust_messages"] is False
     assert payload["config"]["recurrent_bc_calibrate_send_threshold"] is True
     assert payload["config"]["recurrent_bc_send_threshold_target_rate"] == 0.15
     assert payload["config"]["recurrent_bc_comm_send_rate_penalty_weight"] == 0.25
@@ -375,11 +573,15 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_dagger_failed_effective_ratio_cap"] == 0.5
     assert payload["config"]["recurrent_dagger_oracle_action_rollin_rate"] == 0.4
     assert payload["config"]["recurrent_dagger_oracle_message_rollin_rate"] == 0.3
+    assert payload["config"]["recurrent_rl_early_stop_eval_patience"] == 2
+    assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist"] is False
+    assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist_trust_messages"] is False
     assert "--updates" not in command
     assert "--epochs" not in command
     assert "--save-every" not in command
     assert "--rl-updates" in command
     assert command[command.index("--rl-updates") + 1] == "0"
+    assert command[command.index("--rl-early-stop-eval-patience") + 1] == "2"
     assert command[command.index("--rl-lr") + 1] == "1e-05"
     assert command[command.index("--clip") + 1] == "0.1"
     assert command[command.index("--entropy-coeff") + 1] == "0.0"
@@ -395,6 +597,14 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert command[command.index("--bc-action-class-balance-max-weight") + 1] == "4.0"
     assert command[command.index("--bc-event-action-weight") + 1] == "6.0"
     assert command[command.index("--bc-event-action-events") + 1] == "delivered,sync_complete"
+    assert command[command.index("--bc-pipeline-pickup-action-loss-weight") + 1] == "0.25"
+    assert command[command.index("--bc-pipeline-delivery-action-loss-weight") + 1] == "0.5"
+    assert command[command.index("--bc-pipeline-plan-action-loss-weight") + 1] == "1.75"
+    assert command[command.index("--bc-pipeline-message-loss-weight") + 1] == "2.25"
+    assert command[command.index("--bc-pipeline-bad-pickup-action-loss-weight") + 1] == "0.6"
+    assert command[command.index("--bc-pipeline-bad-drop-action-loss-weight") + 1] == "0.75"
+    assert command[command.index("--bc-pipeline-bad-interact-action-loss-weight") + 1] == "1.25"
+    assert "--bc-pipeline-proactive-bad-action-labels" in command
     assert command[command.index("--pipeline-stage-count") + 1] == "2"
     assert command[command.index("--pipeline-required-per-stage-min") + 1] == "1"
     assert command[command.index("--pipeline-required-per-stage-max") + 1] == "1"
@@ -413,7 +623,9 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert "--eval-map-sizes" in command
     assert "--eval-seed-list" in command
     assert "--dagger-seed-list" in command
+    assert "--skip-bc" in command
     assert "--recurrent-init" in command
+    assert payload["config"]["recurrent_skip_bc"] is True
     assert command[command.index("--recurrent-init") + 1] == (
         "logs/signal_hunt/seed0/recurrent_bc_rl_8x.pt"
     )

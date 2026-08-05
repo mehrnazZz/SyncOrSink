@@ -44,6 +44,27 @@ are added.
 - Sync completion bonus: `0.5 * reward_stage` per interacting agent
 - Final completion: `reward_complete`
 
+**Training/eval events:**
+- Positive progress: `picked_resource`, `delivered`, `stage_completed`,
+  `sync_complete`, `pipeline_complete`
+- Failure/focus labels: `pipeline_wrong_delivery`,
+  `pipeline_dependency_blocked`, `pipeline_sync_wait`,
+  `pipeline_pickup_miss`, `pipeline_delivery_miss`,
+  `pipeline_station_stall_miss`, `pipeline_drop_miss`
+- Optional BC action losses supervise correct pickup/delivery and suppress
+  bad drops or wrong-station interactions during Pipeline DAgGER.
+- Additional recurrent BC diagnostics can upweight trusted plan-following
+  actions and structured Pipeline planner messages, making it easier to test
+  whether a model has learned both "what to say" and "how to execute the plan."
+- Recurrent Pipeline runs can enable `--obs-pipeline-features`, which decodes
+  private hints and received planner messages into station/resource
+  affordances without exposing simulator-only hidden state.
+- `--eval-pipeline-navigation-assist` is available for diagnostic recurrent
+  runs that need to test whether private hints are executable; add
+  `--eval-pipeline-navigation-assist-trust-messages` only for experiments that
+  intentionally trust learned messages. Keep assisted results separate from
+  unassisted benchmark scores.
+
 ## B) Resource Sharing — “Energy Grid”
 
 **Theme:** Agents must maintain a shared energy grid by transporting and distributing resources.  

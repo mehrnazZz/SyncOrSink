@@ -53,6 +53,7 @@ class RecurrentCurriculumConfig:
     obs_memory_mode: str = "egocentric"
     obs_memory_radius: int = 4
     obs_navigation_features: bool = True
+    obs_pipeline_features: bool = True
     obs_signal_features: bool = True
     obs_signal_sync_feedback: bool = True
     obs_signal_scan_state: bool = True
@@ -90,7 +91,10 @@ class RecurrentCurriculumConfig:
     bc_action_class_balance: bool = False
     bc_action_class_balance_max_weight: float = 5.0
     bc_event_action_weight: float = 0.0
-    bc_event_action_events: str = "picked_resource,delivered,sync_complete,recharged,joint_target_scan"
+    bc_event_action_events: str = (
+        "picked_resource,dropped_resource,delivered,stage_completed,sync_complete,"
+        "recharged,joint_target_scan"
+    )
     bc_comm_loss_weight: float = 0.1
     bc_comm_send_pos_weight: float = 5.0
     bc_calibrate_send_threshold: bool = True
@@ -127,6 +131,14 @@ class RecurrentCurriculumConfig:
     bc_signal_rejected_target_drift_action_loss_weight: float = 0.0
     bc_signal_frontier_exploration_action_weight: float = 0.0
     bc_signal_frontier_exploration_min_map_size: int = 16
+    bc_pipeline_pickup_action_loss_weight: float = 0.0
+    bc_pipeline_delivery_action_loss_weight: float = 0.0
+    bc_pipeline_plan_action_loss_weight: float = 0.0
+    bc_pipeline_message_loss_weight: float = 0.0
+    bc_pipeline_bad_pickup_action_loss_weight: float = 0.0
+    bc_pipeline_bad_drop_action_loss_weight: float = 0.0
+    bc_pipeline_bad_interact_action_loss_weight: float = 0.0
+    bc_pipeline_proactive_bad_action_labels: bool = False
 
     dagger_rounds: int = 1
     dagger_episodes: int = 16
@@ -139,6 +151,8 @@ class RecurrentCurriculumConfig:
     dagger_focus_recovery_weight: float = 2.0
     dagger_focus_window: int = 1
     dagger_focus_replay: bool = True
+    dagger_pipeline_wrong_delivery_provenance_labels: bool = False
+    dagger_pipeline_wrong_delivery_provenance_weight: float = -1.0
     dagger_oracle_message_rollin_rate: float = 0.0
     dagger_oracle_action_rollin_rate: float = 0.0
     dagger_target_scan_broadcast_labels: bool = False
@@ -174,6 +188,8 @@ class RecurrentCurriculumConfig:
     rl_balanced_rollouts: bool = False
     rl_rollout_map_steps: str = ""
     rl_rollout_eval_decoding: bool = False
+    rl_rollout_pipeline_navigation_assist: bool = False
+    rl_rollout_pipeline_navigation_assist_trust_messages: bool = False
     rl_redundant_target_scan_penalty: float = 0.0
     rl_wrong_target_scan_penalty: float = 0.0
     rl_epochs: int = 2
@@ -216,6 +232,8 @@ class RecurrentCurriculumConfig:
     eval_signal_exact_target_memory_steps: int = 0
     eval_signal_scan_refresh_assist: bool = False
     eval_signal_scan_refresh_threshold: float = 0.5
+    eval_pipeline_navigation_assist: bool = False
+    eval_pipeline_navigation_assist_trust_messages: bool = False
 
     output_dir: str = "logs/recurrent_curriculum"
     run_name: str | None = None
@@ -511,6 +529,7 @@ def _stage_recurrent_config(
         obs_memory_mode=cfg.obs_memory_mode,
         obs_memory_radius=cfg.obs_memory_radius,
         obs_navigation_features=cfg.obs_navigation_features,
+        obs_pipeline_features=cfg.obs_pipeline_features,
         obs_signal_features=cfg.obs_signal_features,
         obs_signal_sync_feedback=cfg.obs_signal_sync_feedback,
         obs_signal_scan_state=cfg.obs_signal_scan_state,
@@ -587,6 +606,14 @@ def _stage_recurrent_config(
         bc_signal_frontier_exploration_min_map_size=(
             cfg.bc_signal_frontier_exploration_min_map_size
         ),
+        bc_pipeline_pickup_action_loss_weight=cfg.bc_pipeline_pickup_action_loss_weight,
+        bc_pipeline_delivery_action_loss_weight=cfg.bc_pipeline_delivery_action_loss_weight,
+        bc_pipeline_plan_action_loss_weight=cfg.bc_pipeline_plan_action_loss_weight,
+        bc_pipeline_message_loss_weight=cfg.bc_pipeline_message_loss_weight,
+        bc_pipeline_bad_pickup_action_loss_weight=cfg.bc_pipeline_bad_pickup_action_loss_weight,
+        bc_pipeline_bad_drop_action_loss_weight=cfg.bc_pipeline_bad_drop_action_loss_weight,
+        bc_pipeline_bad_interact_action_loss_weight=cfg.bc_pipeline_bad_interact_action_loss_weight,
+        bc_pipeline_proactive_bad_action_labels=cfg.bc_pipeline_proactive_bad_action_labels,
         dagger_rounds=cfg.dagger_rounds,
         dagger_episodes=cfg.dagger_episodes,
         dagger_seed_base=cfg.dagger_seed_base,
@@ -600,6 +627,12 @@ def _stage_recurrent_config(
         dagger_focus_recovery_weight=cfg.dagger_focus_recovery_weight,
         dagger_focus_window=cfg.dagger_focus_window,
         dagger_focus_replay=cfg.dagger_focus_replay,
+        dagger_pipeline_wrong_delivery_provenance_labels=(
+            cfg.dagger_pipeline_wrong_delivery_provenance_labels
+        ),
+        dagger_pipeline_wrong_delivery_provenance_weight=(
+            cfg.dagger_pipeline_wrong_delivery_provenance_weight
+        ),
         dagger_oracle_message_rollin_rate=cfg.dagger_oracle_message_rollin_rate,
         dagger_oracle_action_rollin_rate=cfg.dagger_oracle_action_rollin_rate,
         dagger_target_scan_broadcast_labels=cfg.dagger_target_scan_broadcast_labels,
@@ -635,6 +668,10 @@ def _stage_recurrent_config(
         rl_balanced_rollouts=cfg.rl_balanced_rollouts,
         rl_rollout_map_steps=cfg.rl_rollout_map_steps,
         rl_rollout_eval_decoding=cfg.rl_rollout_eval_decoding,
+        rl_rollout_pipeline_navigation_assist=cfg.rl_rollout_pipeline_navigation_assist,
+        rl_rollout_pipeline_navigation_assist_trust_messages=(
+            cfg.rl_rollout_pipeline_navigation_assist_trust_messages
+        ),
         rl_redundant_target_scan_penalty=cfg.rl_redundant_target_scan_penalty,
         rl_wrong_target_scan_penalty=cfg.rl_wrong_target_scan_penalty,
         rl_epochs=cfg.rl_epochs,
@@ -676,6 +713,8 @@ def _stage_recurrent_config(
         eval_signal_exact_target_memory_steps=cfg.eval_signal_exact_target_memory_steps,
         eval_signal_scan_refresh_assist=cfg.eval_signal_scan_refresh_assist,
         eval_signal_scan_refresh_threshold=cfg.eval_signal_scan_refresh_threshold,
+        eval_pipeline_navigation_assist=cfg.eval_pipeline_navigation_assist,
+        eval_pipeline_navigation_assist_trust_messages=cfg.eval_pipeline_navigation_assist_trust_messages,
         save=str(checkpoint_path),
         seed=int(cfg.seed) + stage_idx,
         device=cfg.device,
@@ -858,7 +897,7 @@ def main() -> None:
     parser.add_argument("--bc-event-action-weight", type=float, default=0.0)
     parser.add_argument(
         "--bc-event-action-events",
-        default="picked_resource,delivered,sync_complete,recharged,joint_target_scan",
+        default=RecurrentCurriculumConfig.bc_event_action_events,
     )
     parser.add_argument("--bc-comm-loss-weight", type=float, default=0.1)
     parser.add_argument("--bc-comm-send-pos-weight", type=float, default=5.0)
@@ -872,6 +911,7 @@ def main() -> None:
     parser.add_argument("--obs-memory-mode", choices=["full", "egocentric"], default="egocentric")
     parser.add_argument("--obs-memory-radius", type=int, default=4)
     parser.add_argument("--obs-navigation-features", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--obs-pipeline-features", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--obs-signal-features", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--obs-signal-sync-feedback", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--obs-signal-scan-state", action=argparse.BooleanOptionalAction, default=True)
@@ -916,6 +956,18 @@ def main() -> None:
     parser.add_argument("--bc-signal-rejected-target-drift-action-loss-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-frontier-exploration-action-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-frontier-exploration-min-map-size", type=int, default=16)
+    parser.add_argument("--bc-pipeline-pickup-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-delivery-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-plan-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-message-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-bad-pickup-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-bad-drop-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-bad-interact-action-loss-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--bc-pipeline-proactive-bad-action-labels",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--pipeline-stage-count", type=int, default=None)
     parser.add_argument("--pipeline-required-per-stage-min", type=int, default=1)
     parser.add_argument("--pipeline-required-per-stage-max", type=int, default=2)
@@ -948,6 +1000,16 @@ def main() -> None:
     parser.add_argument("--dagger-focus-error-weight", type=float, default=3.0)
     parser.add_argument("--dagger-focus-recovery-weight", type=float, default=2.0)
     parser.add_argument("--dagger-focus-window", type=int, default=1)
+    parser.add_argument(
+        "--dagger-pipeline-wrong-delivery-provenance-labels",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--dagger-pipeline-wrong-delivery-provenance-weight",
+        type=float,
+        default=-1.0,
+    )
     parser.add_argument("--dagger-oracle-message-rollin-rate", type=float, default=0.0)
     parser.add_argument("--dagger-oracle-action-rollin-rate", type=float, default=0.0)
     parser.add_argument("--dagger-target-scan-broadcast-labels", action=argparse.BooleanOptionalAction, default=False)
@@ -997,6 +1059,12 @@ def main() -> None:
     parser.add_argument("--rl-balanced-rollouts", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--rl-rollout-map-steps", default="")
     parser.add_argument("--rl-rollout-eval-decoding", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--rl-rollout-pipeline-navigation-assist", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--rl-rollout-pipeline-navigation-assist-trust-messages",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--rl-redundant-target-scan-penalty", type=float, default=0.0)
     parser.add_argument("--rl-wrong-target-scan-penalty", type=float, default=0.0)
     parser.add_argument("--rl-epochs", type=int, default=2)
@@ -1062,6 +1130,12 @@ def main() -> None:
     parser.add_argument("--eval-signal-exact-target-memory-steps", type=int, default=0)
     parser.add_argument("--eval-signal-scan-refresh-assist", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--eval-signal-scan-refresh-threshold", type=float, default=0.5)
+    parser.add_argument("--eval-pipeline-navigation-assist", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--eval-pipeline-navigation-assist-trust-messages",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--output-dir", default="logs/recurrent_curriculum")
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--initial-recurrent-checkpoint", default=None)
@@ -1109,6 +1183,7 @@ def main() -> None:
         obs_memory_mode=args.obs_memory_mode,
         obs_memory_radius=args.obs_memory_radius,
         obs_navigation_features=args.obs_navigation_features,
+        obs_pipeline_features=args.obs_pipeline_features,
         obs_signal_features=args.obs_signal_features,
         obs_signal_sync_feedback=args.obs_signal_sync_feedback,
         obs_signal_scan_state=args.obs_signal_scan_state,
@@ -1160,6 +1235,14 @@ def main() -> None:
         bc_signal_frontier_exploration_min_map_size=(
             args.bc_signal_frontier_exploration_min_map_size
         ),
+        bc_pipeline_pickup_action_loss_weight=args.bc_pipeline_pickup_action_loss_weight,
+        bc_pipeline_delivery_action_loss_weight=args.bc_pipeline_delivery_action_loss_weight,
+        bc_pipeline_plan_action_loss_weight=args.bc_pipeline_plan_action_loss_weight,
+        bc_pipeline_message_loss_weight=args.bc_pipeline_message_loss_weight,
+        bc_pipeline_bad_pickup_action_loss_weight=args.bc_pipeline_bad_pickup_action_loss_weight,
+        bc_pipeline_bad_drop_action_loss_weight=args.bc_pipeline_bad_drop_action_loss_weight,
+        bc_pipeline_bad_interact_action_loss_weight=args.bc_pipeline_bad_interact_action_loss_weight,
+        bc_pipeline_proactive_bad_action_labels=args.bc_pipeline_proactive_bad_action_labels,
         pipeline_stage_count=args.pipeline_stage_count,
         pipeline_required_per_stage_min=args.pipeline_required_per_stage_min,
         pipeline_required_per_stage_max=args.pipeline_required_per_stage_max,
@@ -1178,6 +1261,12 @@ def main() -> None:
         dagger_focus_error_weight=args.dagger_focus_error_weight,
         dagger_focus_recovery_weight=args.dagger_focus_recovery_weight,
         dagger_focus_window=args.dagger_focus_window,
+        dagger_pipeline_wrong_delivery_provenance_labels=(
+            args.dagger_pipeline_wrong_delivery_provenance_labels
+        ),
+        dagger_pipeline_wrong_delivery_provenance_weight=(
+            args.dagger_pipeline_wrong_delivery_provenance_weight
+        ),
         dagger_oracle_message_rollin_rate=args.dagger_oracle_message_rollin_rate,
         dagger_oracle_action_rollin_rate=args.dagger_oracle_action_rollin_rate,
         dagger_target_scan_broadcast_labels=args.dagger_target_scan_broadcast_labels,
@@ -1214,6 +1303,10 @@ def main() -> None:
         rl_balanced_rollouts=args.rl_balanced_rollouts,
         rl_rollout_map_steps=args.rl_rollout_map_steps,
         rl_rollout_eval_decoding=args.rl_rollout_eval_decoding,
+        rl_rollout_pipeline_navigation_assist=args.rl_rollout_pipeline_navigation_assist,
+        rl_rollout_pipeline_navigation_assist_trust_messages=(
+            args.rl_rollout_pipeline_navigation_assist_trust_messages
+        ),
         rl_redundant_target_scan_penalty=args.rl_redundant_target_scan_penalty,
         rl_wrong_target_scan_penalty=args.rl_wrong_target_scan_penalty,
         rl_epochs=args.rl_epochs,
@@ -1255,6 +1348,8 @@ def main() -> None:
         eval_signal_exact_target_memory_steps=args.eval_signal_exact_target_memory_steps,
         eval_signal_scan_refresh_assist=args.eval_signal_scan_refresh_assist,
         eval_signal_scan_refresh_threshold=args.eval_signal_scan_refresh_threshold,
+        eval_pipeline_navigation_assist=args.eval_pipeline_navigation_assist,
+        eval_pipeline_navigation_assist_trust_messages=args.eval_pipeline_navigation_assist_trust_messages,
         output_dir=args.output_dir,
         run_name=args.run_name,
         initial_recurrent_checkpoint=args.initial_recurrent_checkpoint,

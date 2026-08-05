@@ -31,6 +31,7 @@ from syncorsink.envs.maps import (
     TILE_BEACON,
     TILE_CLUE,
     TILE_DOOR,
+    TILE_EMPTY,
     TILE_NODE,
     TILE_RESOURCE,
     TILE_STATION,
@@ -49,6 +50,19 @@ from syncorsink.train.mappo import (
 from syncorsink.policies.pathing import move_action_from_delta, shortest_path
 from syncorsink.train.seed import set_global_seeds
 from syncorsink.policies.mappo_models import MAPPORecurrentActor, MAPPOCritic
+
+
+PIPELINE_WRONG_DELIVERY_ROOT_PICKUP_EVENT = "pipeline_wrong_delivery_root_pickup"
+
+DEFAULT_DAGGER_FOCUS_EVENTS = (
+    "decoy_scan,solo_target_scan,rejected_target_scan,"
+    "bad_redundant_target_scan,target_interact_miss,target_pursuit_miss,"
+    "target_decoy_drift_miss,target_discovery_miss,target_handoff_miss,"
+    "movement_stall_miss,pipeline_wrong_delivery,pipeline_dependency_blocked,"
+    "pipeline_sync_wait,pipeline_pickup_miss,pipeline_delivery_miss,"
+    "pipeline_station_stall_miss,pipeline_drop_miss,pipeline_bad_pickup,"
+    f"{PIPELINE_WRONG_DELIVERY_ROOT_PICKUP_EVENT}"
+)
 
 
 @dataclass
@@ -71,6 +85,7 @@ class RecurrentConfig:
     obs_memory_mode: str = "full"  # full | egocentric
     obs_memory_radius: int = 4
     obs_navigation_features: bool = False
+    obs_pipeline_features: bool = False
     obs_signal_features: bool = False
     obs_signal_sync_feedback: bool = False
     obs_signal_scan_state: bool = False
@@ -132,7 +147,10 @@ class RecurrentConfig:
     bc_action_class_balance: bool = False
     bc_action_class_balance_max_weight: float = 5.0
     bc_event_action_weight: float = 0.0
-    bc_event_action_events: str = "picked_resource,delivered,sync_complete,recharged,joint_target_scan"
+    bc_event_action_events: str = (
+        "picked_resource,dropped_resource,delivered,stage_completed,sync_complete,"
+        "recharged,joint_target_scan"
+    )
     bc_signal_target_interact_weight: float = 1.0
     bc_signal_redundant_target_interact_weight: float = 1.0
     bc_signal_target_pursuit_weight: float = 1.0
@@ -166,6 +184,14 @@ class RecurrentConfig:
     bc_signal_rejected_target_drift_action_loss_weight: float = 0.0
     bc_signal_frontier_exploration_action_weight: float = 0.0
     bc_signal_frontier_exploration_min_map_size: int = 16
+    bc_pipeline_pickup_action_loss_weight: float = 0.0
+    bc_pipeline_delivery_action_loss_weight: float = 0.0
+    bc_pipeline_bad_pickup_action_loss_weight: float = 0.0
+    bc_pipeline_bad_drop_action_loss_weight: float = 0.0
+    bc_pipeline_bad_interact_action_loss_weight: float = 0.0
+    bc_pipeline_proactive_bad_action_labels: bool = False
+    bc_pipeline_plan_action_loss_weight: float = 0.0
+    bc_pipeline_message_loss_weight: float = 0.0
     dagger_rounds: int = 0
     dagger_episodes: int = 20
     dagger_seed_base: int = 10000
@@ -176,12 +202,7 @@ class RecurrentConfig:
     dagger_success_episode_weight: float = 1.0
     dagger_failed_episode_weight: float = 0.25
     dagger_failed_effective_ratio_cap: float = -1.0
-    dagger_focus_events: str = (
-        "decoy_scan,solo_target_scan,rejected_target_scan,"
-        "bad_redundant_target_scan,target_interact_miss,target_pursuit_miss,"
-        "target_decoy_drift_miss,target_discovery_miss,target_handoff_miss,"
-        "movement_stall_miss"
-    )
+    dagger_focus_events: str = DEFAULT_DAGGER_FOCUS_EVENTS
     dagger_focus_error_weight: float = 3.0
     dagger_focus_recovery_weight: float = 2.0
     dagger_focus_window: int = 1
@@ -195,6 +216,8 @@ class RecurrentConfig:
     dagger_solo_target_team_weight: float = 1.0
     dagger_early_stop_patience: int = 0
     dagger_focus_replay: bool = False
+    dagger_pipeline_wrong_delivery_provenance_labels: bool = False
+    dagger_pipeline_wrong_delivery_provenance_weight: float = -1.0
     dagger_replay_pre_steps: int = 2
     dagger_replay_post_steps: int = 2
     dagger_replay_weight: float = 1.0
@@ -223,6 +246,8 @@ class RecurrentConfig:
     rl_balanced_rollouts: bool = False
     rl_rollout_map_steps: str = ""
     rl_rollout_eval_decoding: bool = False
+    rl_rollout_pipeline_navigation_assist: bool = False
+    rl_rollout_pipeline_navigation_assist_trust_messages: bool = False
     rl_redundant_target_scan_penalty: float = 0.0
     rl_wrong_target_scan_penalty: float = 0.0
     rl_epochs: int = 2
@@ -273,6 +298,8 @@ class RecurrentConfig:
     eval_signal_exact_target_memory_steps: int = 0
     eval_signal_scan_refresh_assist: bool = False
     eval_signal_scan_refresh_threshold: float = 0.5
+    eval_pipeline_navigation_assist: bool = False
+    eval_pipeline_navigation_assist_trust_messages: bool = False
     wandb: bool = False
     wandb_project: str = "syncorsink"
     wandb_run: Optional[str] = None
@@ -643,6 +670,441 @@ def _navigation_features(obs_agent: dict, cfg: RecurrentConfig, observed_map_siz
         parts.extend(_nearest_visible_tile_features(obs_agent, tile_id))
     parts.extend(_frontier_features(obs_agent, cfg, observed_map_size))
     return np.asarray(parts, dtype=np.float32)
+
+
+_PIPELINE_HINT_CHUNK_SIZE = 9
+_PIPELINE_RESOURCE_TYPE_COUNT = 4
+
+
+def _pipeline_int_tokens(raw, *, stop_at_negative: bool = True) -> list[int]:
+    tokens: list[int] = []
+    for value in np.asarray(raw if raw is not None else [], dtype=np.float32).reshape(-1):
+        if not np.isfinite(float(value)):
+            break
+        token = int(round(float(value)))
+        if token < 0:
+            if stop_at_negative:
+                break
+        tokens.append(token)
+    return tokens
+
+
+def _pipeline_plan_from_message_tokens(raw, observed_map_size: int) -> dict | None:
+    for row in reversed(_message_token_rows(raw)):
+        tokens = _pipeline_int_tokens(row)
+        if len(tokens) < 5 or tokens[0] != 12:
+            continue
+        stage_id = int(tokens[1])
+        sx, sy = int(tokens[2]), int(tokens[3])
+        if not (0 <= sx < observed_map_size and 0 <= sy < observed_map_size):
+            continue
+        req_len = max(0, int(tokens[4]))
+        required = [
+            int(tokens[5 + idx])
+            for idx in range(min(req_len, max(0, len(tokens) - 5)))
+            if int(tokens[5 + idx]) > 0
+        ]
+        return {
+            "source": "message",
+            "stage": stage_id,
+            "station": (sx, sy),
+            "required": required,
+        }
+    return None
+
+
+def _pipeline_plan_from_goal_hint(raw, observed_map_size: int) -> dict | None:
+    tokens = _pipeline_int_tokens(raw, stop_at_negative=False)
+    for offset in range(0, len(tokens), _PIPELINE_HINT_CHUNK_SIZE):
+        chunk = tokens[offset: offset + _PIPELINE_HINT_CHUNK_SIZE]
+        if len(chunk) < 6:
+            break
+        stage_id = int(chunk[0])
+        sx, sy = int(chunk[1]), int(chunk[2])
+        if not (0 <= sx < observed_map_size and 0 <= sy < observed_map_size):
+            continue
+        req_len = max(0, int(chunk[3]))
+        raw_required = [int(chunk[4]), int(chunk[5])]
+        required = [rtype for rtype in raw_required[:req_len] if rtype > 0]
+        return {
+            "source": "hint",
+            "stage": stage_id,
+            "station": (sx, sy),
+            "required": required,
+        }
+    return None
+
+
+def _pipeline_plan_from_observation(
+    obs_agent: dict,
+    observed_map_size: int,
+) -> tuple[dict | None, bool, bool]:
+    message_plan = _pipeline_plan_from_message_tokens(
+        obs_agent.get("messages_tokens"),
+        observed_map_size,
+    )
+    hint_plan = _pipeline_plan_from_goal_hint(
+        obs_agent.get("goal_hint"),
+        observed_map_size,
+    )
+    return (
+        message_plan or hint_plan,
+        message_plan is not None,
+        hint_plan is not None,
+    )
+
+
+def _pipeline_resource_type_features(value: int) -> list[float]:
+    return [
+        1.0 if int(value) == rtype else 0.0
+        for rtype in range(1, _PIPELINE_RESOURCE_TYPE_COUNT + 1)
+    ]
+
+
+def _pipeline_nearest_required_resource_features(obs_agent: dict, required: set[int]) -> list[float]:
+    local_resource = np.asarray(
+        obs_agent.get("local_resource_types", np.zeros((1, 1), dtype=np.int16)),
+        dtype=np.int16,
+    )
+    if local_resource.ndim != 2 or local_resource.size == 0 or not required:
+        return _direction_features(0.0, 0.0, 1.0, False)
+    h, w = local_resource.shape
+    cx, cy = w // 2, h // 2
+    best = None
+    best_dist = float("inf")
+    for y in range(h):
+        for x in range(w):
+            if int(local_resource[y, x]) not in required:
+                continue
+            dx, dy = x - cx, y - cy
+            dist = abs(dx) + abs(dy)
+            if dist < best_dist:
+                best = (dx, dy)
+                best_dist = dist
+    radius = max(cx, cy, 1)
+    if best is None:
+        return _direction_features(0.0, 0.0, radius, False)
+    return _direction_features(float(best[0]), float(best[1]), radius, True)
+
+
+def _pipeline_coordination_features(obs_agent: dict, cfg: RecurrentConfig, observed_map_size: int) -> np.ndarray:
+    if not cfg.obs_pipeline_features or cfg.scenario != "pipeline_assembly":
+        return np.zeros((0,), dtype=np.float32)
+
+    pos = np.asarray(obs_agent.get("self_pos", np.zeros((2,), dtype=np.int16)), dtype=np.int64).reshape(-1)
+    if pos.size < 2:
+        pos = np.zeros((2,), dtype=np.int64)
+    self_pos = (int(pos[0]), int(pos[1]))
+    plan, has_message, has_hint = _pipeline_plan_from_observation(obs_agent, observed_map_size)
+    required = {int(rtype) for rtype in (plan or {}).get("required", []) if int(rtype) > 0}
+    station = (plan or {}).get("station")
+    has_plan = station is not None
+
+    inventory = np.asarray(obs_agent.get("inventory", np.zeros((1,), dtype=np.int16))).reshape(-1)
+    held_type = int(inventory[0]) if inventory.size else 0
+    held_is_required = held_type in required
+
+    local_ids = _recurrent_local_grid_ids(obs_agent.get("local_grid", np.zeros((1, 1), dtype=np.int16)))
+    center_tile = 0
+    if local_ids.ndim == 2 and local_ids.size:
+        center_tile = int(local_ids[local_ids.shape[0] // 2, local_ids.shape[1] // 2])
+    at_any_station = center_tile == TILE_STATION
+    at_active_station = bool(has_plan and self_pos == tuple(station))
+    at_wrong_station = bool(at_any_station and not at_active_station)
+
+    local_resource = np.asarray(
+        obs_agent.get("local_resource_types", np.zeros((1, 1), dtype=np.int16)),
+        dtype=np.int16,
+    )
+    center_resource_type = 0
+    if local_resource.ndim == 2 and local_resource.size:
+        center_resource_type = int(local_resource[local_resource.shape[0] // 2, local_resource.shape[1] // 2])
+    center_resource_needed = center_resource_type in required
+
+    map_denom = max(1.0, float(observed_map_size - 1))
+    station_features = (
+        _direction_features(float(station[0] - self_pos[0]), float(station[1] - self_pos[1]), map_denom, True)
+        if has_plan
+        else _direction_features(0.0, 0.0, map_denom, False)
+    )
+    visible_required_features = _pipeline_nearest_required_resource_features(obs_agent, required)
+    should_pickup_now = bool(held_type == 0 and center_resource_needed)
+    should_deliver_now = bool(held_type != 0 and held_is_required and at_active_station)
+    unsafe_station_interact = bool(held_type != 0 and at_any_station and not should_deliver_now)
+    has_visible_required = bool(visible_required_features[0] > 0.0)
+    stage_norm = 0.0
+    if has_plan:
+        stage_norm = min(1.0, max(0.0, float(int(plan.get("stage", 0))) / map_denom))
+
+    parts: list[float] = [
+        1.0 if has_plan else 0.0,
+        1.0 if has_message else 0.0,
+        1.0 if has_hint else 0.0,
+        stage_norm,
+    ]
+    parts.extend(station_features)
+    parts.extend(visible_required_features)
+    needed = [0.0] * _PIPELINE_RESOURCE_TYPE_COUNT
+    for rtype in required:
+        if 1 <= rtype <= _PIPELINE_RESOURCE_TYPE_COUNT:
+            needed[rtype - 1] = 1.0
+    parts.extend(needed)
+    parts.extend(_pipeline_resource_type_features(held_type))
+    parts.extend([
+        1.0 if held_type != 0 else 0.0,
+        1.0 if held_is_required else 0.0,
+        min(1.0, max(0.0, float(center_resource_type) / float(_PIPELINE_RESOURCE_TYPE_COUNT))),
+        1.0 if center_resource_needed else 0.0,
+        1.0 if at_any_station else 0.0,
+        1.0 if at_active_station else 0.0,
+        1.0 if at_wrong_station else 0.0,
+        1.0 if should_pickup_now else 0.0,
+        1.0 if should_deliver_now else 0.0,
+        1.0 if unsafe_station_interact else 0.0,
+        1.0 if has_visible_required else 0.0,
+    ])
+    return np.asarray(parts, dtype=np.float32)
+
+
+def _pipeline_self_position(obs_agent: dict) -> tuple[int, int] | None:
+    pos = np.asarray(
+        obs_agent.get("self_pos", np.zeros((2,), dtype=np.int16)),
+        dtype=np.int64,
+    ).reshape(-1)
+    if pos.size < 2:
+        return None
+    return int(pos[0]), int(pos[1])
+
+
+def _pipeline_inventory_type(obs_agent: dict) -> int:
+    inventory = np.asarray(obs_agent.get("inventory", np.zeros((1,), dtype=np.int16))).reshape(-1)
+    return int(inventory[0]) if inventory.size else 0
+
+
+def _pipeline_center_tile(obs_agent: dict) -> int:
+    local_ids = _recurrent_local_grid_ids(obs_agent.get("local_grid", np.zeros((1, 1), dtype=np.int16)))
+    if local_ids.ndim != 2 or local_ids.size == 0:
+        return 0
+    return int(local_ids[local_ids.shape[0] // 2, local_ids.shape[1] // 2])
+
+
+def _pipeline_center_resource_type(obs_agent: dict) -> int:
+    local_resource = np.asarray(
+        obs_agent.get("local_resource_types", np.zeros((1, 1), dtype=np.int16)),
+        dtype=np.int16,
+    )
+    if local_resource.ndim != 2 or local_resource.size == 0:
+        return 0
+    return int(local_resource[local_resource.shape[0] // 2, local_resource.shape[1] // 2])
+
+
+def _pipeline_required_for_plan_stage(plan: Mapping | None, stage: Mapping | None = None) -> set[int]:
+    if plan is None:
+        return set()
+    plan_required = {int(rtype) for rtype in plan.get("required", []) if int(rtype) > 0}
+    stage_needs = set(_pipeline_stage_needs(stage)) if isinstance(stage, Mapping) else set()
+    return plan_required & stage_needs if stage_needs else plan_required
+
+
+def _pipeline_station_escape_action(obs_agent: dict) -> int | None:
+    move_options = (
+        (int(SyncOrSinkEnv.ACTION_UP), 0, -1),
+        (int(SyncOrSinkEnv.ACTION_DOWN), 0, 1),
+        (int(SyncOrSinkEnv.ACTION_LEFT), -1, 0),
+        (int(SyncOrSinkEnv.ACTION_RIGHT), 1, 0),
+    )
+    local_ids = _recurrent_local_grid_ids(obs_agent.get("local_grid", np.zeros((1, 1), dtype=np.int16)))
+    scored: list[tuple[int, int, int]] = []
+    if local_ids.ndim == 2 and local_ids.size:
+        h, w = int(local_ids.shape[0]), int(local_ids.shape[1])
+        cx, cy = w // 2, h // 2
+    else:
+        h = w = 0
+        cx = cy = 0
+    for order, (action_id, dx, dy) in enumerate(move_options):
+        if not _action_allowed_from_obs(obs_agent, int(action_id)):
+            continue
+        score = 1
+        if h > 0 and w > 0:
+            nx, ny = cx + int(dx), cy + int(dy)
+            if not (0 <= nx < w and 0 <= ny < h):
+                continue
+            tile = int(local_ids[ny, nx])
+            if tile in {int(TILE_STATION), int(TILE_WALL), int(TILE_DOOR)}:
+                continue
+            if tile == int(TILE_EMPTY):
+                score = 0
+            elif tile == int(TILE_RESOURCE):
+                score = 2
+        scored.append((score, order, int(action_id)))
+    if not scored:
+        return None
+    scored.sort()
+    return int(scored[0][2])
+
+
+def _pipeline_wrong_inventory_recovery_action(obs_agent: dict, required: set[int]) -> int | None:
+    held_type = _pipeline_inventory_type(obs_agent)
+    if held_type == 0 or held_type in required:
+        return None
+    if _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_DROP):
+        return int(SyncOrSinkEnv.ACTION_DROP)
+    if int(_pipeline_center_tile(obs_agent)) == int(TILE_STATION):
+        return _pipeline_station_escape_action(obs_agent)
+    return None
+
+
+def _pipeline_nearest_required_resource_target(
+    obs_agent: dict,
+    required: set[int],
+) -> tuple[int, int] | None:
+    if not required:
+        return None
+    pos = _pipeline_self_position(obs_agent)
+    if pos is None:
+        return None
+    local_resource = np.asarray(
+        obs_agent.get("local_resource_types", np.zeros((1, 1), dtype=np.int16)),
+        dtype=np.int16,
+    )
+    if local_resource.ndim != 2 or local_resource.size == 0:
+        return None
+    h, w = int(local_resource.shape[0]), int(local_resource.shape[1])
+    cx, cy = w // 2, h // 2
+    best: tuple[int, int] | None = None
+    best_dist = float("inf")
+    for y in range(h):
+        for x in range(w):
+            if int(local_resource[y, x]) not in required:
+                continue
+            dx, dy = int(x) - cx, int(y) - cy
+            dist = abs(dx) + abs(dy)
+            if dist < best_dist:
+                best = (dx, dy)
+                best_dist = dist
+    if best is None:
+        return None
+    return int(pos[0]) + int(best[0]), int(pos[1]) + int(best[1])
+
+
+def _pipeline_local_assist_action(
+    cfg: RecurrentConfig,
+    obs_agent: dict,
+    *,
+    current_action_id: int | None = None,
+    plan: Mapping | None = None,
+    stage: Mapping | None = None,
+) -> int | None:
+    if cfg.scenario != "pipeline_assembly" or not isinstance(obs_agent, dict):
+        return None
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    if plan is None:
+        plan = _pipeline_plan_from_goal_hint(obs_agent.get("goal_hint"), observed_map_size)
+    if plan is None and bool(getattr(cfg, "eval_pipeline_navigation_assist_trust_messages", False)):
+        plan = _pipeline_plan_from_message_tokens(obs_agent.get("messages_tokens"), observed_map_size)
+    if plan is None:
+        return None
+    station = plan.get("station")
+    if not isinstance(station, tuple) or len(station) != 2:
+        return None
+    required = _pipeline_required_for_plan_stage(plan, stage)
+    if not required:
+        return None
+
+    pos = _pipeline_self_position(obs_agent)
+    if pos is None:
+        return None
+    station = (int(station[0]), int(station[1]))
+    held_type = _pipeline_inventory_type(obs_agent)
+    center_tile = _pipeline_center_tile(obs_agent)
+    center_resource_type = _pipeline_center_resource_type(obs_agent)
+    current = int(current_action_id) if current_action_id is not None else None
+    at_any_station = int(center_tile) == int(TILE_STATION)
+    at_active_station = tuple(pos) == tuple(station)
+    holding_required = held_type in required
+
+    if held_type == 0:
+        if (
+            center_resource_type in required
+            and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_PICKUP)
+        ):
+            return int(SyncOrSinkEnv.ACTION_PICKUP)
+        target = _pipeline_nearest_required_resource_target(obs_agent, required)
+        if target is not None and tuple(target) != tuple(pos):
+            action_id = _signal_navigation_action_from_obs(obs_agent, target)
+            if (
+                action_id is not None
+                and int(action_id) != int(SyncOrSinkEnv.ACTION_INTERACT)
+                and _action_allowed_from_obs(obs_agent, int(action_id))
+            ):
+                return int(action_id)
+        if (
+            current == int(SyncOrSinkEnv.ACTION_INTERACT)
+            and at_any_station
+            and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY)
+        ):
+            return int(SyncOrSinkEnv.ACTION_STAY)
+
+    if at_active_station and holding_required:
+        if _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_INTERACT):
+            return int(SyncOrSinkEnv.ACTION_INTERACT)
+        return None
+
+    if holding_required:
+        action_id = _signal_navigation_action_from_obs(obs_agent, station)
+        if action_id is not None and _action_allowed_from_obs(obs_agent, int(action_id)):
+            if int(action_id) != int(SyncOrSinkEnv.ACTION_INTERACT) or at_active_station:
+                return int(action_id)
+        if current in {int(SyncOrSinkEnv.ACTION_INTERACT), int(SyncOrSinkEnv.ACTION_DROP)}:
+            if _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY):
+                return int(SyncOrSinkEnv.ACTION_STAY)
+        return None
+
+    recovery_action = _pipeline_wrong_inventory_recovery_action(obs_agent, required)
+    if recovery_action is not None:
+        return int(recovery_action)
+
+    if (
+        current == int(SyncOrSinkEnv.ACTION_INTERACT)
+        and at_any_station
+        and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY)
+    ):
+        return int(SyncOrSinkEnv.ACTION_STAY)
+    return None
+
+
+def _pipeline_plan_matches_stage(plan: Mapping | None, stage: Mapping | None) -> bool:
+    if plan is None or stage is None:
+        return False
+    station = plan.get("station")
+    stage_station = stage.get("station") if isinstance(stage, Mapping) else None
+    if not isinstance(station, tuple) or len(station) != 2 or stage_station is None:
+        return False
+    try:
+        stage_station_tuple = tuple(int(v) for v in stage_station)
+    except (TypeError, ValueError):
+        return False
+    if len(stage_station_tuple) != 2:
+        return False
+    if tuple(int(v) for v in station) != stage_station_tuple:
+        return False
+    stage_needs = set(_pipeline_stage_needs(stage))
+    plan_required = _pipeline_required_for_plan_stage(plan)
+    return bool(stage_needs) and bool(plan_required & stage_needs)
+
+
+def _pipeline_trusted_plan_for_label(
+    obs_agent: dict,
+    observed_map_size: int,
+    stage: Mapping | None,
+) -> Mapping | None:
+    hint_plan = _pipeline_plan_from_goal_hint(obs_agent.get("goal_hint"), observed_map_size)
+    if _pipeline_plan_matches_stage(hint_plan, stage):
+        return hint_plan
+    message_plan = _pipeline_plan_from_message_tokens(obs_agent.get("messages_tokens"), observed_map_size)
+    if _pipeline_plan_matches_stage(message_plan, stage):
+        return message_plan
+    return None
 
 
 _SIGNAL_SEGMENT_LENGTHS = {21: 5, 22: 6, 23: 4, 24: 2, 25: 2, 26: 3}
@@ -1214,6 +1676,7 @@ def _feedback_dim(cfg: RecurrentConfig) -> int:
 def _flatten_recurrent_obs(obs_agent: dict, cfg: RecurrentConfig, feedback: np.ndarray | None = None) -> np.ndarray:
     observed_map_size = _observed_map_size(obs_agent, cfg)
     navigation = _navigation_features(obs_agent, cfg, observed_map_size)
+    pipeline_features = _pipeline_coordination_features(obs_agent, cfg, observed_map_size)
     signal_features = _signal_coordination_features(obs_agent, cfg, observed_map_size)
     obs_agent = _project_recurrent_memory(obs_agent, cfg)
     obs_agent = _normalize_recurrent_obs_agent(
@@ -1234,6 +1697,8 @@ def _flatten_recurrent_obs(obs_agent: dict, cfg: RecurrentConfig, feedback: np.n
         extras.append(feedback)
     if navigation.size > 0:
         extras.append(navigation)
+    if pipeline_features.size > 0:
+        extras.append(pipeline_features)
     if signal_features.size > 0:
         extras.append(signal_features)
     if extras:
@@ -1276,18 +1741,32 @@ def _event_flags_for_agent(info: dict, agent_id: int) -> tuple[float, float]:
 
 
 def _event_names_by_agent(info: dict | None, num_agents: int) -> dict[int, set[str]]:
-    names = {aid: set() for aid in range(num_agents)}
+    events_by_agent = _events_by_agent(info, num_agents)
+    return {
+        int(aid): {
+            str(event["event"])
+            for event in agent_events
+            if isinstance(event, Mapping) and event.get("event")
+        }
+        for aid, agent_events in events_by_agent.items()
+    }
+
+
+def _events_by_agent(info: dict | None, num_agents: int) -> dict[int, list[Mapping]]:
+    events_by_agent: dict[int, list[Mapping]] = {aid: [] for aid in range(num_agents)}
     events = (info or {}).get("events", {})
     if not isinstance(events, dict):
-        return names
+        return events_by_agent
     for aid in range(num_agents):
         agent_events = events.get(aid, events.get(str(aid), []))
         if not isinstance(agent_events, list):
             continue
-        for event in agent_events:
-            if isinstance(event, dict) and event.get("event"):
-                names[aid].add(str(event["event"]))
-    return names
+        events_by_agent[aid] = [
+            event
+            for event in agent_events
+            if isinstance(event, Mapping) and event.get("event")
+        ]
+    return events_by_agent
 
 
 def _bc_event_action_events(cfg: RecurrentConfig) -> set[str]:
@@ -2245,6 +2724,357 @@ def _signal_target_interact_miss_agents(
     return sorted(int(aid) for aid in oracle_interactors if int(aid) not in model_interactors)
 
 
+def _action_id_from_actions(actions: dict[int, dict], agent_id: int, default: int = -1) -> int:
+    action = actions.get(int(agent_id), actions.get(str(int(agent_id)), {}))
+    if not isinstance(action, Mapping):
+        return int(default)
+    return int(action.get("action", default))
+
+
+def _pipeline_target_stage(env: SyncOrSinkEnv) -> Mapping | None:
+    if getattr(env.config, "scenario", None) != "pipeline_assembly":
+        return None
+    stages = env.scenario_state.data.get("stages", []) if env.scenario_state is not None else []
+    open_stages = [stage for stage in stages if not bool(stage.get("done"))]
+    if not open_stages:
+        return None
+    available = [
+        stage
+        for stage in open_stages
+        if all(bool(stages[int(dep)].get("done")) for dep in stage.get("deps", []))
+    ]
+    return (available or open_stages)[0]
+
+
+def _pipeline_stage_needs(stage: Mapping) -> list[int]:
+    required = [int(value) for value in stage.get("required", [])]
+    delivered = [int(value) for value in stage.get("delivered", [])]
+    needs: list[int] = []
+    for value in required:
+        if value in delivered:
+            delivered.remove(value)
+        else:
+            needs.append(value)
+    return needs
+
+
+def _pipeline_pickup_miss_agents(
+    env: SyncOrSinkEnv,
+    oracle_actions: dict[int, dict],
+    model_actions: dict[int, dict],
+) -> list[int]:
+    if getattr(env.config, "scenario", None) != "pipeline_assembly":
+        return []
+    return [
+        int(aid)
+        for aid in range(env.num_agents)
+        if _action_id_from_actions(oracle_actions, aid) == int(SyncOrSinkEnv.ACTION_PICKUP)
+        and _action_id_from_actions(model_actions, aid) != int(SyncOrSinkEnv.ACTION_PICKUP)
+    ]
+
+
+def _pipeline_bad_pickup_miss_agents(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    oracle_actions: dict[int, dict],
+    model_actions: dict[int, dict],
+    cfg: RecurrentConfig,
+) -> list[int]:
+    stage = _pipeline_target_stage(env)
+    if stage is None:
+        return []
+    stage_needs = set(_pipeline_stage_needs(stage))
+    bad: list[int] = []
+    for aid in range(env.num_agents):
+        if _action_id_from_actions(model_actions, aid) != int(SyncOrSinkEnv.ACTION_PICKUP):
+            continue
+        if _action_id_from_actions(oracle_actions, aid) == int(SyncOrSinkEnv.ACTION_PICKUP):
+            continue
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        if _pipeline_inventory_type(obs_agent) != 0:
+            continue
+        center_resource_type = _pipeline_center_resource_type(obs_agent)
+        if center_resource_type <= 0:
+            continue
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        plan = _pipeline_trusted_plan_for_label(obs_agent, observed_map_size, stage)
+        if plan is None:
+            continue
+        plan_required = {int(rtype) for rtype in plan.get("required", []) if int(rtype) > 0}
+        required = plan_required & stage_needs if stage_needs else plan_required
+        if center_resource_type in required:
+            continue
+        if not _action_allowed_from_obs(obs_agent, int(SyncOrSinkEnv.ACTION_PICKUP)):
+            continue
+        bad.append(int(aid))
+    return bad
+
+
+def _pipeline_delivery_miss_agents(
+    env: SyncOrSinkEnv,
+    oracle_actions: dict[int, dict],
+    model_actions: dict[int, dict],
+) -> list[int]:
+    stage = _pipeline_target_stage(env)
+    if stage is None:
+        return []
+    station = tuple(stage.get("station", ()))
+    needs = set(_pipeline_stage_needs(stage))
+    if len(station) != 2 or not needs:
+        return []
+    missed: list[int] = []
+    for aid in range(env.num_agents):
+        if tuple(env.agent_positions[int(aid)]) != station:
+            continue
+        if int(env.inventories[int(aid)]) not in needs:
+            continue
+        if _action_id_from_actions(oracle_actions, aid) != int(SyncOrSinkEnv.ACTION_INTERACT):
+            continue
+        if _action_id_from_actions(model_actions, aid) != int(SyncOrSinkEnv.ACTION_INTERACT):
+            missed.append(int(aid))
+    return missed
+
+
+def _pipeline_station_stall_miss_agents(
+    env: SyncOrSinkEnv,
+    oracle_actions: dict[int, dict],
+    model_actions: dict[int, dict],
+) -> list[int]:
+    stage = _pipeline_target_stage(env)
+    if stage is None:
+        return []
+    station = tuple(stage.get("station", ()))
+    needs = set(_pipeline_stage_needs(stage))
+    if len(station) != 2 or not needs:
+        return []
+    stalled: list[int] = []
+    for aid in range(env.num_agents):
+        inv = int(env.inventories[int(aid)])
+        if inv not in needs:
+            continue
+        pos = tuple(env.agent_positions[int(aid)])
+        if abs(int(pos[0]) - int(station[0])) + abs(int(pos[1]) - int(station[1])) > 1:
+            continue
+        if _action_id_from_actions(model_actions, aid) != int(SyncOrSinkEnv.ACTION_STAY):
+            continue
+        if _action_id_from_actions(oracle_actions, aid) == int(SyncOrSinkEnv.ACTION_STAY):
+            continue
+        stalled.append(int(aid))
+    return stalled
+
+
+def _pipeline_drop_miss_agents(
+    env: SyncOrSinkEnv,
+    oracle_actions: dict[int, dict],
+    model_actions: dict[int, dict],
+) -> list[int]:
+    if getattr(env.config, "scenario", None) != "pipeline_assembly":
+        return []
+    dropped: list[int] = []
+    for aid in range(env.num_agents):
+        if _action_id_from_actions(model_actions, aid) != int(SyncOrSinkEnv.ACTION_DROP):
+            continue
+        if _action_id_from_actions(oracle_actions, aid) == int(SyncOrSinkEnv.ACTION_DROP):
+            continue
+        dropped.append(int(aid))
+    return dropped
+
+
+def _pipeline_wrong_delivery_miss_agents(
+    env: SyncOrSinkEnv,
+    oracle_actions: dict[int, dict],
+    model_actions: dict[int, dict],
+) -> list[int]:
+    if getattr(env.config, "scenario", None) != "pipeline_assembly":
+        return []
+    stages = env.scenario_state.data.get("stages", []) if env.scenario_state is not None else []
+    wrong: list[int] = []
+    for aid in range(env.num_agents):
+        if _action_id_from_actions(model_actions, aid) != int(SyncOrSinkEnv.ACTION_INTERACT):
+            continue
+        if _action_id_from_actions(oracle_actions, aid) == int(SyncOrSinkEnv.ACTION_INTERACT):
+            continue
+        inv = int(env.inventories[int(aid)])
+        if inv == 0:
+            continue
+        pos = tuple(env.agent_positions[int(aid)])
+        if int(env.grid[pos[1], pos[0]]) != TILE_STATION:
+            continue
+        would_deliver = False
+        for stage in stages:
+            if stage.get("done"):
+                continue
+            if tuple(stage.get("station", ())) != pos:
+                continue
+            if inv not in stage.get("required", []):
+                continue
+            req_count = list(stage.get("required", [])).count(inv)
+            del_count = list(stage.get("delivered", [])).count(inv)
+            if del_count < req_count:
+                would_deliver = True
+                break
+        if not would_deliver:
+            wrong.append(int(aid))
+    return wrong
+
+
+def _pipeline_pickup_action_label_mask(
+    env: SyncOrSinkEnv,
+    actions: dict[int, dict],
+) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    action_ids = np.full((env.num_agents,), -1, dtype=np.int64)
+    if getattr(env.config, "scenario", None) != "pipeline_assembly":
+        return mask, action_ids
+    for aid in range(env.num_agents):
+        if _action_id_from_actions(actions, aid) == int(SyncOrSinkEnv.ACTION_PICKUP):
+            mask[int(aid)] = 1.0
+            action_ids[int(aid)] = int(SyncOrSinkEnv.ACTION_PICKUP)
+    return mask, action_ids
+
+
+def _pipeline_delivery_action_label_mask(
+    env: SyncOrSinkEnv,
+    actions: dict[int, dict],
+) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    action_ids = np.full((env.num_agents,), -1, dtype=np.int64)
+    stage = _pipeline_target_stage(env)
+    if stage is None:
+        return mask, action_ids
+    station = tuple(stage.get("station", ()))
+    needs = set(_pipeline_stage_needs(stage))
+    if len(station) != 2 or not needs:
+        return mask, action_ids
+    for aid in range(env.num_agents):
+        if tuple(env.agent_positions[int(aid)]) != station:
+            continue
+        if int(env.inventories[int(aid)]) not in needs:
+            continue
+        if _action_id_from_actions(actions, aid) != int(SyncOrSinkEnv.ACTION_INTERACT):
+            continue
+        mask[int(aid)] = 1.0
+        action_ids[int(aid)] = int(SyncOrSinkEnv.ACTION_INTERACT)
+    return mask, action_ids
+
+
+def _pipeline_plan_action_label_mask(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    actions: dict[int, dict],
+    cfg: RecurrentConfig,
+) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    action_ids = np.full((env.num_agents,), -1, dtype=np.int64)
+    stage = _pipeline_target_stage(env)
+    if stage is None:
+        return mask, action_ids
+    for aid in range(env.num_agents):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        plan = _pipeline_trusted_plan_for_label(obs_agent, observed_map_size, stage)
+        if plan is None:
+            continue
+        action_id = _pipeline_local_assist_action(cfg, obs_agent, plan=plan, stage=stage)
+        if action_id is None or int(action_id) == int(SyncOrSinkEnv.ACTION_STAY):
+            continue
+        if not _action_allowed_from_obs(obs_agent, int(action_id)):
+            continue
+        required = _pipeline_required_for_plan_stage(plan, stage)
+        recovery_action = _pipeline_wrong_inventory_recovery_action(obs_agent, required)
+        is_recovery_label = (
+            bool(getattr(cfg, "bc_pipeline_proactive_bad_action_labels", False))
+            and recovery_action is not None
+            and int(recovery_action) == int(action_id)
+        )
+        if not is_recovery_label and _action_id_from_actions(actions, aid) != int(action_id):
+            continue
+        mask[int(aid)] = 1.0
+        action_ids[int(aid)] = int(action_id)
+    return mask, action_ids
+
+
+def _pipeline_bad_action_label_masks(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    actions: dict[int, dict],
+    cfg: RecurrentConfig,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    bad_pickup_mask = np.zeros((env.num_agents,), dtype=np.float32)
+    bad_pickup_ids = np.full((env.num_agents,), -1, dtype=np.int64)
+    bad_drop_mask = np.zeros((env.num_agents,), dtype=np.float32)
+    bad_drop_ids = np.full((env.num_agents,), -1, dtype=np.int64)
+    bad_interact_mask = np.zeros((env.num_agents,), dtype=np.float32)
+    bad_interact_ids = np.full((env.num_agents,), -1, dtype=np.int64)
+    stage = _pipeline_target_stage(env)
+    if stage is None:
+        return (
+            bad_pickup_mask,
+            bad_pickup_ids,
+            bad_drop_mask,
+            bad_drop_ids,
+            bad_interact_mask,
+            bad_interact_ids,
+        )
+    stage_needs = set(_pipeline_stage_needs(stage))
+    for aid in range(env.num_agents):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        plan = _pipeline_trusted_plan_for_label(obs_agent, observed_map_size, stage)
+        if plan is None:
+            continue
+        plan_required = {int(rtype) for rtype in plan.get("required", []) if int(rtype) > 0}
+        required = plan_required & stage_needs if stage_needs else plan_required
+        held_type = _pipeline_inventory_type(obs_agent)
+        center_resource_type = _pipeline_center_resource_type(obs_agent)
+        true_action = _action_id_from_actions(actions, aid)
+        if (
+            held_type == 0
+            and center_resource_type > 0
+            and center_resource_type not in required
+            and true_action != int(SyncOrSinkEnv.ACTION_PICKUP)
+            and _action_allowed_from_obs(obs_agent, int(SyncOrSinkEnv.ACTION_PICKUP))
+        ):
+            bad_pickup_mask[int(aid)] = 1.0
+            bad_pickup_ids[int(aid)] = int(SyncOrSinkEnv.ACTION_PICKUP)
+        if (
+            held_type in required
+            and true_action != int(SyncOrSinkEnv.ACTION_DROP)
+            and _action_allowed_from_obs(obs_agent, int(SyncOrSinkEnv.ACTION_DROP))
+        ):
+            bad_drop_mask[int(aid)] = 1.0
+            bad_drop_ids[int(aid)] = int(SyncOrSinkEnv.ACTION_DROP)
+        if (
+            true_action != int(SyncOrSinkEnv.ACTION_INTERACT)
+            and int(_pipeline_center_tile(obs_agent)) == int(TILE_STATION)
+            and _action_allowed_from_obs(obs_agent, int(SyncOrSinkEnv.ACTION_INTERACT))
+        ):
+            assisted = _pipeline_local_assist_action(
+                cfg,
+                obs_agent,
+                current_action_id=int(SyncOrSinkEnv.ACTION_INTERACT),
+                plan=plan,
+                stage=stage,
+            )
+            if assisted is not None and int(assisted) != int(SyncOrSinkEnv.ACTION_INTERACT):
+                bad_interact_mask[int(aid)] = 1.0
+                bad_interact_ids[int(aid)] = int(SyncOrSinkEnv.ACTION_INTERACT)
+    return (
+        bad_pickup_mask,
+        bad_pickup_ids,
+        bad_drop_mask,
+        bad_drop_ids,
+        bad_interact_mask,
+        bad_interact_ids,
+    )
+
+
 def _signal_decoy_pursuit_agents(
     env: SyncOrSinkEnv,
     actions: dict[int, dict],
@@ -2800,6 +3630,19 @@ def _new_episode_sequence() -> dict:
         "signal_rejected_target_drift_action_id": [],
         "signal_frontier_exploration_action_mask": [],
         "signal_frontier_exploration_action_id": [],
+        "pipeline_pickup_action_mask": [],
+        "pipeline_pickup_action_id": [],
+        "pipeline_delivery_action_mask": [],
+        "pipeline_delivery_action_id": [],
+        "pipeline_plan_action_mask": [],
+        "pipeline_plan_action_id": [],
+        "pipeline_message_mask": [],
+        "pipeline_bad_pickup_action_mask": [],
+        "pipeline_bad_pickup_action_id": [],
+        "pipeline_bad_drop_action_mask": [],
+        "pipeline_bad_drop_action_id": [],
+        "pipeline_bad_interact_action_mask": [],
+        "pipeline_bad_interact_action_id": [],
     }
 
 
@@ -3121,6 +3964,41 @@ def _append_labeled_step(
     frontier_exploration_action_mask, frontier_exploration_action_id = (
         _signal_frontier_exploration_action_label_mask(env, obs, cfg)
     )
+    pipeline_pickup_action_mask, pipeline_pickup_action_id = _pipeline_pickup_action_label_mask(
+        env,
+        actions,
+    )
+    pipeline_delivery_action_mask, pipeline_delivery_action_id = _pipeline_delivery_action_label_mask(
+        env,
+        actions,
+    )
+    pipeline_plan_action_mask, pipeline_plan_action_id = _pipeline_plan_action_label_mask(
+        env,
+        obs,
+        actions,
+        cfg,
+    )
+    if bool(getattr(cfg, "bc_pipeline_proactive_bad_action_labels", False)):
+        (
+            pipeline_bad_pickup_action_mask,
+            pipeline_bad_pickup_action_id,
+            pipeline_bad_drop_action_mask,
+            pipeline_bad_drop_action_id,
+            pipeline_bad_interact_action_mask,
+            pipeline_bad_interact_action_id,
+        ) = _pipeline_bad_action_label_masks(
+            env,
+            obs,
+            actions,
+            cfg,
+        )
+    else:
+        pipeline_bad_pickup_action_mask = np.zeros((env.num_agents,), dtype=np.float32)
+        pipeline_bad_pickup_action_id = np.full((env.num_agents,), -1, dtype=np.int64)
+        pipeline_bad_drop_action_mask = np.zeros((env.num_agents,), dtype=np.float32)
+        pipeline_bad_drop_action_id = np.full((env.num_agents,), -1, dtype=np.int64)
+        pipeline_bad_interact_action_mask = np.zeros((env.num_agents,), dtype=np.float32)
+        pipeline_bad_interact_action_id = np.full((env.num_agents,), -1, dtype=np.int64)
     for aid in range(env.num_agents):
         fb = feedback[aid] if feedback is not None else None
         ep_data["obs"].append(_flatten_recurrent_obs(obs[aid], cfg, fb))
@@ -3164,6 +4042,33 @@ def _append_labeled_step(
         )
         ep_data["signal_frontier_exploration_action_id"].append(
             int(frontier_exploration_action_id[aid])
+        )
+        ep_data["pipeline_pickup_action_mask"].append(float(pipeline_pickup_action_mask[aid]))
+        ep_data["pipeline_pickup_action_id"].append(int(pipeline_pickup_action_id[aid]))
+        ep_data["pipeline_delivery_action_mask"].append(float(pipeline_delivery_action_mask[aid]))
+        ep_data["pipeline_delivery_action_id"].append(int(pipeline_delivery_action_id[aid]))
+        ep_data["pipeline_plan_action_mask"].append(float(pipeline_plan_action_mask[aid]))
+        ep_data["pipeline_plan_action_id"].append(int(pipeline_plan_action_id[aid]))
+        ep_data["pipeline_message_mask"].append(
+            1.0 if msg_len > 0 and int(msg_tokens[0]) == 12 else 0.0
+        )
+        ep_data["pipeline_bad_pickup_action_mask"].append(
+            float(pipeline_bad_pickup_action_mask[aid])
+        )
+        ep_data["pipeline_bad_pickup_action_id"].append(
+            int(pipeline_bad_pickup_action_id[aid])
+        )
+        ep_data["pipeline_bad_drop_action_mask"].append(
+            float(pipeline_bad_drop_action_mask[aid])
+        )
+        ep_data["pipeline_bad_drop_action_id"].append(
+            int(pipeline_bad_drop_action_id[aid])
+        )
+        ep_data["pipeline_bad_interact_action_mask"].append(
+            float(pipeline_bad_interact_action_mask[aid])
+        )
+        ep_data["pipeline_bad_interact_action_id"].append(
+            int(pipeline_bad_interact_action_id[aid])
         )
 
 
@@ -3307,6 +4212,58 @@ def _finalize_episode_sequence(
                 "signal_frontier_exploration_action_id",
                 [-1 for _ in ep_data["actions"]],
             ),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "pipeline_pickup_action_mask": np.array(
+            ep_data.get("pipeline_pickup_action_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "pipeline_pickup_action_id": np.array(
+            ep_data.get("pipeline_pickup_action_id", [-1 for _ in ep_data["actions"]]),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "pipeline_delivery_action_mask": np.array(
+            ep_data.get("pipeline_delivery_action_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "pipeline_delivery_action_id": np.array(
+            ep_data.get("pipeline_delivery_action_id", [-1 for _ in ep_data["actions"]]),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "pipeline_plan_action_mask": np.array(
+            ep_data.get("pipeline_plan_action_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "pipeline_plan_action_id": np.array(
+            ep_data.get("pipeline_plan_action_id", [-1 for _ in ep_data["actions"]]),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "pipeline_message_mask": np.array(
+            ep_data.get("pipeline_message_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "pipeline_bad_pickup_action_mask": np.array(
+            ep_data.get("pipeline_bad_pickup_action_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "pipeline_bad_pickup_action_id": np.array(
+            ep_data.get("pipeline_bad_pickup_action_id", [-1 for _ in ep_data["actions"]]),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "pipeline_bad_drop_action_mask": np.array(
+            ep_data.get("pipeline_bad_drop_action_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "pipeline_bad_drop_action_id": np.array(
+            ep_data.get("pipeline_bad_drop_action_id", [-1 for _ in ep_data["actions"]]),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "pipeline_bad_interact_action_mask": np.array(
+            ep_data.get("pipeline_bad_interact_action_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "pipeline_bad_interact_action_id": np.array(
+            ep_data.get("pipeline_bad_interact_action_id", [-1 for _ in ep_data["actions"]]),
             dtype=np.int64,
         ).reshape(-1, env.num_agents),
     }
@@ -3696,6 +4653,111 @@ def _slice_recurrent_episode(episode: dict, start: int, end: int, **metadata) ->
         ][start:end].copy()
     else:
         sliced["signal_frontier_exploration_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
+    if "pipeline_pickup_action_mask" in episode:
+        sliced["pipeline_pickup_action_mask"] = episode["pipeline_pickup_action_mask"][start:end].copy()
+    else:
+        sliced["pipeline_pickup_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "pipeline_pickup_action_id" in episode:
+        sliced["pipeline_pickup_action_id"] = episode["pipeline_pickup_action_id"][start:end].copy()
+    else:
+        sliced["pipeline_pickup_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
+    if "pipeline_delivery_action_mask" in episode:
+        sliced["pipeline_delivery_action_mask"] = episode["pipeline_delivery_action_mask"][start:end].copy()
+    else:
+        sliced["pipeline_delivery_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "pipeline_delivery_action_id" in episode:
+        sliced["pipeline_delivery_action_id"] = episode["pipeline_delivery_action_id"][start:end].copy()
+    else:
+        sliced["pipeline_delivery_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
+    if "pipeline_plan_action_mask" in episode:
+        sliced["pipeline_plan_action_mask"] = episode["pipeline_plan_action_mask"][start:end].copy()
+    else:
+        sliced["pipeline_plan_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "pipeline_plan_action_id" in episode:
+        sliced["pipeline_plan_action_id"] = episode["pipeline_plan_action_id"][start:end].copy()
+    else:
+        sliced["pipeline_plan_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
+    if "pipeline_message_mask" in episode:
+        sliced["pipeline_message_mask"] = episode["pipeline_message_mask"][start:end].copy()
+    else:
+        sliced["pipeline_message_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "pipeline_bad_pickup_action_mask" in episode:
+        sliced["pipeline_bad_pickup_action_mask"] = episode[
+            "pipeline_bad_pickup_action_mask"
+        ][start:end].copy()
+    else:
+        sliced["pipeline_bad_pickup_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "pipeline_bad_pickup_action_id" in episode:
+        sliced["pipeline_bad_pickup_action_id"] = episode[
+            "pipeline_bad_pickup_action_id"
+        ][start:end].copy()
+    else:
+        sliced["pipeline_bad_pickup_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
+    if "pipeline_bad_drop_action_mask" in episode:
+        sliced["pipeline_bad_drop_action_mask"] = episode["pipeline_bad_drop_action_mask"][start:end].copy()
+    else:
+        sliced["pipeline_bad_drop_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "pipeline_bad_drop_action_id" in episode:
+        sliced["pipeline_bad_drop_action_id"] = episode["pipeline_bad_drop_action_id"][start:end].copy()
+    else:
+        sliced["pipeline_bad_drop_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
+    if "pipeline_bad_interact_action_mask" in episode:
+        sliced["pipeline_bad_interact_action_mask"] = episode[
+            "pipeline_bad_interact_action_mask"
+        ][start:end].copy()
+    else:
+        sliced["pipeline_bad_interact_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "pipeline_bad_interact_action_id" in episode:
+        sliced["pipeline_bad_interact_action_id"] = episode[
+            "pipeline_bad_interact_action_id"
+        ][start:end].copy()
+    else:
+        sliced["pipeline_bad_interact_action_id"] = np.full_like(
             episode["actions"][start:end],
             -1,
             dtype=np.int64,
@@ -4121,6 +5183,131 @@ def _label_latest_signal_rejected_target_drift_actions(
     return labeled
 
 
+def _label_latest_pipeline_bad_pickup_actions(
+    ep_data: dict,
+    *,
+    num_agents: int,
+    agent_ids,
+) -> int:
+    step = (len(ep_data.get("pipeline_bad_pickup_action_mask", [])) // max(1, int(num_agents))) - 1
+    return _label_pipeline_bad_pickup_actions_at_step(
+        ep_data,
+        num_agents=num_agents,
+        step=step,
+        agent_ids=agent_ids,
+    )
+
+
+def _label_pipeline_bad_action_at_step(
+    ep_data: dict,
+    *,
+    num_agents: int,
+    step: int,
+    agent_ids,
+    action_id: int,
+    mask_key: str,
+    id_key: str,
+) -> int:
+    action_masks = ep_data.get(mask_key)
+    action_ids = ep_data.get(id_key)
+    if not action_masks or action_ids is None:
+        return 0
+    start = int(step) * int(num_agents)
+    labeled = 0
+    for aid in agent_ids:
+        idx = start + int(aid)
+        if 0 <= idx < len(action_masks):
+            if float(action_masks[idx]) <= 0.0:
+                labeled += 1
+            action_masks[idx] = 1.0
+            action_ids[idx] = int(action_id)
+    return labeled
+
+
+def _label_pipeline_bad_pickup_actions_at_step(
+    ep_data: dict,
+    *,
+    num_agents: int,
+    step: int,
+    agent_ids,
+) -> int:
+    return _label_pipeline_bad_action_at_step(
+        ep_data,
+        num_agents=num_agents,
+        step=step,
+        agent_ids=agent_ids,
+        action_id=int(SyncOrSinkEnv.ACTION_PICKUP),
+        mask_key="pipeline_bad_pickup_action_mask",
+        id_key="pipeline_bad_pickup_action_id",
+    )
+
+
+def _label_pipeline_bad_drop_actions_at_step(
+    ep_data: dict,
+    *,
+    num_agents: int,
+    step: int,
+    agent_ids,
+) -> int:
+    return _label_pipeline_bad_action_at_step(
+        ep_data,
+        num_agents=num_agents,
+        step=step,
+        agent_ids=agent_ids,
+        action_id=int(SyncOrSinkEnv.ACTION_DROP),
+        mask_key="pipeline_bad_drop_action_mask",
+        id_key="pipeline_bad_drop_action_id",
+    )
+
+
+def _label_pipeline_bad_interact_actions_at_step(
+    ep_data: dict,
+    *,
+    num_agents: int,
+    step: int,
+    agent_ids,
+) -> int:
+    return _label_pipeline_bad_action_at_step(
+        ep_data,
+        num_agents=num_agents,
+        step=step,
+        agent_ids=agent_ids,
+        action_id=int(SyncOrSinkEnv.ACTION_INTERACT),
+        mask_key="pipeline_bad_interact_action_mask",
+        id_key="pipeline_bad_interact_action_id",
+    )
+
+
+def _label_latest_pipeline_bad_drop_actions(
+    ep_data: dict,
+    *,
+    num_agents: int,
+    agent_ids,
+) -> int:
+    step = (len(ep_data.get("pipeline_bad_drop_action_mask", [])) // max(1, int(num_agents))) - 1
+    return _label_pipeline_bad_drop_actions_at_step(
+        ep_data,
+        num_agents=num_agents,
+        step=step,
+        agent_ids=agent_ids,
+    )
+
+
+def _label_latest_pipeline_bad_interact_actions(
+    ep_data: dict,
+    *,
+    num_agents: int,
+    agent_ids,
+) -> int:
+    step = (len(ep_data.get("pipeline_bad_interact_action_mask", [])) // max(1, int(num_agents))) - 1
+    return _label_pipeline_bad_interact_actions_at_step(
+        ep_data,
+        num_agents=num_agents,
+        step=step,
+        agent_ids=agent_ids,
+    )
+
+
 def _scale_agent_weights_at_step(
     ep_data: dict,
     *,
@@ -4140,6 +5327,105 @@ def _scale_agent_weights_at_step(
             ep_data["step_weights"][idx] = max(old_weight, float(weight))
             scaled += int(float(ep_data["step_weights"][idx]) > old_weight)
     return scaled
+
+
+def _update_pipeline_wrong_delivery_provenance(
+    ep_data: dict,
+    *,
+    num_agents: int,
+    step: int,
+    info: dict | None,
+    model_actions: dict[int, dict],
+    oracle_actions: dict[int, dict],
+    rollout_actions: dict[int, dict],
+    inventory_sources: dict[int, dict | None],
+    cfg: RecurrentConfig,
+    focus_records: list[dict] | None = None,
+    focus_events: set[str] | None = None,
+) -> dict[str, int]:
+    counts = {
+        "bad_pickup_labels": 0,
+        "focus_records": 0,
+        "focus_weight_updates": 0,
+    }
+    if getattr(cfg, "scenario", None) != "pipeline_assembly":
+        return counts
+    if not bool(getattr(cfg, "dagger_pipeline_wrong_delivery_provenance_labels", False)):
+        return counts
+    events_by_agent = _events_by_agent(info, num_agents)
+    focus_enabled = PIPELINE_WRONG_DELIVERY_ROOT_PICKUP_EVENT in (focus_events or set())
+    provenance_weight = float(
+        getattr(cfg, "dagger_pipeline_wrong_delivery_provenance_weight", -1.0)
+    )
+    if provenance_weight < 0.0:
+        provenance_weight = float(cfg.dagger_focus_error_weight)
+    provenance_weight = max(0.0, provenance_weight)
+    for aid in range(int(num_agents)):
+        agent_events = events_by_agent.get(int(aid), [])
+        for event in agent_events:
+            event_name = str(event.get("event", ""))
+            resource_type = int(event.get("resource_type", 0) or 0)
+            if event_name == "picked_resource" and resource_type > 0:
+                inventory_sources[int(aid)] = {
+                    "action": int(SyncOrSinkEnv.ACTION_PICKUP),
+                    "resource_type": resource_type,
+                    "step": int(step),
+                    "labelable": (
+                        _action_id_from_actions(rollout_actions, aid)
+                        == int(SyncOrSinkEnv.ACTION_PICKUP)
+                        and _action_id_from_actions(model_actions, aid)
+                        == int(SyncOrSinkEnv.ACTION_PICKUP)
+                        and _action_id_from_actions(oracle_actions, aid)
+                        != int(SyncOrSinkEnv.ACTION_PICKUP)
+                    ),
+                    "wrong_delivery_labeled": False,
+                }
+                continue
+            if event_name in {"dropped_resource", "delivered"}:
+                inventory_sources[int(aid)] = None
+                continue
+            if event_name != "pipeline_wrong_delivery" or resource_type <= 0:
+                continue
+            source = inventory_sources.get(int(aid))
+            if not source:
+                continue
+            if int(source.get("resource_type", -1)) != resource_type:
+                continue
+            if not bool(source.get("labelable", False)):
+                continue
+            if bool(source.get("wrong_delivery_labeled", False)):
+                continue
+            source_step = int(source.get("step", -1))
+            labeled = _label_pipeline_bad_pickup_actions_at_step(
+                ep_data,
+                num_agents=num_agents,
+                step=source_step,
+                agent_ids=[int(aid)],
+            )
+            if labeled <= 0:
+                continue
+            source["wrong_delivery_labeled"] = True
+            counts["bad_pickup_labels"] += int(labeled)
+            if focus_enabled:
+                counts["focus_weight_updates"] += _scale_agent_weights_at_step(
+                    ep_data,
+                    num_agents=num_agents,
+                    step=source_step,
+                    agent_ids=[int(aid)],
+                    weight=provenance_weight,
+                )
+                if focus_records is not None:
+                    focus_records.append({
+                        "event": PIPELINE_WRONG_DELIVERY_ROOT_PICKUP_EVENT,
+                        "step": source_step,
+                        "agents": [int(aid)],
+                        "kind": "provenance",
+                        "root_event": "pipeline_wrong_delivery",
+                        "root_step": int(step),
+                        "resource_type": resource_type,
+                    })
+                    counts["focus_records"] += 1
+    return counts
 
 
 def _solo_target_teammate_agents(num_agents: int, solo_target_agents) -> list[int]:
@@ -5085,6 +6371,42 @@ def train_recurrent_bc(
         frontier_exploration_action_count = 0
         frontier_exploration_pred_action_count = 0
         frontier_exploration_action_prob_sum = 0.0
+        pipeline_pickup_action_loss_sum = 0.0
+        pipeline_pickup_action_loss_steps = 0
+        pipeline_pickup_action_count = 0
+        pipeline_pickup_pred_action_count = 0
+        pipeline_pickup_action_prob_sum = 0.0
+        pipeline_delivery_action_loss_sum = 0.0
+        pipeline_delivery_action_loss_steps = 0
+        pipeline_delivery_action_count = 0
+        pipeline_delivery_pred_action_count = 0
+        pipeline_delivery_action_prob_sum = 0.0
+        pipeline_plan_action_loss_sum = 0.0
+        pipeline_plan_action_loss_steps = 0
+        pipeline_plan_action_count = 0
+        pipeline_plan_pred_action_count = 0
+        pipeline_plan_action_prob_sum = 0.0
+        pipeline_message_loss_sum = 0.0
+        pipeline_message_loss_steps = 0
+        pipeline_message_count = 0
+        pipeline_message_exact_count = 0
+        pipeline_message_token_correct = 0
+        pipeline_message_token_total = 0
+        pipeline_bad_pickup_action_loss_sum = 0.0
+        pipeline_bad_pickup_action_loss_steps = 0
+        pipeline_bad_pickup_action_count = 0
+        pipeline_bad_pickup_pred_action_count = 0
+        pipeline_bad_pickup_action_prob_sum = 0.0
+        pipeline_bad_drop_action_loss_sum = 0.0
+        pipeline_bad_drop_action_loss_steps = 0
+        pipeline_bad_drop_action_count = 0
+        pipeline_bad_drop_pred_action_count = 0
+        pipeline_bad_drop_action_prob_sum = 0.0
+        pipeline_bad_interact_action_loss_sum = 0.0
+        pipeline_bad_interact_action_loss_steps = 0
+        pipeline_bad_interact_action_count = 0
+        pipeline_bad_interact_pred_action_count = 0
+        pipeline_bad_interact_action_prob_sum = 0.0
         loss_den = 0.0
         chunks = 0
 
@@ -5361,6 +6683,168 @@ def train_recurrent_bc(
                 )
             else:
                 frontier_exploration_action_id_seq = torch.full_like(
+                    act_seq,
+                    -1,
+                    dtype=torch.long,
+                    device=device,
+                )
+            if "pipeline_pickup_action_mask" in ep_data:
+                pipeline_pickup_action_mask_seq = torch.tensor(
+                    ep_data["pipeline_pickup_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                pipeline_pickup_action_mask_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "pipeline_pickup_action_id" in ep_data:
+                pipeline_pickup_action_id_seq = torch.tensor(
+                    ep_data["pipeline_pickup_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                pipeline_pickup_action_id_seq = torch.full_like(
+                    act_seq,
+                    -1,
+                    dtype=torch.long,
+                    device=device,
+                )
+            if "pipeline_delivery_action_mask" in ep_data:
+                pipeline_delivery_action_mask_seq = torch.tensor(
+                    ep_data["pipeline_delivery_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                pipeline_delivery_action_mask_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "pipeline_delivery_action_id" in ep_data:
+                pipeline_delivery_action_id_seq = torch.tensor(
+                    ep_data["pipeline_delivery_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                pipeline_delivery_action_id_seq = torch.full_like(
+                    act_seq,
+                    -1,
+                    dtype=torch.long,
+                    device=device,
+                )
+            if "pipeline_plan_action_mask" in ep_data:
+                pipeline_plan_action_mask_seq = torch.tensor(
+                    ep_data["pipeline_plan_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                pipeline_plan_action_mask_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "pipeline_plan_action_id" in ep_data:
+                pipeline_plan_action_id_seq = torch.tensor(
+                    ep_data["pipeline_plan_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                pipeline_plan_action_id_seq = torch.full_like(
+                    act_seq,
+                    -1,
+                    dtype=torch.long,
+                    device=device,
+                )
+            if "pipeline_message_mask" in ep_data:
+                pipeline_message_mask_seq = torch.tensor(
+                    ep_data["pipeline_message_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                pipeline_message_mask_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "pipeline_bad_pickup_action_mask" in ep_data:
+                pipeline_bad_pickup_action_mask_seq = torch.tensor(
+                    ep_data["pipeline_bad_pickup_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                pipeline_bad_pickup_action_mask_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "pipeline_bad_pickup_action_id" in ep_data:
+                pipeline_bad_pickup_action_id_seq = torch.tensor(
+                    ep_data["pipeline_bad_pickup_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                pipeline_bad_pickup_action_id_seq = torch.full_like(
+                    act_seq,
+                    -1,
+                    dtype=torch.long,
+                    device=device,
+                )
+            if "pipeline_bad_drop_action_mask" in ep_data:
+                pipeline_bad_drop_action_mask_seq = torch.tensor(
+                    ep_data["pipeline_bad_drop_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                pipeline_bad_drop_action_mask_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "pipeline_bad_drop_action_id" in ep_data:
+                pipeline_bad_drop_action_id_seq = torch.tensor(
+                    ep_data["pipeline_bad_drop_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                pipeline_bad_drop_action_id_seq = torch.full_like(
+                    act_seq,
+                    -1,
+                    dtype=torch.long,
+                    device=device,
+                )
+            if "pipeline_bad_interact_action_mask" in ep_data:
+                pipeline_bad_interact_action_mask_seq = torch.tensor(
+                    ep_data["pipeline_bad_interact_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                pipeline_bad_interact_action_mask_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "pipeline_bad_interact_action_id" in ep_data:
+                pipeline_bad_interact_action_id_seq = torch.tensor(
+                    ep_data["pipeline_bad_interact_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                pipeline_bad_interact_action_id_seq = torch.full_like(
                     act_seq,
                     -1,
                     dtype=torch.long,
@@ -5664,6 +7148,264 @@ def train_recurrent_bc(
                                 torch.softmax(logits, dim=-1)
                                 .gather(1, frontier_action_ids.unsqueeze(1))
                                 .squeeze(1)[frontier_exploration_bool]
+                                .sum()
+                                .item()
+                            )
+                    pipeline_pickup_action_mask = pipeline_pickup_action_mask_seq[t]
+                    pipeline_pickup_action_id = pipeline_pickup_action_id_seq[t]
+                    pipeline_pickup_action_weight = float(cfg.bc_pipeline_pickup_action_loss_weight)
+                    if pipeline_pickup_action_weight > 0.0:
+                        pipeline_pickup_loss = _signal_target_match_action_loss(
+                            logits,
+                            pipeline_pickup_action_id,
+                            pipeline_pickup_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + pipeline_pickup_action_weight * pipeline_pickup_loss
+                        pipeline_pickup_action_loss_sum += float(pipeline_pickup_loss.item())
+                        pipeline_pickup_action_loss_steps += 1
+                    with torch.no_grad():
+                        pipeline_pickup_bool = pipeline_pickup_action_mask > 0.0
+                        pipeline_pickup_count = int(pipeline_pickup_bool.sum().item())
+                        if pipeline_pickup_count > 0:
+                            pipeline_pickup_action_count += pipeline_pickup_count
+                            pickup_action_ids = pipeline_pickup_action_id.clamp(0, logits.shape[-1] - 1)
+                            pipeline_pickup_pred_action_count += int(
+                                (logits.argmax(dim=-1) == pickup_action_ids)[pipeline_pickup_bool]
+                                .sum()
+                                .item()
+                            )
+                            pipeline_pickup_action_prob_sum += float(
+                                torch.softmax(logits, dim=-1)
+                                .gather(1, pickup_action_ids.unsqueeze(1))
+                                .squeeze(1)[pipeline_pickup_bool]
+                                .sum()
+                                .item()
+                            )
+                    pipeline_delivery_action_mask = pipeline_delivery_action_mask_seq[t]
+                    pipeline_delivery_action_id = pipeline_delivery_action_id_seq[t]
+                    pipeline_delivery_action_weight = float(cfg.bc_pipeline_delivery_action_loss_weight)
+                    if pipeline_delivery_action_weight > 0.0:
+                        pipeline_delivery_loss = _signal_target_match_action_loss(
+                            logits,
+                            pipeline_delivery_action_id,
+                            pipeline_delivery_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + pipeline_delivery_action_weight * pipeline_delivery_loss
+                        pipeline_delivery_action_loss_sum += float(pipeline_delivery_loss.item())
+                        pipeline_delivery_action_loss_steps += 1
+                    with torch.no_grad():
+                        pipeline_delivery_bool = pipeline_delivery_action_mask > 0.0
+                        pipeline_delivery_count = int(pipeline_delivery_bool.sum().item())
+                        if pipeline_delivery_count > 0:
+                            pipeline_delivery_action_count += pipeline_delivery_count
+                            delivery_action_ids = pipeline_delivery_action_id.clamp(0, logits.shape[-1] - 1)
+                            pipeline_delivery_pred_action_count += int(
+                                (logits.argmax(dim=-1) == delivery_action_ids)[pipeline_delivery_bool]
+                                .sum()
+                                .item()
+                            )
+                            pipeline_delivery_action_prob_sum += float(
+                                torch.softmax(logits, dim=-1)
+                                .gather(1, delivery_action_ids.unsqueeze(1))
+                                .squeeze(1)[pipeline_delivery_bool]
+                                .sum()
+                                .item()
+                            )
+                    pipeline_plan_action_mask = pipeline_plan_action_mask_seq[t]
+                    pipeline_plan_action_id = pipeline_plan_action_id_seq[t]
+                    pipeline_plan_action_weight = float(cfg.bc_pipeline_plan_action_loss_weight)
+                    if pipeline_plan_action_weight > 0.0:
+                        pipeline_plan_loss = _signal_target_match_action_loss(
+                            logits,
+                            pipeline_plan_action_id,
+                            pipeline_plan_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + pipeline_plan_action_weight * pipeline_plan_loss
+                        pipeline_plan_action_loss_sum += float(pipeline_plan_loss.item())
+                        pipeline_plan_action_loss_steps += 1
+                    with torch.no_grad():
+                        pipeline_plan_bool = pipeline_plan_action_mask > 0.0
+                        pipeline_plan_count = int(pipeline_plan_bool.sum().item())
+                        if pipeline_plan_count > 0:
+                            pipeline_plan_action_count += pipeline_plan_count
+                            plan_action_ids = pipeline_plan_action_id.clamp(0, logits.shape[-1] - 1)
+                            pipeline_plan_pred_action_count += int(
+                                (logits.argmax(dim=-1) == plan_action_ids)[pipeline_plan_bool]
+                                .sum()
+                                .item()
+                            )
+                            pipeline_plan_action_prob_sum += float(
+                                torch.softmax(logits, dim=-1)
+                                .gather(1, plan_action_ids.unsqueeze(1))
+                                .squeeze(1)[pipeline_plan_bool]
+                                .sum()
+                                .item()
+                            )
+                    pipeline_message_mask = pipeline_message_mask_seq[t]
+                    pipeline_message_weight = float(cfg.bc_pipeline_message_loss_weight)
+                    if cfg.comm and pipeline_message_weight > 0.0:
+                        pipeline_message_components = _recurrent_comm_loss_components(
+                            send_logits,
+                            token_logits,
+                            len_logits,
+                            msg_seq[t],
+                            msg_len_seq[t],
+                            send_pos_weight=send_pos_weight,
+                            sample_weight=sample_weight * pipeline_message_mask,
+                            send_loss_weight=cfg.bc_comm_send_loss_weight,
+                            length_loss_weight=cfg.bc_comm_length_loss_weight,
+                            token_loss_weight=cfg.bc_comm_token_loss_weight,
+                            send_rate_penalty_weight=0.0,
+                            send_rate_target=-1.0,
+                        )
+                        pipeline_message_loss = pipeline_message_components["total"]
+                        loss = loss + pipeline_message_weight * pipeline_message_loss
+                        pipeline_message_loss_sum += float(pipeline_message_loss.item())
+                        pipeline_message_loss_steps += 1
+                    if cfg.comm:
+                        with torch.no_grad():
+                            pipeline_message_bool = pipeline_message_mask > 0.0
+                            pipeline_message_label_count = int(pipeline_message_bool.sum().item())
+                            if pipeline_message_label_count > 0:
+                                pipeline_message_count += pipeline_message_label_count
+                                pred_send = torch.sigmoid(send_logits.squeeze(-1)) > float(
+                                    cfg.eval_send_threshold
+                                )
+                                pred_len = len_logits.argmax(dim=-1)
+                                pred_tokens = token_logits.argmax(dim=-1)
+                                true_lens = msg_len_seq[t]
+                                len_match = pred_len == true_lens
+                                token_limit = int(token_logits.shape[1])
+                                token_positions = torch.arange(
+                                    token_limit,
+                                    device=msg_len_seq.device,
+                                )[None, :]
+                                token_mask = token_positions < true_lens[:, None]
+                                token_match = (pred_tokens == msg_seq[t]) | ~token_mask
+                                exact = pred_send & len_match & token_match.all(dim=-1)
+                                pipeline_message_exact_count += int(
+                                    exact[pipeline_message_bool].sum().item()
+                                )
+                                token_label_mask = token_mask & pipeline_message_bool[:, None]
+                                pipeline_message_token_total += int(token_label_mask.sum().item())
+                                pipeline_message_token_correct += int(
+                                    ((pred_tokens == msg_seq[t]) & token_label_mask).sum().item()
+                                )
+                    pipeline_bad_pickup_action_mask = pipeline_bad_pickup_action_mask_seq[t]
+                    pipeline_bad_pickup_action_id = pipeline_bad_pickup_action_id_seq[t]
+                    pipeline_bad_pickup_action_weight = float(
+                        cfg.bc_pipeline_bad_pickup_action_loss_weight
+                    )
+                    if pipeline_bad_pickup_action_weight > 0.0:
+                        pipeline_bad_pickup_loss = _signal_bad_action_loss(
+                            logits,
+                            pipeline_bad_pickup_action_id,
+                            pipeline_bad_pickup_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + pipeline_bad_pickup_action_weight * pipeline_bad_pickup_loss
+                        pipeline_bad_pickup_action_loss_sum += float(
+                            pipeline_bad_pickup_loss.item()
+                        )
+                        pipeline_bad_pickup_action_loss_steps += 1
+                    with torch.no_grad():
+                        pipeline_bad_pickup_bool = pipeline_bad_pickup_action_mask > 0.0
+                        pipeline_bad_pickup_count = int(
+                            pipeline_bad_pickup_bool.sum().item()
+                        )
+                        if pipeline_bad_pickup_count > 0:
+                            pipeline_bad_pickup_action_count += pipeline_bad_pickup_count
+                            bad_pickup_action_ids = pipeline_bad_pickup_action_id.clamp(
+                                0,
+                                logits.shape[-1] - 1,
+                            )
+                            pipeline_bad_pickup_pred_action_count += int(
+                                (logits.argmax(dim=-1) == bad_pickup_action_ids)[
+                                    pipeline_bad_pickup_bool
+                                ]
+                                .sum()
+                                .item()
+                            )
+                            pipeline_bad_pickup_action_prob_sum += float(
+                                torch.softmax(logits, dim=-1)
+                                .gather(1, bad_pickup_action_ids.unsqueeze(1))
+                                .squeeze(1)[pipeline_bad_pickup_bool]
+                                .sum()
+                                .item()
+                            )
+                    pipeline_bad_drop_action_mask = pipeline_bad_drop_action_mask_seq[t]
+                    pipeline_bad_drop_action_id = pipeline_bad_drop_action_id_seq[t]
+                    pipeline_bad_drop_action_weight = float(cfg.bc_pipeline_bad_drop_action_loss_weight)
+                    if pipeline_bad_drop_action_weight > 0.0:
+                        pipeline_bad_drop_loss = _signal_bad_action_loss(
+                            logits,
+                            pipeline_bad_drop_action_id,
+                            pipeline_bad_drop_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + pipeline_bad_drop_action_weight * pipeline_bad_drop_loss
+                        pipeline_bad_drop_action_loss_sum += float(pipeline_bad_drop_loss.item())
+                        pipeline_bad_drop_action_loss_steps += 1
+                    with torch.no_grad():
+                        pipeline_bad_drop_bool = pipeline_bad_drop_action_mask > 0.0
+                        pipeline_bad_drop_count = int(pipeline_bad_drop_bool.sum().item())
+                        if pipeline_bad_drop_count > 0:
+                            pipeline_bad_drop_action_count += pipeline_bad_drop_count
+                            bad_drop_action_ids = pipeline_bad_drop_action_id.clamp(0, logits.shape[-1] - 1)
+                            pipeline_bad_drop_pred_action_count += int(
+                                (logits.argmax(dim=-1) == bad_drop_action_ids)[pipeline_bad_drop_bool]
+                                .sum()
+                                .item()
+                            )
+                            pipeline_bad_drop_action_prob_sum += float(
+                                torch.softmax(logits, dim=-1)
+                                .gather(1, bad_drop_action_ids.unsqueeze(1))
+                                .squeeze(1)[pipeline_bad_drop_bool]
+                                .sum()
+                                .item()
+                            )
+                    pipeline_bad_interact_action_mask = pipeline_bad_interact_action_mask_seq[t]
+                    pipeline_bad_interact_action_id = pipeline_bad_interact_action_id_seq[t]
+                    pipeline_bad_interact_action_weight = float(
+                        cfg.bc_pipeline_bad_interact_action_loss_weight
+                    )
+                    if pipeline_bad_interact_action_weight > 0.0:
+                        pipeline_bad_interact_loss = _signal_bad_action_loss(
+                            logits,
+                            pipeline_bad_interact_action_id,
+                            pipeline_bad_interact_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + pipeline_bad_interact_action_weight * pipeline_bad_interact_loss
+                        pipeline_bad_interact_action_loss_sum += float(
+                            pipeline_bad_interact_loss.item()
+                        )
+                        pipeline_bad_interact_action_loss_steps += 1
+                    with torch.no_grad():
+                        pipeline_bad_interact_bool = pipeline_bad_interact_action_mask > 0.0
+                        pipeline_bad_interact_count = int(
+                            pipeline_bad_interact_bool.sum().item()
+                        )
+                        if pipeline_bad_interact_count > 0:
+                            pipeline_bad_interact_action_count += pipeline_bad_interact_count
+                            bad_interact_action_ids = pipeline_bad_interact_action_id.clamp(
+                                0,
+                                logits.shape[-1] - 1,
+                            )
+                            pipeline_bad_interact_pred_action_count += int(
+                                (logits.argmax(dim=-1) == bad_interact_action_ids)[
+                                    pipeline_bad_interact_bool
+                                ]
+                                .sum()
+                                .item()
+                            )
+                            pipeline_bad_interact_action_prob_sum += float(
+                                torch.softmax(logits, dim=-1)
+                                .gather(1, bad_interact_action_ids.unsqueeze(1))
+                                .squeeze(1)[pipeline_bad_interact_bool]
                                 .sum()
                                 .item()
                             )
@@ -6252,6 +7994,75 @@ def train_recurrent_bc(
         rejected_target_drift_action_loss_mean = (
             rejected_target_drift_action_loss_sum / max(rejected_target_drift_action_loss_steps, 1)
         )
+        pipeline_pickup_action_den = max(pipeline_pickup_action_count, 1)
+        pipeline_pickup_pred_action_rate = (
+            pipeline_pickup_pred_action_count / pipeline_pickup_action_den
+        )
+        pipeline_pickup_mean_action_prob = (
+            pipeline_pickup_action_prob_sum / pipeline_pickup_action_den
+        )
+        pipeline_pickup_action_loss_mean = (
+            pipeline_pickup_action_loss_sum / max(pipeline_pickup_action_loss_steps, 1)
+        )
+        pipeline_delivery_action_den = max(pipeline_delivery_action_count, 1)
+        pipeline_delivery_pred_action_rate = (
+            pipeline_delivery_pred_action_count / pipeline_delivery_action_den
+        )
+        pipeline_delivery_mean_action_prob = (
+            pipeline_delivery_action_prob_sum / pipeline_delivery_action_den
+        )
+        pipeline_delivery_action_loss_mean = (
+            pipeline_delivery_action_loss_sum / max(pipeline_delivery_action_loss_steps, 1)
+        )
+        pipeline_plan_action_den = max(pipeline_plan_action_count, 1)
+        pipeline_plan_pred_action_rate = (
+            pipeline_plan_pred_action_count / pipeline_plan_action_den
+        )
+        pipeline_plan_mean_action_prob = (
+            pipeline_plan_action_prob_sum / pipeline_plan_action_den
+        )
+        pipeline_plan_action_loss_mean = (
+            pipeline_plan_action_loss_sum / max(pipeline_plan_action_loss_steps, 1)
+        )
+        pipeline_message_den = max(pipeline_message_count, 1)
+        pipeline_message_exact_rate = pipeline_message_exact_count / pipeline_message_den
+        pipeline_message_token_acc = (
+            pipeline_message_token_correct / max(pipeline_message_token_total, 1)
+        )
+        pipeline_message_loss_mean = (
+            pipeline_message_loss_sum / max(pipeline_message_loss_steps, 1)
+        )
+        pipeline_bad_pickup_action_den = max(pipeline_bad_pickup_action_count, 1)
+        pipeline_bad_pickup_pred_action_rate = (
+            pipeline_bad_pickup_pred_action_count / pipeline_bad_pickup_action_den
+        )
+        pipeline_bad_pickup_mean_action_prob = (
+            pipeline_bad_pickup_action_prob_sum / pipeline_bad_pickup_action_den
+        )
+        pipeline_bad_pickup_action_loss_mean = (
+            pipeline_bad_pickup_action_loss_sum / max(pipeline_bad_pickup_action_loss_steps, 1)
+        )
+        pipeline_bad_drop_action_den = max(pipeline_bad_drop_action_count, 1)
+        pipeline_bad_drop_pred_action_rate = (
+            pipeline_bad_drop_pred_action_count / pipeline_bad_drop_action_den
+        )
+        pipeline_bad_drop_mean_action_prob = (
+            pipeline_bad_drop_action_prob_sum / pipeline_bad_drop_action_den
+        )
+        pipeline_bad_drop_action_loss_mean = (
+            pipeline_bad_drop_action_loss_sum / max(pipeline_bad_drop_action_loss_steps, 1)
+        )
+        pipeline_bad_interact_action_den = max(pipeline_bad_interact_action_count, 1)
+        pipeline_bad_interact_pred_action_rate = (
+            pipeline_bad_interact_pred_action_count / pipeline_bad_interact_action_den
+        )
+        pipeline_bad_interact_mean_action_prob = (
+            pipeline_bad_interact_action_prob_sum / pipeline_bad_interact_action_den
+        )
+        pipeline_bad_interact_action_loss_mean = (
+            pipeline_bad_interact_action_loss_sum
+            / max(pipeline_bad_interact_action_loss_steps, 1)
+        )
         print(
             f"[BC] epoch {epoch:3d} | loss {total_loss / max(loss_den, 1e-8):.4f} | "
             f"comm {avg_comm:.4f} | acc {acc:.3f} | "
@@ -6275,7 +8086,14 @@ def train_recurrent_bc(
             f"target_aux {target_aux_xy_l1:.3f} | "
             f"decoy_bad {decoy_drift_pred_bad_action_rate:.3f} | "
             f"decoy_scan_bad {decoy_scan_pred_bad_action_rate:.3f} | "
-            f"rej_drift_bad {rejected_target_drift_pred_bad_action_rate:.3f}"
+            f"rej_drift_bad {rejected_target_drift_pred_bad_action_rate:.3f} | "
+            f"pipe_pick {pipeline_pickup_pred_action_rate:.3f} | "
+            f"pipe_deliver {pipeline_delivery_pred_action_rate:.3f} | "
+            f"pipe_plan {pipeline_plan_pred_action_rate:.3f} | "
+            f"pipe_msg {pipeline_message_exact_rate:.3f}/{pipeline_message_token_acc:.3f} | "
+            f"pipe_bad_pick {pipeline_bad_pickup_pred_action_rate:.3f} | "
+            f"pipe_bad_drop {pipeline_bad_drop_pred_action_rate:.3f} | "
+            f"pipe_bad_int {pipeline_bad_interact_pred_action_rate:.3f}"
         )
         if wandb_run is not None:
             send_pos_weight_value = (
@@ -6515,6 +8333,114 @@ def train_recurrent_bc(
                     ),
                     f"{log_prefix}/signal_frontier_exploration_min_map_size": int(
                         cfg.bc_signal_frontier_exploration_min_map_size
+                    ),
+                    f"{log_prefix}/pipeline_pickup_action_count": int(
+                        pipeline_pickup_action_count
+                    ),
+                    f"{log_prefix}/pipeline_pickup_action_loss": float(
+                        pipeline_pickup_action_loss_mean
+                    ),
+                    f"{log_prefix}/pipeline_pickup_pred_action_rate": float(
+                        pipeline_pickup_pred_action_rate
+                    ),
+                    f"{log_prefix}/pipeline_pickup_mean_action_prob": float(
+                        pipeline_pickup_mean_action_prob
+                    ),
+                    f"{log_prefix}/pipeline_pickup_action_loss_weight": float(
+                        cfg.bc_pipeline_pickup_action_loss_weight
+                    ),
+                    f"{log_prefix}/pipeline_delivery_action_count": int(
+                        pipeline_delivery_action_count
+                    ),
+                    f"{log_prefix}/pipeline_delivery_action_loss": float(
+                        pipeline_delivery_action_loss_mean
+                    ),
+                    f"{log_prefix}/pipeline_delivery_pred_action_rate": float(
+                        pipeline_delivery_pred_action_rate
+                    ),
+                    f"{log_prefix}/pipeline_delivery_mean_action_prob": float(
+                        pipeline_delivery_mean_action_prob
+                    ),
+                    f"{log_prefix}/pipeline_delivery_action_loss_weight": float(
+                        cfg.bc_pipeline_delivery_action_loss_weight
+                    ),
+                    f"{log_prefix}/pipeline_plan_action_count": int(
+                        pipeline_plan_action_count
+                    ),
+                    f"{log_prefix}/pipeline_plan_action_loss": float(
+                        pipeline_plan_action_loss_mean
+                    ),
+                    f"{log_prefix}/pipeline_plan_pred_action_rate": float(
+                        pipeline_plan_pred_action_rate
+                    ),
+                    f"{log_prefix}/pipeline_plan_mean_action_prob": float(
+                        pipeline_plan_mean_action_prob
+                    ),
+                    f"{log_prefix}/pipeline_plan_action_loss_weight": float(
+                        cfg.bc_pipeline_plan_action_loss_weight
+                    ),
+                    f"{log_prefix}/pipeline_message_count": int(
+                        pipeline_message_count
+                    ),
+                    f"{log_prefix}/pipeline_message_loss": float(
+                        pipeline_message_loss_mean
+                    ),
+                    f"{log_prefix}/pipeline_message_exact_rate": float(
+                        pipeline_message_exact_rate
+                    ),
+                    f"{log_prefix}/pipeline_message_token_acc": float(
+                        pipeline_message_token_acc
+                    ),
+                    f"{log_prefix}/pipeline_message_loss_weight": float(
+                        cfg.bc_pipeline_message_loss_weight
+                    ),
+                    f"{log_prefix}/pipeline_bad_pickup_action_count": int(
+                        pipeline_bad_pickup_action_count
+                    ),
+                    f"{log_prefix}/pipeline_bad_pickup_action_loss": float(
+                        pipeline_bad_pickup_action_loss_mean
+                    ),
+                    f"{log_prefix}/pipeline_bad_pickup_pred_action_rate": float(
+                        pipeline_bad_pickup_pred_action_rate
+                    ),
+                    f"{log_prefix}/pipeline_bad_pickup_mean_action_prob": float(
+                        pipeline_bad_pickup_mean_action_prob
+                    ),
+                    f"{log_prefix}/pipeline_bad_pickup_action_loss_weight": float(
+                        cfg.bc_pipeline_bad_pickup_action_loss_weight
+                    ),
+                    f"{log_prefix}/pipeline_bad_drop_action_count": int(
+                        pipeline_bad_drop_action_count
+                    ),
+                    f"{log_prefix}/pipeline_bad_drop_action_loss": float(
+                        pipeline_bad_drop_action_loss_mean
+                    ),
+                    f"{log_prefix}/pipeline_bad_drop_pred_action_rate": float(
+                        pipeline_bad_drop_pred_action_rate
+                    ),
+                    f"{log_prefix}/pipeline_bad_drop_mean_action_prob": float(
+                        pipeline_bad_drop_mean_action_prob
+                    ),
+                    f"{log_prefix}/pipeline_bad_drop_action_loss_weight": float(
+                        cfg.bc_pipeline_bad_drop_action_loss_weight
+                    ),
+                    f"{log_prefix}/pipeline_bad_interact_action_count": int(
+                        pipeline_bad_interact_action_count
+                    ),
+                    f"{log_prefix}/pipeline_bad_interact_action_loss": float(
+                        pipeline_bad_interact_action_loss_mean
+                    ),
+                    f"{log_prefix}/pipeline_bad_interact_pred_action_rate": float(
+                        pipeline_bad_interact_pred_action_rate
+                    ),
+                    f"{log_prefix}/pipeline_bad_interact_mean_action_prob": float(
+                        pipeline_bad_interact_mean_action_prob
+                    ),
+                    f"{log_prefix}/pipeline_bad_interact_action_loss_weight": float(
+                        cfg.bc_pipeline_bad_interact_action_loss_weight
+                    ),
+                    f"{log_prefix}/pipeline_proactive_bad_action_labels": int(
+                        bool(cfg.bc_pipeline_proactive_bad_action_labels)
                     ),
                     f"{log_prefix}/signal_sync_response_action_count": int(
                         sync_response_action_count
@@ -6768,6 +8694,12 @@ def collect_recurrent_dagger_episodes(
     decoy_drift_action_labels = 0
     decoy_scan_action_labels = 0
     rejected_target_drift_action_labels = 0
+    pipeline_bad_pickup_action_labels = 0
+    pipeline_bad_drop_action_labels = 0
+    pipeline_bad_interact_action_labels = 0
+    pipeline_wrong_delivery_root_bad_pickup_labels = 0
+    pipeline_wrong_delivery_root_focus_records = 0
+    pipeline_wrong_delivery_root_focus_weight_updates = 0
     target_handoff_action_labels = 0
     target_scan_broadcast_labels = 0
     redundant_target_wait_action_labels = 0
@@ -6805,6 +8737,7 @@ def collect_recurrent_dagger_episodes(
         model_position_history: dict[int, list[tuple[int, int]]] = {aid: [] for aid in range(env.num_agents)}
         max_collect_steps = int(cfg.dagger_max_steps_per_episode)
         recovery_remaining = {aid: 0 for aid in range(env.num_agents)}
+        pipeline_inventory_sources: dict[int, dict | None] = {aid: None for aid in range(env.num_agents)}
         focus_records: list[dict] = []
         deferred_team_records: list[dict] = []
 
@@ -6904,6 +8837,101 @@ def collect_recurrent_dagger_episodes(
                 feedback=feedback,
                 scan_state=scan_state,
             )
+            pipeline_pickup_miss_agents = _pipeline_pickup_miss_agents(
+                env,
+                oracle_actions,
+                model_actions,
+            )
+            pipeline_bad_pickup_miss_agents = _pipeline_bad_pickup_miss_agents(
+                env,
+                obs,
+                oracle_actions,
+                model_actions,
+                episode_cfg,
+            )
+            if pipeline_bad_pickup_miss_agents:
+                pipeline_bad_pickup_action_labels += _label_latest_pipeline_bad_pickup_actions(
+                    ep_data,
+                    num_agents=env.num_agents,
+                    agent_ids=pipeline_bad_pickup_miss_agents,
+                )
+            pipeline_delivery_miss_agents = _pipeline_delivery_miss_agents(
+                env,
+                oracle_actions,
+                model_actions,
+            )
+            pipeline_delivery_miss_set = set(pipeline_delivery_miss_agents)
+            pipeline_station_stall_miss_agents = [
+                aid
+                for aid in _pipeline_station_stall_miss_agents(
+                    env,
+                    oracle_actions,
+                    model_actions,
+                )
+                if int(aid) not in pipeline_delivery_miss_set
+            ]
+            pipeline_drop_miss_agents = _pipeline_drop_miss_agents(
+                env,
+                oracle_actions,
+                model_actions,
+            )
+            if pipeline_drop_miss_agents:
+                pipeline_bad_drop_action_labels += _label_latest_pipeline_bad_drop_actions(
+                    ep_data,
+                    num_agents=env.num_agents,
+                    agent_ids=pipeline_drop_miss_agents,
+                )
+            pipeline_wrong_delivery_miss_agents = _pipeline_wrong_delivery_miss_agents(
+                env,
+                oracle_actions,
+                model_actions,
+            )
+            if pipeline_wrong_delivery_miss_agents:
+                pipeline_bad_interact_action_labels += _label_latest_pipeline_bad_interact_actions(
+                    ep_data,
+                    num_agents=env.num_agents,
+                    agent_ids=pipeline_wrong_delivery_miss_agents,
+                )
+            for event_name, agent_ids, event_weight in (
+                ("pipeline_pickup_miss", pipeline_pickup_miss_agents, cfg.dagger_focus_error_weight),
+                ("pipeline_bad_pickup", pipeline_bad_pickup_miss_agents, cfg.dagger_focus_error_weight),
+                (
+                    "pipeline_delivery_miss",
+                    pipeline_delivery_miss_agents,
+                    max(float(cfg.dagger_focus_error_weight), float(cfg.dagger_target_interact_focus_weight)),
+                ),
+                (
+                    "pipeline_station_stall_miss",
+                    pipeline_station_stall_miss_agents,
+                    max(float(cfg.dagger_focus_error_weight), float(cfg.dagger_movement_stall_focus_weight)),
+                ),
+                ("pipeline_drop_miss", pipeline_drop_miss_agents, cfg.dagger_focus_error_weight),
+                (
+                    "pipeline_wrong_delivery",
+                    pipeline_wrong_delivery_miss_agents,
+                    cfg.dagger_focus_error_weight,
+                ),
+            ):
+                if not agent_ids or event_name not in focus_events:
+                    continue
+                focus_event_counts[event_name] = focus_event_counts.get(event_name, 0) + len(agent_ids)
+                focus_records.append({
+                    "event": event_name,
+                    "step": step,
+                    "agents": list(agent_ids),
+                    "kind": "focus",
+                })
+                focused_state_updates += _scale_latest_agent_weights(
+                    ep_data,
+                    num_agents=env.num_agents,
+                    agent_ids=agent_ids,
+                    weight=float(event_weight),
+                )
+                for aid in agent_ids:
+                    recovery_remaining[int(aid)] = max(
+                        recovery_remaining[int(aid)],
+                        int(cfg.dagger_focus_window),
+                    )
             target_interact_miss_agents = _signal_target_interact_miss_agents(
                 env,
                 oracle_actions,
@@ -7325,6 +9353,33 @@ def collect_recurrent_dagger_episodes(
             event_action_labels += event_updates
             for name, count in event_counts.items():
                 event_action_label_counts[name] = event_action_label_counts.get(name, 0) + count
+            provenance_counts = _update_pipeline_wrong_delivery_provenance(
+                ep_data,
+                num_agents=env.num_agents,
+                step=step,
+                info=last_info,
+                model_actions=model_actions,
+                oracle_actions=oracle_actions,
+                rollout_actions=rollout_actions,
+                inventory_sources=pipeline_inventory_sources,
+                cfg=episode_cfg,
+                focus_records=focus_records,
+                focus_events=focus_events,
+            )
+            pipeline_wrong_delivery_root_bad_pickup_labels += int(
+                provenance_counts.get("bad_pickup_labels", 0)
+            )
+            pipeline_wrong_delivery_root_focus_records += int(
+                provenance_counts.get("focus_records", 0)
+            )
+            provenance_weight_updates = int(provenance_counts.get("focus_weight_updates", 0))
+            pipeline_wrong_delivery_root_focus_weight_updates += provenance_weight_updates
+            focused_state_updates += provenance_weight_updates
+            if provenance_counts.get("focus_records", 0):
+                focus_event_counts[PIPELINE_WRONG_DELIVERY_ROOT_PICKUP_EVENT] = (
+                    focus_event_counts.get(PIPELINE_WRONG_DELIVERY_ROOT_PICKUP_EVENT, 0)
+                    + int(provenance_counts.get("focus_records", 0))
+                )
             event_names = _event_names_by_agent(last_info, env.num_agents)
             decoy_scan_agents = [
                 int(aid)
@@ -7484,6 +9539,43 @@ def collect_recurrent_dagger_episodes(
             episodes,
             "signal_sync_response_action_mask",
         ),
+        "pipeline_pickup_action_labels": _episode_count_label_mask(
+            episodes,
+            "pipeline_pickup_action_mask",
+        ),
+        "pipeline_delivery_action_labels": _episode_count_label_mask(
+            episodes,
+            "pipeline_delivery_action_mask",
+        ),
+        "pipeline_plan_action_labels": _episode_count_label_mask(
+            episodes,
+            "pipeline_plan_action_mask",
+        ),
+        "pipeline_message_labels": _episode_count_label_mask(
+            episodes,
+            "pipeline_message_mask",
+        ),
+        "pipeline_bad_pickup_action_labels": _episode_count_label_mask(
+            episodes,
+            "pipeline_bad_pickup_action_mask",
+        ),
+        "pipeline_bad_drop_action_labels": _episode_count_label_mask(
+            episodes,
+            "pipeline_bad_drop_action_mask",
+        ),
+        "pipeline_bad_interact_action_labels": _episode_count_label_mask(
+            episodes,
+            "pipeline_bad_interact_action_mask",
+        ),
+        "pipeline_wrong_delivery_root_bad_pickup_labels": int(
+            pipeline_wrong_delivery_root_bad_pickup_labels
+        ),
+        "pipeline_wrong_delivery_root_focus_records": int(
+            pipeline_wrong_delivery_root_focus_records
+        ),
+        "pipeline_wrong_delivery_root_focus_weight_updates": int(
+            pipeline_wrong_delivery_root_focus_weight_updates
+        ),
         "decoy_drift_action_labels": decoy_drift_action_labels,
         "decoy_scan_action_labels": decoy_scan_action_labels,
         "rejected_target_drift_action_labels": rejected_target_drift_action_labels,
@@ -7508,6 +9600,12 @@ def collect_recurrent_dagger_episodes(
         "solo_target_team_weight": float(cfg.dagger_solo_target_team_weight),
         "focus_recovery_weight": float(cfg.dagger_focus_recovery_weight),
         "focus_replay_enabled": bool(cfg.dagger_focus_replay),
+        "pipeline_wrong_delivery_provenance_enabled": bool(
+            cfg.dagger_pipeline_wrong_delivery_provenance_labels
+        ),
+        "pipeline_wrong_delivery_provenance_weight": float(
+            cfg.dagger_pipeline_wrong_delivery_provenance_weight
+        ),
         "max_failed_parent_replay_snippets_per_episode": int(
             cfg.dagger_max_failed_parent_replay_snippets_per_episode
         ),
@@ -7747,6 +9845,45 @@ def train_recurrent_bc_dagger(
                         ),
                         "dagger/collect_sync_response_action_labels": int(
                             collect_summary.get("sync_response_action_labels", 0)
+                        ),
+                        "dagger/collect_pipeline_pickup_action_labels": int(
+                            collect_summary.get("pipeline_pickup_action_labels", 0)
+                        ),
+                        "dagger/collect_pipeline_delivery_action_labels": int(
+                            collect_summary.get("pipeline_delivery_action_labels", 0)
+                        ),
+                        "dagger/collect_pipeline_plan_action_labels": int(
+                            collect_summary.get("pipeline_plan_action_labels", 0)
+                        ),
+                        "dagger/collect_pipeline_message_labels": int(
+                            collect_summary.get("pipeline_message_labels", 0)
+                        ),
+                        "dagger/collect_pipeline_bad_pickup_action_labels": int(
+                            collect_summary.get("pipeline_bad_pickup_action_labels", 0)
+                        ),
+                        "dagger/collect_pipeline_bad_drop_action_labels": int(
+                            collect_summary.get("pipeline_bad_drop_action_labels", 0)
+                        ),
+                        "dagger/collect_pipeline_bad_interact_action_labels": int(
+                            collect_summary.get("pipeline_bad_interact_action_labels", 0)
+                        ),
+                        "dagger/collect_pipeline_wrong_delivery_root_bad_pickup_labels": int(
+                            collect_summary.get("pipeline_wrong_delivery_root_bad_pickup_labels", 0)
+                        ),
+                        "dagger/collect_pipeline_wrong_delivery_root_focus_records": int(
+                            collect_summary.get("pipeline_wrong_delivery_root_focus_records", 0)
+                        ),
+                        "dagger/collect_pipeline_wrong_delivery_root_focus_weight_updates": int(
+                            collect_summary.get(
+                                "pipeline_wrong_delivery_root_focus_weight_updates",
+                                0,
+                            )
+                        ),
+                        "dagger/collect_pipeline_wrong_delivery_provenance_enabled": int(
+                            bool(collect_summary.get("pipeline_wrong_delivery_provenance_enabled", False))
+                        ),
+                        "dagger/collect_pipeline_wrong_delivery_provenance_weight": float(
+                            collect_summary.get("pipeline_wrong_delivery_provenance_weight", -1.0)
                         ),
                         "dagger/collect_decoy_drift_action_labels": int(
                             collect_summary.get("decoy_drift_action_labels", 0)
@@ -8705,6 +10842,32 @@ def _apply_signal_exact_target_navigation_assist(
     return corrected
 
 
+def _apply_pipeline_navigation_assist(
+    cfg: RecurrentConfig,
+    obs: dict,
+    acts: torch.Tensor,
+) -> torch.Tensor:
+    if (
+        cfg.scenario != "pipeline_assembly"
+        or not bool(getattr(cfg, "eval_pipeline_navigation_assist", False))
+    ):
+        return acts
+    corrected = acts.clone()
+    for aid in range(int(acts.shape[0])):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        action_id = _pipeline_local_assist_action(
+            cfg,
+            obs_agent,
+            current_action_id=int(corrected[aid].item()),
+        )
+        if action_id is None or not _action_allowed_from_obs(obs_agent, int(action_id)):
+            continue
+        corrected[aid] = int(action_id)
+    return corrected
+
+
 def _apply_signal_exact_target_message_guard(
     cfg: RecurrentConfig,
     obs: dict,
@@ -8773,6 +10936,7 @@ def _decode_recurrent_actions(
     acts = _apply_signal_scan_sync_decoding(cfg, obs, acts, feedback, scan_state=scan_state)
     acts = _apply_signal_scan_refresh_decoding(cfg, obs, acts, feedback)
     acts = _apply_signal_exact_target_navigation_assist(cfg, obs, acts, scan_state)
+    acts = _apply_pipeline_navigation_assist(cfg, obs, acts)
     target_validity_logits = None
     if hasattr(model, "signal_target_validity"):
         with torch.no_grad():
@@ -8890,6 +11054,19 @@ def _apply_recurrent_rollout_eval_decoding(
         corrected_acts,
         scan_state,
     )
+    pipeline_cfg = cfg
+    if (
+        cfg.scenario == "pipeline_assembly"
+        and bool(getattr(cfg, "rl_rollout_pipeline_navigation_assist", False))
+    ):
+        pipeline_cfg = replace(
+            cfg,
+            eval_pipeline_navigation_assist=True,
+            eval_pipeline_navigation_assist_trust_messages=bool(
+                getattr(cfg, "rl_rollout_pipeline_navigation_assist_trust_messages", False)
+            ),
+        )
+    corrected_acts = _apply_pipeline_navigation_assist(pipeline_cfg, obs, corrected_acts)
 
     target_validity_logits = None
     if hasattr(model, "signal_target_validity"):
@@ -9533,6 +11710,11 @@ class RecurrentCheckpointPolicy:
             "eval_signal_exact_target_memory_steps": self.cfg.eval_signal_exact_target_memory_steps,
             "eval_signal_scan_refresh_assist": self.cfg.eval_signal_scan_refresh_assist,
             "eval_signal_scan_refresh_threshold": self.cfg.eval_signal_scan_refresh_threshold,
+            "eval_pipeline_navigation_assist": self.cfg.eval_pipeline_navigation_assist,
+            "eval_pipeline_navigation_assist_trust_messages": (
+                self.cfg.eval_pipeline_navigation_assist_trust_messages
+            ),
+            "obs_pipeline_features": self.cfg.obs_pipeline_features,
             "obs_signal_scan_state": self.cfg.obs_signal_scan_state,
             "obs_signal_negative_memory": self.cfg.obs_signal_negative_memory,
         }
@@ -9599,6 +11781,8 @@ def load_recurrent_checkpoint_policy(
     eval_signal_exact_target_memory_steps: int | None = None,
     eval_signal_scan_refresh_assist: bool | None = None,
     eval_signal_scan_refresh_threshold: float | None = None,
+    eval_pipeline_navigation_assist: bool | None = None,
+    eval_pipeline_navigation_assist_trust_messages: bool | None = None,
 ) -> RecurrentCheckpointPolicy:
     device = resolve_device(str(device)) if isinstance(device, str) else device
     ckpt = torch.load(Path(path), map_location="cpu")
@@ -9633,6 +11817,12 @@ def load_recurrent_checkpoint_policy(
         cfg.eval_signal_scan_refresh_assist = bool(eval_signal_scan_refresh_assist)
     if eval_signal_scan_refresh_threshold is not None:
         cfg.eval_signal_scan_refresh_threshold = float(eval_signal_scan_refresh_threshold)
+    if eval_pipeline_navigation_assist is not None:
+        cfg.eval_pipeline_navigation_assist = bool(eval_pipeline_navigation_assist)
+    if eval_pipeline_navigation_assist_trust_messages is not None:
+        cfg.eval_pipeline_navigation_assist_trust_messages = bool(
+            eval_pipeline_navigation_assist_trust_messages
+        )
     state = ckpt.get("model", ckpt)
     first_weight = state.get("encoder.net.0.weight")
     if first_weight is None:
@@ -9648,6 +11838,39 @@ def load_recurrent_checkpoint_policy(
     ).to(device)
     _load_recurrent_actor_state(model, state)
     return RecurrentCheckpointPolicy(model, cfg, device)
+
+
+def _checkpoint_eval_send_threshold(path: str | Path) -> float | None:
+    try:
+        checkpoint = torch.load(Path(path), map_location="cpu")
+    except Exception:
+        return None
+    if not isinstance(checkpoint, dict):
+        return None
+    candidates = [
+        (checkpoint.get("config") or {}).get("eval_send_threshold"),
+        (checkpoint.get("best_dagger_round") or {}).get("eval_send_threshold"),
+    ]
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _inherit_recurrent_init_eval_send_threshold(cfg: RecurrentConfig) -> float | None:
+    if not cfg.recurrent_init:
+        return None
+    if float(cfg.eval_send_threshold) != float(RecurrentConfig.eval_send_threshold):
+        return None
+    inherited = _checkpoint_eval_send_threshold(cfg.recurrent_init)
+    if inherited is None:
+        return None
+    cfg.eval_send_threshold = float(inherited)
+    return float(inherited)
 
 
 def _recurrent_training_obs_shape(cfg: RecurrentConfig) -> tuple[int, int]:
@@ -9868,6 +12091,8 @@ def _collect_recurrent_rl_rollout(
     redundant_target_scan_penalty_sum = 0.0
     wrong_target_scan_count = 0
     wrong_target_scan_penalty_sum = 0.0
+    eval_decoding_action_correction_count = 0
+    eval_decoding_action_opportunities = 0
 
     train_map_sizes = _training_map_sizes(cfg)
     balanced = bool(cfg.rl_balanced_rollouts and len(train_map_sizes) > 1)
@@ -9964,6 +12189,7 @@ def _collect_recurrent_rl_rollout(
                         "message_tokens": [int(token) for token in msg],
                     }
 
+                sampled_acts = acts.clone()
                 acts, actions = _apply_recurrent_rollout_eval_decoding(
                     active_cfg,
                     model,
@@ -9976,6 +12202,8 @@ def _collect_recurrent_rl_rollout(
                     scan_state,
                 )
                 if active_cfg.rl_rollout_eval_decoding:
+                    eval_decoding_action_correction_count += int((acts != sampled_acts).sum().item())
+                    eval_decoding_action_opportunities += int(acts.numel())
                     send, token_samples, len_samples = _comm_tensors_from_actions(actions, active_cfg, device)
                 logp = action_dist.log_prob(acts) + _recurrent_comm_logp(
                     send_dist,
@@ -10000,6 +12228,7 @@ def _collect_recurrent_rl_rollout(
                 dist = torch.distributions.Categorical(logits=logits)
                 acts = dist.sample()
                 actions = {aid: {"action": int(acts[aid].item()), "message_tokens": []} for aid in range(num_agents)}
+                sampled_acts = acts.clone()
                 acts, actions = _apply_recurrent_rollout_eval_decoding(
                     active_cfg,
                     model,
@@ -10011,6 +12240,9 @@ def _collect_recurrent_rl_rollout(
                     feedback,
                     scan_state,
                 )
+                if active_cfg.rl_rollout_eval_decoding:
+                    eval_decoding_action_correction_count += int((acts != sampled_acts).sum().item())
+                    eval_decoding_action_opportunities += int(acts.numel())
                 logp = dist.log_prob(acts)
 
             prev_positions_for_events = _signal_positions_from_obs(obs)
@@ -10136,6 +12368,8 @@ def _collect_recurrent_rl_rollout(
         "redundant_target_scan_penalty_sum": redundant_target_scan_penalty_sum,
         "wrong_target_scan_count": wrong_target_scan_count,
         "wrong_target_scan_penalty_sum": wrong_target_scan_penalty_sum,
+        "eval_decoding_action_correction_count": eval_decoding_action_correction_count,
+        "eval_decoding_action_opportunities": eval_decoding_action_opportunities,
     }
 
 
@@ -10263,6 +12497,11 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
         redundant_target_scan_penalty_sum = float(rollout.get("redundant_target_scan_penalty_sum", 0.0))
         wrong_target_scan_count = int(rollout.get("wrong_target_scan_count", 0))
         wrong_target_scan_penalty_sum = float(rollout.get("wrong_target_scan_penalty_sum", 0.0))
+        eval_decoding_action_correction_count = int(rollout.get("eval_decoding_action_correction_count", 0))
+        eval_decoding_action_opportunities = int(rollout.get("eval_decoding_action_opportunities", 0))
+        eval_decoding_action_correction_rate = (
+            eval_decoding_action_correction_count / max(1, eval_decoding_action_opportunities)
+        )
 
         # GAE
         values = torch.stack(val_buf)
@@ -10442,7 +12681,8 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
             f"v {total_value_loss / denom:.3f} | kl {total_kl / denom:.4f} | "
             f"comm_kl {total_comm_kl / denom:.4f} | "
             f"ent {total_entropy / denom:.3f} | ret {mean_ret:.2f} | len {mean_len:.1f} | "
-            f"red_scan {redundant_target_scan_count} | wrong_scan {wrong_target_scan_count}"
+            f"red_scan {redundant_target_scan_count} | wrong_scan {wrong_target_scan_count} | "
+            f"assist_corr {eval_decoding_action_correction_count}/{eval_decoding_action_opportunities}"
         )
 
         if wandb_run is not None:
@@ -10484,6 +12724,18 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
                 "rollout/wrong_target_scan_penalty": wrong_target_scan_penalty_sum,
                 "rollout/balanced": int(bool(rollout["balanced"])),
                 "rollout/eval_decoding": int(bool(cfg.rl_rollout_eval_decoding)),
+                "rollout/pipeline_navigation_assist": int(
+                    bool(
+                        cfg.scenario == "pipeline_assembly"
+                        and (
+                            cfg.eval_pipeline_navigation_assist
+                            or cfg.rl_rollout_pipeline_navigation_assist
+                        )
+                    )
+                ),
+                "rollout/eval_decoding_action_corrections": eval_decoding_action_correction_count,
+                "rollout/eval_decoding_action_opportunities": eval_decoding_action_opportunities,
+                "rollout/eval_decoding_action_correction_rate": eval_decoding_action_correction_rate,
                 "rollout/steps": int(T),
                 "update": update,
             }
@@ -10653,6 +12905,7 @@ def main():
     p.add_argument("--obs-memory-mode", choices=["full", "egocentric"], default="full")
     p.add_argument("--obs-memory-radius", type=int, default=4)
     p.add_argument("--obs-navigation-features", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--obs-pipeline-features", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--obs-signal-features", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--obs-signal-sync-feedback", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--obs-signal-scan-state", action=argparse.BooleanOptionalAction, default=False)
@@ -10710,7 +12963,7 @@ def main():
     )
     p.add_argument(
         "--bc-event-action-events",
-        default="picked_resource,delivered,sync_complete,recharged,joint_target_scan",
+        default=RecurrentConfig.bc_event_action_events,
         help="Comma-separated event names that receive --bc-event-action-weight in demos/DAgger",
     )
     p.add_argument("--bc-comm-loss-weight", type=float, default=0.1)
@@ -10803,6 +13056,18 @@ def main():
         default=16,
         help="Minimum Signal Hunt map size for frontier-exploration action labels",
     )
+    p.add_argument("--bc-pipeline-pickup-action-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-pipeline-delivery-action-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-pipeline-bad-pickup-action-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-pipeline-bad-drop-action-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-pipeline-bad-interact-action-loss-weight", type=float, default=0.0)
+    p.add_argument(
+        "--bc-pipeline-proactive-bad-action-labels",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    p.add_argument("--bc-pipeline-plan-action-loss-weight", type=float, default=0.0)
+    p.add_argument("--bc-pipeline-message-loss-weight", type=float, default=0.0)
     p.add_argument("--dagger-rounds", type=int, default=0)
     p.add_argument("--dagger-episodes", type=int, default=20)
     p.add_argument("--dagger-seed-base", type=int, default=10000)
@@ -10832,12 +13097,7 @@ def main():
     )
     p.add_argument(
         "--dagger-focus-events",
-        default=(
-            "decoy_scan,solo_target_scan,rejected_target_scan,"
-            "bad_redundant_target_scan,target_interact_miss,target_pursuit_miss,"
-            "target_decoy_drift_miss,target_discovery_miss,target_handoff_miss,"
-            "movement_stall_miss"
-        ),
+        default=DEFAULT_DAGGER_FOCUS_EVENTS,
     )
     p.add_argument("--dagger-focus-error-weight", type=float, default=3.0)
     p.add_argument("--dagger-focus-recovery-weight", type=float, default=2.0)
@@ -10852,6 +13112,24 @@ def main():
     p.add_argument("--dagger-solo-target-team-weight", type=float, default=1.0)
     p.add_argument("--dagger-early-stop-patience", type=int, default=0)
     p.add_argument("--dagger-focus-replay", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument(
+        "--dagger-pipeline-wrong-delivery-provenance-labels",
+        action=argparse.BooleanOptionalAction,
+        default=RecurrentConfig.dagger_pipeline_wrong_delivery_provenance_labels,
+        help=(
+            "Experimental Pipeline DAgger labeler: trace wrong-delivery events back "
+            "to earlier model-only pickups of the same carried resource"
+        ),
+    )
+    p.add_argument(
+        "--dagger-pipeline-wrong-delivery-provenance-weight",
+        type=float,
+        default=RecurrentConfig.dagger_pipeline_wrong_delivery_provenance_weight,
+        help=(
+            "Focused replay weight for wrong-delivery root pickup examples. "
+            "Negative values reuse --dagger-focus-error-weight."
+        ),
+    )
     p.add_argument("--dagger-replay-pre-steps", type=int, default=2)
     p.add_argument("--dagger-replay-post-steps", type=int, default=2)
     p.add_argument("--dagger-replay-weight", type=float, default=1.0)
@@ -10986,6 +13264,21 @@ def main():
             "Apply eval-time recurrent action/message decoder assists during PPO rollout collection. "
             "This is an opt-in guided fine-tuning mode."
         ),
+    )
+    p.add_argument(
+        "--rl-rollout-pipeline-navigation-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use Pipeline Assembly navigation assist during PPO rollout collection without enabling "
+            "assisted evaluation."
+        ),
+    )
+    p.add_argument(
+        "--rl-rollout-pipeline-navigation-assist-trust-messages",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow Pipeline rollout navigation assist to use decoded teammate plan messages.",
     )
     p.add_argument("--rl-redundant-target-scan-penalty", type=float, default=0.0)
     p.add_argument("--rl-wrong-target-scan-penalty", type=float, default=0.0)
@@ -11147,6 +13440,24 @@ def main():
         default=0.5,
         help="Remaining scan-window fraction at or below which refresh assist forces interact",
     )
+    p.add_argument(
+        "--eval-pipeline-navigation-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use decoded Pipeline Assembly plans to force local pickup/delivery/navigation "
+            "corrections during recurrent eval"
+        ),
+    )
+    p.add_argument(
+        "--eval-pipeline-navigation-assist-trust-messages",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Allow Pipeline navigation assist to trust learned planner messages when no "
+            "private Pipeline hint is available"
+        ),
+    )
     p.add_argument("--wandb", action="store_true")
     p.add_argument("--wandb-project", default="syncorsink")
     p.add_argument("--wandb-run", default=None)
@@ -11173,6 +13484,7 @@ def main():
         obs_memory_mode=args.obs_memory_mode,
         obs_memory_radius=args.obs_memory_radius,
         obs_navigation_features=args.obs_navigation_features,
+        obs_pipeline_features=args.obs_pipeline_features,
         obs_signal_features=args.obs_signal_features,
         obs_signal_sync_feedback=args.obs_signal_sync_feedback,
         obs_signal_scan_state=args.obs_signal_scan_state,
@@ -11272,6 +13584,14 @@ def main():
         bc_signal_frontier_exploration_min_map_size=(
             args.bc_signal_frontier_exploration_min_map_size
         ),
+        bc_pipeline_pickup_action_loss_weight=args.bc_pipeline_pickup_action_loss_weight,
+        bc_pipeline_delivery_action_loss_weight=args.bc_pipeline_delivery_action_loss_weight,
+        bc_pipeline_bad_pickup_action_loss_weight=args.bc_pipeline_bad_pickup_action_loss_weight,
+        bc_pipeline_bad_drop_action_loss_weight=args.bc_pipeline_bad_drop_action_loss_weight,
+        bc_pipeline_bad_interact_action_loss_weight=args.bc_pipeline_bad_interact_action_loss_weight,
+        bc_pipeline_proactive_bad_action_labels=args.bc_pipeline_proactive_bad_action_labels,
+        bc_pipeline_plan_action_loss_weight=args.bc_pipeline_plan_action_loss_weight,
+        bc_pipeline_message_loss_weight=args.bc_pipeline_message_loss_weight,
         dagger_rounds=args.dagger_rounds,
         dagger_episodes=args.dagger_episodes,
         dagger_seed_base=args.dagger_seed_base,
@@ -11296,6 +13616,12 @@ def main():
         dagger_solo_target_team_weight=args.dagger_solo_target_team_weight,
         dagger_early_stop_patience=args.dagger_early_stop_patience,
         dagger_focus_replay=args.dagger_focus_replay,
+        dagger_pipeline_wrong_delivery_provenance_labels=(
+            args.dagger_pipeline_wrong_delivery_provenance_labels
+        ),
+        dagger_pipeline_wrong_delivery_provenance_weight=(
+            args.dagger_pipeline_wrong_delivery_provenance_weight
+        ),
         dagger_replay_pre_steps=args.dagger_replay_pre_steps,
         dagger_replay_post_steps=args.dagger_replay_post_steps,
         dagger_replay_weight=args.dagger_replay_weight,
@@ -11325,6 +13651,10 @@ def main():
         rl_balanced_rollouts=args.rl_balanced_rollouts,
         rl_rollout_map_steps=args.rl_rollout_map_steps,
         rl_rollout_eval_decoding=args.rl_rollout_eval_decoding,
+        rl_rollout_pipeline_navigation_assist=args.rl_rollout_pipeline_navigation_assist,
+        rl_rollout_pipeline_navigation_assist_trust_messages=(
+            args.rl_rollout_pipeline_navigation_assist_trust_messages
+        ),
         rl_redundant_target_scan_penalty=args.rl_redundant_target_scan_penalty,
         rl_wrong_target_scan_penalty=args.rl_wrong_target_scan_penalty,
         rl_epochs=args.rl_epochs,
@@ -11372,6 +13702,8 @@ def main():
         eval_signal_exact_target_memory_steps=args.eval_signal_exact_target_memory_steps,
         eval_signal_scan_refresh_assist=args.eval_signal_scan_refresh_assist,
         eval_signal_scan_refresh_threshold=args.eval_signal_scan_refresh_threshold,
+        eval_pipeline_navigation_assist=args.eval_pipeline_navigation_assist,
+        eval_pipeline_navigation_assist_trust_messages=args.eval_pipeline_navigation_assist_trust_messages,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run=args.wandb_run,
@@ -11386,6 +13718,12 @@ def main():
     initial_dagger_model = None
     if cfg.recurrent_init:
         print("=== Step 1: Loading recurrent init checkpoint ===")
+        inherited_threshold = _inherit_recurrent_init_eval_send_threshold(cfg)
+        if inherited_threshold is not None:
+            print(
+                "Inherited recurrent init eval send threshold "
+                f"{inherited_threshold:.3f} from {cfg.recurrent_init}"
+            )
         model = load_recurrent_actor_checkpoint(cfg.recurrent_init, cfg, device)
         initial_dagger_model = model if cfg.recurrent_init_for_dagger else None
         print(f"Loaded recurrent init checkpoint from {cfg.recurrent_init}")
@@ -11463,6 +13801,27 @@ def main():
                             episodes,
                             "signal_sync_response_action_mask",
                         )
+                    ),
+                    "demo/pipeline_pickup_action_labels": int(
+                        _episode_count_label_mask(episodes, "pipeline_pickup_action_mask")
+                    ),
+                    "demo/pipeline_delivery_action_labels": int(
+                        _episode_count_label_mask(episodes, "pipeline_delivery_action_mask")
+                    ),
+                    "demo/pipeline_plan_action_labels": int(
+                        _episode_count_label_mask(episodes, "pipeline_plan_action_mask")
+                    ),
+                    "demo/pipeline_message_labels": int(
+                        _episode_count_label_mask(episodes, "pipeline_message_mask")
+                    ),
+                    "demo/pipeline_bad_pickup_action_labels": int(
+                        _episode_count_label_mask(episodes, "pipeline_bad_pickup_action_mask")
+                    ),
+                    "demo/pipeline_bad_drop_action_labels": int(
+                        _episode_count_label_mask(episodes, "pipeline_bad_drop_action_mask")
+                    ),
+                    "demo/pipeline_bad_interact_action_labels": int(
+                        _episode_count_label_mask(episodes, "pipeline_bad_interact_action_mask")
                     ),
                     "demo/target_aux_labels": int(
                         _episode_count_label_mask(episodes, "signal_target_aux_mask")

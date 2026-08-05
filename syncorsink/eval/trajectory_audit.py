@@ -236,7 +236,7 @@ def make_recurrent_checkpoint_policy_factory(
     checkpoint: str | Path,
     *,
     device: str = "cpu",
-    eval_send_threshold: float = 0.25,
+    eval_send_threshold: float | None = None,
     eval_signal_scan_gate_threshold: float | None = None,
     eval_signal_scan_gate_suppress: bool | None = None,
     eval_signal_target_validity_threshold: float | None = None,
@@ -250,6 +250,8 @@ def make_recurrent_checkpoint_policy_factory(
     eval_signal_exact_target_memory_steps: int | None = None,
     eval_signal_scan_refresh_assist: bool | None = None,
     eval_signal_scan_refresh_threshold: float | None = None,
+    eval_pipeline_navigation_assist: bool | None = None,
+    eval_pipeline_navigation_assist_trust_messages: bool | None = None,
 ) -> PolicyFactory:
     def _factory(env: SyncOrSinkEnv) -> PolicyFn:
         del env
@@ -272,6 +274,8 @@ def make_recurrent_checkpoint_policy_factory(
             eval_signal_exact_target_memory_steps=eval_signal_exact_target_memory_steps,
             eval_signal_scan_refresh_assist=eval_signal_scan_refresh_assist,
             eval_signal_scan_refresh_threshold=eval_signal_scan_refresh_threshold,
+            eval_pipeline_navigation_assist=eval_pipeline_navigation_assist,
+            eval_pipeline_navigation_assist_trust_messages=eval_pipeline_navigation_assist_trust_messages,
         )
 
     return _factory
@@ -351,6 +355,32 @@ def signal_failure_type(row: Mapping[str, Any]) -> str:
     return "unsynchronized_target_scan"
 
 
+def pipeline_failure_type(row: Mapping[str, Any]) -> str:
+    if row.get("success"):
+        return "success"
+    pipeline = row.get("pipeline") or {}
+    events = row.get("event_counts") or {}
+    if int(events.get("pipeline_wrong_delivery", 0)) > 0:
+        return "wrong_delivery"
+    if int(events.get("pipeline_dependency_blocked", 0)) > 0:
+        return "dependency_blocked"
+    if int(events.get("pipeline_sync_wait", 0)) > 0 or int(pipeline.get("missed_sync_interacts", 0)) > 0:
+        return "sync_wait"
+    if int(pipeline.get("max_delivered_resources", 0)) == 0:
+        if int(pipeline.get("missed_pickup_opportunities", 0)) > 0:
+            return "missed_pickup"
+        return "no_delivery"
+    if int(pipeline.get("max_stages_completed", 0)) == 0:
+        if int(pipeline.get("missed_delivery_opportunities", 0)) > 0:
+            return "missed_delivery"
+        return "no_stage_completed"
+    if int(pipeline.get("stages_completed", 0)) < int(pipeline.get("stages_total", 0)):
+        return "partial_pipeline"
+    if row.get("truncated"):
+        return "timeout"
+    return "terminated_failure"
+
+
 def generic_failure_type(row: Mapping[str, Any]) -> str:
     if row.get("success"):
         return "success"
@@ -382,15 +412,16 @@ def _run_single_episode(
     event_counts: Counter[str] = Counter()
     action_counts: Counter[str] = Counter()
     signal = _new_signal_episode_state(env, include_trace=include_signal_trace)
+    pipeline = _new_pipeline_episode_state(env)
     last_info: dict[str, Any] = {}
 
     while not (done or truncated):
         actions = policy(obs, info, {"step": steps})
-        _record_actions(env, actions, action_counts, signal)
+        _record_actions(env, actions, action_counts, signal, pipeline)
         obs, rewards, done, truncated, info = env.step(actions)
         last_info = info or {}
-        _record_events(last_info, event_counts, signal)
-        _record_post_step(env, signal)
+        _record_events(last_info, event_counts, signal, pipeline)
+        _record_post_step(env, signal, pipeline)
 
         steps += 1
         total_reward += sum(rewards.values())
@@ -428,6 +459,9 @@ def _run_single_episode(
     if scenario == "signal_hunt":
         row["signal"] = _finalize_signal_episode_state(env, signal)
         row["failure_type"] = signal_failure_type(row)
+    elif scenario == "pipeline_assembly":
+        row["pipeline"] = _finalize_pipeline_episode_state(env, pipeline)
+        row["failure_type"] = pipeline_failure_type(row)
     else:
         row["failure_type"] = generic_failure_type(row)
     return row, ep_stats
@@ -438,11 +472,14 @@ def _record_actions(
     actions: Mapping[int, Any],
     action_counts: Counter[str],
     signal: dict[str, Any],
+    pipeline: dict[str, Any],
 ) -> None:
     target = signal.get("target")
     step = int(signal.get("step", 0))
     if target is not None:
         signal.setdefault("trace", []).append(_signal_trace_pre_step(env, actions, step))
+    if pipeline.get("active"):
+        _record_pipeline_action_opportunities(env, actions, pipeline)
     for agent_id, action in actions.items():
         action_id = _action_id(action)
         action_counts[str(action_id)] += 1
@@ -450,6 +487,9 @@ def _record_actions(
         if message_tokens:
             signal["message_steps"].add(step)
             signal["message_tokens"] += len(message_tokens)
+            if pipeline.get("active"):
+                pipeline["message_steps"].add(step)
+                pipeline["message_tokens"] += len(message_tokens)
         if target is not None and action_id == env.ACTION_INTERACT:
             if env.agent_positions[int(agent_id)] == target:
                 signal["target_scans"].append((step, int(agent_id)))
@@ -460,6 +500,7 @@ def _record_events(
     info: Mapping[str, Any],
     event_counts: Counter[str],
     signal: dict[str, Any],
+    pipeline: dict[str, Any],
 ) -> None:
     if signal.get("target") is not None and signal.get("trace"):
         signal["trace"][-1]["events"] = _signal_events_by_agent(info)
@@ -470,20 +511,23 @@ def _record_events(
             signal["clues_found"] += 1
         elif name == "decoy_scan":
             signal["decoy_scans"] += 1
+        if pipeline.get("active"):
+            pipeline["event_counts"][name] += 1
 
 
-def _record_post_step(env: SyncOrSinkEnv, signal: dict[str, Any]) -> None:
+def _record_post_step(env: SyncOrSinkEnv, signal: dict[str, Any], pipeline: dict[str, Any]) -> None:
     target = signal.get("target")
-    if target is None:
-        return
-    if signal.get("trace"):
-        signal["trace"][-1].update(_signal_trace_post_step(env))
-    distances = [manhattan(pos, target) for pos in env.agent_positions]
-    signal["min_target_distances"].append(min(distances))
-    signal["avg_target_distances"].append(sum(distances) / len(distances))
-    radius = int(getattr(env.config, "signal_colocation_radius", 2))
-    if sum(1 for dist in distances if dist <= radius) >= 2:
-        signal["both_near_target_steps"] += 1
+    if target is not None:
+        if signal.get("trace"):
+            signal["trace"][-1].update(_signal_trace_post_step(env))
+        distances = [manhattan(pos, target) for pos in env.agent_positions]
+        signal["min_target_distances"].append(min(distances))
+        signal["avg_target_distances"].append(sum(distances) / len(distances))
+        radius = int(getattr(env.config, "signal_colocation_radius", 2))
+        if sum(1 for dist in distances if dist <= radius) >= 2:
+            signal["both_near_target_steps"] += 1
+    if pipeline.get("active"):
+        _record_pipeline_progress(env, pipeline)
 
 
 def _new_signal_episode_state(env: SyncOrSinkEnv, *, include_trace: bool = False) -> dict[str, Any]:
@@ -542,6 +586,182 @@ def _finalize_signal_episode_state(env: SyncOrSinkEnv, signal: Mapping[str, Any]
     if bool(signal.get("include_trace", False)):
         result["trace"] = trace
     return result
+
+
+def _new_pipeline_episode_state(env: SyncOrSinkEnv) -> dict[str, Any]:
+    active = getattr(env.config, "scenario", None) == "pipeline_assembly"
+    return {
+        "active": active,
+        "message_steps": set(),
+        "message_tokens": 0,
+        "event_counts": Counter(),
+        "progress": [],
+        "pickup_opportunities": 0,
+        "missed_pickup_opportunities": 0,
+        "delivery_opportunities": 0,
+        "missed_delivery_opportunities": 0,
+        "sync_interact_opportunities": 0,
+        "missed_sync_interacts": 0,
+        "drop_actions": 0,
+        "stall_near_resource_steps": 0,
+        "stall_near_station_steps": 0,
+        "max_stages_completed": 0,
+        "max_delivered_resources": 0,
+    }
+
+
+def _record_pipeline_action_opportunities(
+    env: SyncOrSinkEnv,
+    actions: Mapping[int, Any],
+    pipeline: dict[str, Any],
+) -> None:
+    stage = _pipeline_target_stage(env)
+    if stage is None:
+        return
+    station = _coerce_pos(stage.get("station"))
+    if station is None:
+        return
+    needs = _pipeline_stage_needs(stage)
+    resources = env.scenario_state.data.get("resource_types", {})
+    for agent_id in range(env.num_agents):
+        action = actions.get(agent_id, actions.get(str(agent_id), {"action": env.ACTION_STAY}))
+        action_id = _action_id(action)
+        pos = tuple(env.agent_positions[int(agent_id)])
+        inv = int(env.inventories[int(agent_id)])
+        if action_id == env.ACTION_DROP:
+            pipeline["drop_actions"] += 1
+        if inv == 0 and int(resources.get(pos, 0)) in needs:
+            pipeline["pickup_opportunities"] += 1
+            if action_id != env.ACTION_PICKUP:
+                pipeline["missed_pickup_opportunities"] += 1
+            if action_id == env.ACTION_STAY:
+                pipeline["stall_near_resource_steps"] += 1
+        if inv in needs and pos == station:
+            pipeline["delivery_opportunities"] += 1
+            if action_id != env.ACTION_INTERACT:
+                pipeline["missed_delivery_opportunities"] += 1
+        if inv in needs and manhattan(pos, station) <= 1 and action_id == env.ACTION_STAY:
+            pipeline["stall_near_station_steps"] += 1
+        if not needs and bool(stage.get("sync")) and pos == station:
+            pipeline["sync_interact_opportunities"] += 1
+            if action_id != env.ACTION_INTERACT:
+                pipeline["missed_sync_interacts"] += 1
+
+
+def _record_pipeline_progress(env: SyncOrSinkEnv, pipeline: dict[str, Any]) -> None:
+    summary = _pipeline_progress_summary(env)
+    pipeline["progress"].append(summary)
+    pipeline["max_stages_completed"] = max(
+        int(pipeline.get("max_stages_completed", 0)),
+        int(summary.get("stages_completed", 0)),
+    )
+    pipeline["max_delivered_resources"] = max(
+        int(pipeline.get("max_delivered_resources", 0)),
+        int(summary.get("delivered_resources", 0)),
+    )
+
+
+def _finalize_pipeline_episode_state(env: SyncOrSinkEnv, pipeline: Mapping[str, Any]) -> dict[str, Any]:
+    summary = _pipeline_progress_summary(env)
+    required = int(summary.get("required_resources", 0))
+    total = int(summary.get("stages_total", 0))
+    result = {
+        **summary,
+        "completion_ratio": (
+            float(summary["stages_completed"]) / float(total)
+            if total > 0 else 0.0
+        ),
+        "delivery_ratio": (
+            float(summary["delivered_resources"]) / float(required)
+            if required > 0 else 0.0
+        ),
+        "max_stages_completed": int(pipeline.get("max_stages_completed", summary["stages_completed"])),
+        "max_delivered_resources": int(pipeline.get("max_delivered_resources", summary["delivered_resources"])),
+        "message_steps": len(pipeline.get("message_steps", set())),
+        "message_tokens": int(pipeline.get("message_tokens", 0)),
+        "pickup_opportunities": int(pipeline.get("pickup_opportunities", 0)),
+        "missed_pickup_opportunities": int(pipeline.get("missed_pickup_opportunities", 0)),
+        "delivery_opportunities": int(pipeline.get("delivery_opportunities", 0)),
+        "missed_delivery_opportunities": int(pipeline.get("missed_delivery_opportunities", 0)),
+        "sync_interact_opportunities": int(pipeline.get("sync_interact_opportunities", 0)),
+        "missed_sync_interacts": int(pipeline.get("missed_sync_interacts", 0)),
+        "drop_actions": int(pipeline.get("drop_actions", 0)),
+        "stall_near_resource_steps": int(pipeline.get("stall_near_resource_steps", 0)),
+        "stall_near_station_steps": int(pipeline.get("stall_near_station_steps", 0)),
+        "event_counts": dict(sorted((pipeline.get("event_counts") or {}).items())),
+        "stage_summaries": _pipeline_stage_summaries(env),
+    }
+    return result
+
+
+def _pipeline_target_stage(env: SyncOrSinkEnv) -> Mapping[str, Any] | None:
+    stages = env.scenario_state.data.get("stages", [])
+    open_stages = [stage for stage in stages if not bool(stage.get("done"))]
+    if not open_stages:
+        return None
+    available = [
+        stage
+        for stage in open_stages
+        if all(bool(stages[d].get("done")) for d in stage.get("deps", []))
+    ]
+    return (available or open_stages)[0]
+
+
+def _pipeline_stage_needs(stage: Mapping[str, Any]) -> list[int]:
+    required = [int(value) for value in stage.get("required", [])]
+    delivered = [int(value) for value in stage.get("delivered", [])]
+    needs: list[int] = []
+    for value in required:
+        if value in delivered:
+            delivered.remove(value)
+        else:
+            needs.append(value)
+    return needs
+
+
+def _pipeline_progress_summary(env: SyncOrSinkEnv) -> dict[str, int]:
+    stages = env.scenario_state.data.get("stages", [])
+    stages_total = len(stages)
+    stages_completed = sum(1 for stage in stages if bool(stage.get("done")))
+    required_resources = sum(len(stage.get("required", [])) for stage in stages)
+    delivered_resources = sum(len(stage.get("delivered", [])) for stage in stages)
+    ready_stages = 0
+    dependency_blocked_stages = 0
+    sync_ready_stages = 0
+    for stage in stages:
+        if bool(stage.get("done")):
+            continue
+        deps_done = all(bool(stages[d].get("done")) for d in stage.get("deps", []))
+        requirements_met = not _pipeline_stage_needs(stage)
+        if deps_done:
+            ready_stages += 1
+        elif requirements_met:
+            dependency_blocked_stages += 1
+        if deps_done and requirements_met and bool(stage.get("sync")):
+            sync_ready_stages += 1
+    return {
+        "stages_total": int(stages_total),
+        "stages_completed": int(stages_completed),
+        "required_resources": int(required_resources),
+        "delivered_resources": int(delivered_resources),
+        "ready_stages": int(ready_stages),
+        "dependency_blocked_stages": int(dependency_blocked_stages),
+        "sync_ready_stages": int(sync_ready_stages),
+    }
+
+
+def _pipeline_stage_summaries(env: SyncOrSinkEnv) -> list[dict[str, Any]]:
+    rows = []
+    for stage in env.scenario_state.data.get("stages", []):
+        rows.append({
+            "stage": int(stage.get("stage", len(rows))),
+            "done": bool(stage.get("done")),
+            "required_count": len(stage.get("required", [])),
+            "delivered_count": len(stage.get("delivered", [])),
+            "dependency_count": len(stage.get("deps", [])),
+            "sync": bool(stage.get("sync")),
+        })
+    return rows
 
 
 def _signal_trace_pre_step(
@@ -890,6 +1110,22 @@ def _compact_signal_lifecycle(lifecycle: Mapping[str, Any]) -> dict[str, Any]:
     return {key: lifecycle.get(key) for key in keys if key in lifecycle}
 
 
+def _compact_pipeline_summary(pipeline: Mapping[str, Any]) -> dict[str, Any]:
+    keys = (
+        "stages_completed",
+        "stages_total",
+        "completion_ratio",
+        "delivered_resources",
+        "required_resources",
+        "delivery_ratio",
+        "missed_pickup_opportunities",
+        "missed_delivery_opportunities",
+        "missed_sync_interacts",
+        "drop_actions",
+    )
+    return {key: pipeline.get(key) for key in keys if key in pipeline}
+
+
 def _coerce_pos(pos: Any) -> tuple[int, int] | None:
     if pos is None:
         return None
@@ -988,6 +1224,35 @@ def _summarize_episode_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 ),
                 "diagnosis_counts": dict(sorted(diagnosis_counts.items())),
             }
+    pipeline_rows = [row["pipeline"] for row in rows if "pipeline" in row]
+    if pipeline_rows:
+        diagnostics["pipeline"] = {
+            "avg_stages_completed": _avg_key(pipeline_rows, "stages_completed"),
+            "avg_completion_ratio": _avg_key(pipeline_rows, "completion_ratio"),
+            "avg_delivered_resources": _avg_key(pipeline_rows, "delivered_resources"),
+            "avg_delivery_ratio": _avg_key(pipeline_rows, "delivery_ratio"),
+            "avg_message_steps": _avg_key(pipeline_rows, "message_steps"),
+            "avg_message_tokens": _avg_key(pipeline_rows, "message_tokens"),
+            "avg_pickup_opportunities": _avg_key(pipeline_rows, "pickup_opportunities"),
+            "avg_missed_pickup_opportunities": _avg_key(pipeline_rows, "missed_pickup_opportunities"),
+            "avg_delivery_opportunities": _avg_key(pipeline_rows, "delivery_opportunities"),
+            "avg_missed_delivery_opportunities": _avg_key(pipeline_rows, "missed_delivery_opportunities"),
+            "avg_sync_interact_opportunities": _avg_key(pipeline_rows, "sync_interact_opportunities"),
+            "avg_missed_sync_interacts": _avg_key(pipeline_rows, "missed_sync_interacts"),
+            "avg_drop_actions": _avg_key(pipeline_rows, "drop_actions"),
+            "avg_stall_near_resource_steps": _avg_key(pipeline_rows, "stall_near_resource_steps"),
+            "avg_stall_near_station_steps": _avg_key(pipeline_rows, "stall_near_station_steps"),
+            "episodes_with_all_stages_completed": sum(
+                1
+                for row in pipeline_rows
+                if int(row.get("stages_completed", 0)) >= int(row.get("stages_total", 0))
+            ),
+            "episodes_with_all_resources_delivered": sum(
+                1
+                for row in pipeline_rows
+                if int(row.get("delivered_resources", 0)) >= int(row.get("required_resources", 0))
+            ),
+        }
     return diagnostics
 
 
@@ -1008,6 +1273,9 @@ def _compare_by_seed(policy_results: list[dict[str, Any]]) -> list[dict[str, Any
             lifecycle = signal.get("lifecycle") if isinstance(signal, Mapping) else None
             if isinstance(lifecycle, Mapping):
                 policy_row["signal_lifecycle"] = _compact_signal_lifecycle(lifecycle)
+            pipeline = row.get("pipeline") or {}
+            if isinstance(pipeline, Mapping):
+                policy_row["pipeline"] = _compact_pipeline_summary(pipeline)
             by_seed[seed][label] = policy_row
     return [by_seed[seed] for seed in sorted(by_seed)]
 
