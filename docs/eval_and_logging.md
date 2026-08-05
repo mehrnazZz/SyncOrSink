@@ -236,9 +236,18 @@ Pipeline Assembly diagnostics:
   `--rl-rollout-eval-decoding`; use
   `--rl-rollout-pipeline-navigation-assist-trust-messages` only for runs that
   intentionally train from teammate-message plans.
+- `--rl-pipeline-bad-pickup-penalty` and
+  `--rl-pipeline-unneeded-drop-bonus` shape recurrent PPO rewards for confirmed
+  Pipeline pickup/drop events involving no-longer-needed resources. W&B logs
+  `rollout/pipeline_bad_pickups`, `rollout/pipeline_unneeded_drops`, and
+  `rollout/pipeline_wrong_deliveries` so these runs can be compared against the
+  trajectory audit.
 - The trajectory audit reports Pipeline failure types such as `missed_pickup`,
   `missed_delivery`, `sync_wait`, `dependency_blocked`, `wrong_delivery`, and
-  `partial_pipeline`, plus aggregate stage-completion and delivery ratios.
+  `partial_pipeline`, plus aggregate stage-completion and delivery ratios. It
+  also reports pickup need-status counts, station delivery-decision counts, and
+  wrong-delivery provenance so you can distinguish bad pickups from wrong
+  station choices.
 
 PPO stability controls:
 

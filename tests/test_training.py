@@ -4789,6 +4789,90 @@ def test_recurrent_pipeline_plan_action_and_message_labels_follow_trusted_plan()
     assert ep_data["pipeline_bad_drop_action_id"] == [env.ACTION_DROP, -1]
 
 
+def test_recurrent_pipeline_ppo_bad_pickup_reward_shaping():
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.train.recurrent_bc_rl import (
+        _apply_pipeline_bad_pickup_reward_shaping,
+        _pipeline_bad_pickup_agents,
+        _pipeline_resource_need_status,
+        _pipeline_unneeded_drop_agents,
+    )
+
+    env = SyncOrSinkEnv(
+        SyncOrSinkConfig(
+            scenario="pipeline_assembly",
+            map_size=8,
+            num_agents=2,
+            fov_preset="easy",
+            pipeline_stage_count=1,
+            pipeline_required_per_stage_min=1,
+            pipeline_required_per_stage_max=1,
+            pipeline_sync_probability=0.0,
+            pipeline_dependency_probability=0.0,
+        )
+    )
+    env.reset(seed=0)
+    stage = env.scenario_state.data["stages"][0]
+    needed_type = int(stage["required"][0])
+    unneeded_pos, unneeded_type = next(
+        (pos, int(resource_type))
+        for pos, resource_type in env.scenario_state.data["resource_types"].items()
+        if int(resource_type) != needed_type
+    )
+
+    env.agent_positions[0] = tuple(unneeded_pos)
+    env.inventories[0] = 0
+    pickup_actions = {
+        0: {"action": env.ACTION_PICKUP, "message_tokens": []},
+        1: {"action": env.ACTION_STAY, "message_tokens": []},
+    }
+
+    assert _pipeline_resource_need_status(env, unneeded_type) == "not_required"
+    assert _pipeline_bad_pickup_agents(env, pickup_actions) == [0]
+
+    _obs, rewards, _done, _truncated, info = env.step(pickup_actions)
+    count, penalty_sum, drop_count, bonus_sum = _apply_pipeline_bad_pickup_reward_shaping(
+        rewards,
+        info=info,
+        num_agents=2,
+        bad_pickup_candidates=[0],
+        unneeded_drop_candidates=[],
+        bad_pickup_penalty=0.2,
+        unneeded_drop_bonus=0.1,
+    )
+
+    assert count == 1
+    assert penalty_sum == pytest.approx(0.2)
+    assert drop_count == 0
+    assert bonus_sum == 0.0
+    assert rewards[0] == pytest.approx(-0.2)
+    assert rewards[1] == pytest.approx(0.0)
+
+    drop_actions = {
+        0: {"action": env.ACTION_DROP, "message_tokens": []},
+        1: {"action": env.ACTION_STAY, "message_tokens": []},
+    }
+    assert _pipeline_unneeded_drop_agents(env, drop_actions) == [0]
+
+    _obs, rewards, _done, _truncated, info = env.step(drop_actions)
+    count, penalty_sum, drop_count, bonus_sum = _apply_pipeline_bad_pickup_reward_shaping(
+        rewards,
+        info=info,
+        num_agents=2,
+        bad_pickup_candidates=[],
+        unneeded_drop_candidates=[0],
+        bad_pickup_penalty=0.2,
+        unneeded_drop_bonus=0.1,
+    )
+
+    assert count == 0
+    assert penalty_sum == 0.0
+    assert drop_count == 1
+    assert bonus_sum == pytest.approx(0.1)
+    assert rewards[0] == pytest.approx(0.1)
+    assert rewards[1] == pytest.approx(0.0)
+
+
 def test_recurrent_signal_features_decode_targets_and_keep_mask_safe():
     from syncorsink.envs.maps import TILE_TARGET
     from syncorsink.train.mappo import action_mask_from_flat_obs

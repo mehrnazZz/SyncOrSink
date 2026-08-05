@@ -129,6 +129,8 @@ RECURRENT_PPO_PROFILES = {
         "recurrent_rl_rollout_eval_decoding": False,
         "recurrent_rl_rollout_pipeline_navigation_assist": False,
         "recurrent_rl_rollout_pipeline_navigation_assist_trust_messages": False,
+        "recurrent_rl_pipeline_bad_pickup_penalty": 0.0,
+        "recurrent_rl_pipeline_unneeded_drop_bonus": 0.0,
         "recurrent_rl_early_stop_eval_patience": 0,
     },
     "guarded": {
@@ -142,6 +144,8 @@ RECURRENT_PPO_PROFILES = {
         "recurrent_rl_rollout_eval_decoding": True,
         "recurrent_rl_rollout_pipeline_navigation_assist": False,
         "recurrent_rl_rollout_pipeline_navigation_assist_trust_messages": False,
+        "recurrent_rl_pipeline_bad_pickup_penalty": 0.1,
+        "recurrent_rl_pipeline_unneeded_drop_bonus": 0.05,
         "recurrent_rl_early_stop_eval_patience": 4,
     },
 }
@@ -398,6 +402,10 @@ def _build_recurrent_command(
         str(args.recurrent_bc_kl_coeff),
         "--bc-comm-kl-coeff",
         str(args.recurrent_bc_comm_kl_coeff),
+        "--rl-pipeline-bad-pickup-penalty",
+        str(args.recurrent_rl_pipeline_bad_pickup_penalty),
+        "--rl-pipeline-unneeded-drop-bonus",
+        str(args.recurrent_rl_pipeline_unneeded_drop_bonus),
         "--rl-eval-every",
         str(args.eval_every),
         "--rl-eval-episodes",
@@ -751,6 +759,8 @@ def run_suite(args) -> dict:
             "recurrent_rl_rollout_pipeline_navigation_assist_trust_messages": (
                 args.recurrent_rl_rollout_pipeline_navigation_assist_trust_messages
             ),
+            "recurrent_rl_pipeline_bad_pickup_penalty": args.recurrent_rl_pipeline_bad_pickup_penalty,
+            "recurrent_rl_pipeline_unneeded_drop_bonus": args.recurrent_rl_pipeline_unneeded_drop_bonus,
             "recurrent_rl_restore_best": args.recurrent_rl_restore_best,
             "recurrent_rl_save_best": args.recurrent_rl_save_best,
             "recurrent_train_map_sizes": args.recurrent_train_map_sizes,
@@ -1362,6 +1372,8 @@ def parse_args(argv: list[str] | None = None):
         action=argparse.BooleanOptionalAction,
         default=None,
     )
+    parser.add_argument("--recurrent-rl-pipeline-bad-pickup-penalty", type=float, default=None)
+    parser.add_argument("--recurrent-rl-pipeline-unneeded-drop-bonus", type=float, default=None)
     parser.add_argument("--recurrent-rl-restore-best", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--recurrent-rl-save-best", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--recurrent-train-map-sizes", default="")

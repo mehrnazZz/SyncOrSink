@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 
 import pytest
 
@@ -110,6 +111,92 @@ def test_pipeline_trajectory_audit_failure_classifier():
             "max_delivered_resources": 1,
         },
     }) == "partial_pipeline"
+
+
+def test_pipeline_trajectory_audit_wrong_delivery_provenance():
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.eval.trajectory_audit import (
+        _finalize_pipeline_episode_state,
+        _new_pipeline_episode_state,
+        _record_events,
+        _record_pipeline_action_opportunities,
+        _summarize_episode_rows,
+    )
+
+    env = SyncOrSinkEnv(SyncOrSinkConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        num_agents=3,
+        fov_preset="easy",
+        max_steps=20,
+        pipeline_stage_count=1,
+        pipeline_required_per_stage_min=1,
+        pipeline_required_per_stage_max=1,
+        pipeline_sync_probability=0.0,
+        pipeline_dependency_probability=0.0,
+    ))
+    env.reset(seed=0)
+    station = (3, 3)
+    resource = (2, 3)
+    env.scenario_state.data["stages"] = [{
+        "stage": 0,
+        "station": station,
+        "required": [1],
+        "delivered": [],
+        "deps": [],
+        "sync": False,
+        "done": False,
+    }]
+    env.scenario_state.data["resource_types"] = {resource: 2}
+    env.agent_positions[0] = resource
+    env.inventories[0] = 0
+
+    pipeline = _new_pipeline_episode_state(env)
+    signal = {"target": None}
+    _record_pipeline_action_opportunities(
+        env,
+        {0: {"action": env.ACTION_PICKUP}, 1: {"action": env.ACTION_STAY}, 2: {"action": env.ACTION_STAY}},
+        pipeline,
+    )
+    _record_events(
+        {"events": {0: [{"event": "picked_resource", "resource_type": 2}]}},
+        Counter(),
+        signal,
+        pipeline,
+    )
+
+    env.agent_positions[0] = station
+    env.inventories[0] = 2
+    _record_pipeline_action_opportunities(
+        env,
+        {0: {"action": env.ACTION_INTERACT}, 1: {"action": env.ACTION_STAY}, 2: {"action": env.ACTION_STAY}},
+        pipeline,
+    )
+    _record_events(
+        {"events": {0: [{"event": "pipeline_wrong_delivery", "resource_type": 2}]}},
+        Counter(),
+        signal,
+        pipeline,
+    )
+
+    finalized = _finalize_pipeline_episode_state(env, pipeline)
+    assert finalized["pickup_status_counts"] == {"not_required": 1}
+    assert finalized["delivery_decision_counts"] == {"wrong_resource_for_station": 1}
+    assert finalized["wrong_delivery_provenance_counts"] == {"not_required": 1}
+    assert finalized["wrong_delivery_decision_counts"] == {"wrong_resource_for_station": 1}
+    assert finalized["wrong_delivery_events"] == 1
+    assert finalized["wrong_delivery_after_unneeded_pickup"] == 1
+
+    summary = _summarize_episode_rows([{
+        "failure_type": "wrong_delivery",
+        "event_counts": {"pipeline_wrong_delivery": 1},
+        "action_counts": {},
+        "pipeline": finalized,
+    }])
+    assert summary["pipeline"]["pickup_unneeded_rate"] == 1.0
+    assert summary["pipeline"]["delivery_ready_match_rate"] == 0.0
+    assert summary["pipeline"]["episodes_with_wrong_delivery_events"] == 1
+    assert summary["pipeline"]["wrong_delivery_after_unneeded_pickup"] == 1
 
 
 def test_signal_trajectory_audit_oracle_smoke():

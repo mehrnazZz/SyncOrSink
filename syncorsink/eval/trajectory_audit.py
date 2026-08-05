@@ -504,7 +504,7 @@ def _record_events(
 ) -> None:
     if signal.get("target") is not None and signal.get("trace"):
         signal["trace"][-1]["events"] = _signal_events_by_agent(info)
-    for event in _iter_events(info):
+    for agent_id, event in _iter_agent_events(info):
         name = str(event.get("event", "unknown"))
         event_counts[name] += 1
         if name == "clue_found":
@@ -513,6 +513,7 @@ def _record_events(
             signal["decoy_scans"] += 1
         if pipeline.get("active"):
             pipeline["event_counts"][name] += 1
+            _record_pipeline_event(pipeline, agent_id, name, event)
 
 
 def _record_post_step(env: SyncOrSinkEnv, signal: dict[str, Any], pipeline: dict[str, Any]) -> None:
@@ -607,6 +608,15 @@ def _new_pipeline_episode_state(env: SyncOrSinkEnv) -> dict[str, Any]:
         "stall_near_station_steps": 0,
         "max_stages_completed": 0,
         "max_delivered_resources": 0,
+        "pickup_status_counts": Counter(),
+        "delivery_decision_counts": Counter(),
+        "wrong_delivery_provenance_counts": Counter(),
+        "wrong_delivery_decision_counts": Counter(),
+        "agent_carry_source": {},
+        "last_delivery_decision_by_agent": {},
+        "delivery_ready_station_distances": [],
+        "wrong_delivery_ready_station_distances": [],
+        "wrong_delivery_events": 0,
     }
 
 
@@ -630,6 +640,10 @@ def _record_pipeline_action_opportunities(
         inv = int(env.inventories[int(agent_id)])
         if action_id == env.ACTION_DROP:
             pipeline["drop_actions"] += 1
+        if action_id == env.ACTION_PICKUP:
+            _record_pipeline_pickup_decision(env, int(agent_id), pos, inv, pipeline)
+        if action_id == env.ACTION_INTERACT:
+            _record_pipeline_delivery_decision(env, int(agent_id), pos, inv, pipeline)
         if inv == 0 and int(resources.get(pos, 0)) in needs:
             pipeline["pickup_opportunities"] += 1
             if action_id != env.ACTION_PICKUP:
@@ -690,8 +704,281 @@ def _finalize_pipeline_episode_state(env: SyncOrSinkEnv, pipeline: Mapping[str, 
         "stall_near_station_steps": int(pipeline.get("stall_near_station_steps", 0)),
         "event_counts": dict(sorted((pipeline.get("event_counts") or {}).items())),
         "stage_summaries": _pipeline_stage_summaries(env),
+        "pickup_status_counts": dict(sorted((pipeline.get("pickup_status_counts") or {}).items())),
+        "delivery_decision_counts": dict(sorted((pipeline.get("delivery_decision_counts") or {}).items())),
+        "wrong_delivery_provenance_counts": dict(sorted(
+            (pipeline.get("wrong_delivery_provenance_counts") or {}).items()
+        )),
+        "wrong_delivery_decision_counts": dict(sorted(
+            (pipeline.get("wrong_delivery_decision_counts") or {}).items()
+        )),
+        "pickup_attempts": sum((pipeline.get("pickup_status_counts") or {}).values()),
+        "pickup_needed_ready_attempts": int((pipeline.get("pickup_status_counts") or {}).get("needed_ready", 0)),
+        "pickup_needed_blocked_attempts": int((pipeline.get("pickup_status_counts") or {}).get("needed_blocked", 0)),
+        "pickup_unneeded_attempts": (
+            int((pipeline.get("pickup_status_counts") or {}).get("not_required", 0))
+            + int((pipeline.get("pickup_status_counts") or {}).get("already_satisfied", 0))
+        ),
+        "delivery_interact_attempts": sum((pipeline.get("delivery_decision_counts") or {}).values()),
+        "delivery_ready_match_interacts": int(
+            (pipeline.get("delivery_decision_counts") or {}).get("ready_station_resource_match", 0)
+        ),
+        "delivery_blocked_match_interacts": int(
+            (pipeline.get("delivery_decision_counts") or {}).get("blocked_station_resource_match", 0)
+        ),
+        "delivery_wrong_resource_interacts": int(
+            (pipeline.get("delivery_decision_counts") or {}).get("wrong_resource_for_station", 0)
+        ),
+        "delivery_non_station_interacts": int(
+            (pipeline.get("delivery_decision_counts") or {}).get("not_station", 0)
+        ),
+        "wrong_delivery_events": int(pipeline.get("wrong_delivery_events", 0)),
+        "wrong_delivery_after_unneeded_pickup": (
+            int((pipeline.get("wrong_delivery_provenance_counts") or {}).get("not_required", 0))
+            + int((pipeline.get("wrong_delivery_provenance_counts") or {}).get("already_satisfied", 0))
+        ),
+        "wrong_delivery_after_needed_ready_pickup": int(
+            (pipeline.get("wrong_delivery_provenance_counts") or {}).get("needed_ready", 0)
+        ),
+        "wrong_delivery_after_needed_blocked_pickup": int(
+            (pipeline.get("wrong_delivery_provenance_counts") or {}).get("needed_blocked", 0)
+        ),
+        "wrong_delivery_without_pickup_trace": int(
+            (pipeline.get("wrong_delivery_provenance_counts") or {}).get("unknown_pickup", 0)
+        ),
+        "avg_delivery_ready_station_distance": _safe_avg(
+            pipeline.get("delivery_ready_station_distances", [])
+        ),
+        "avg_wrong_delivery_ready_station_distance": _safe_avg(
+            pipeline.get("wrong_delivery_ready_station_distances", [])
+        ),
     }
     return result
+
+
+def _record_pipeline_pickup_decision(
+    env: SyncOrSinkEnv,
+    agent_id: int,
+    pos: tuple[int, int],
+    inventory: int,
+    pipeline: dict[str, Any],
+) -> None:
+    counts = pipeline.setdefault("pickup_status_counts", Counter())
+    if inventory != 0:
+        counts["already_carrying"] += 1
+        return
+    resource_type = int((env.scenario_state.data.get("resource_types") or {}).get(pos, 0))
+    if resource_type == 0:
+        counts["no_resource"] += 1
+        return
+
+    context = _pipeline_resource_need_context(env, resource_type)
+    status = str(context["status"])
+    counts[status] += 1
+    pipeline.setdefault("agent_carry_source", {})[int(agent_id)] = {
+        "step": len(pipeline.get("progress", [])),
+        "position": [int(pos[0]), int(pos[1])],
+        "resource_type": int(resource_type),
+        "need_status": status,
+        "ready_stage_ids": context["ready_stage_ids"],
+        "blocked_stage_ids": context["blocked_stage_ids"],
+    }
+
+
+def _record_pipeline_delivery_decision(
+    env: SyncOrSinkEnv,
+    agent_id: int,
+    pos: tuple[int, int],
+    inventory: int,
+    pipeline: dict[str, Any],
+) -> None:
+    if inventory == 0:
+        if _pipeline_open_station_stages_at(env, pos):
+            label = "empty_inventory_station"
+        else:
+            return
+        context = {
+            "label": label,
+            "nearest_ready_station_distance": None,
+        }
+    else:
+        context = _pipeline_delivery_decision_context(env, pos, inventory)
+        label = str(context["label"])
+
+    pipeline.setdefault("delivery_decision_counts", Counter())[label] += 1
+    distance = context.get("nearest_ready_station_distance")
+    if distance is not None:
+        pipeline.setdefault("delivery_ready_station_distances", []).append(int(distance))
+        if label not in {"ready_station_resource_match", "blocked_station_resource_match"}:
+            pipeline.setdefault("wrong_delivery_ready_station_distances", []).append(int(distance))
+    pipeline.setdefault("last_delivery_decision_by_agent", {})[int(agent_id)] = {
+        "step": len(pipeline.get("progress", [])),
+        "position": [int(pos[0]), int(pos[1])],
+        "resource_type": int(inventory),
+        "label": label,
+        "nearest_ready_station_distance": distance,
+        "open_station_stage_ids": context.get("open_station_stage_ids", []),
+        "ready_match_stage_ids": context.get("ready_match_stage_ids", []),
+        "blocked_match_stage_ids": context.get("blocked_match_stage_ids", []),
+    }
+
+
+def _record_pipeline_event(
+    pipeline: dict[str, Any],
+    agent_id: int,
+    name: str,
+    event: Mapping[str, Any],
+) -> None:
+    carry_sources = pipeline.setdefault("agent_carry_source", {})
+    if name == "picked_resource":
+        if int(agent_id) not in carry_sources:
+            resource_type = _maybe_int(event.get("resource_type")) or 0
+            carry_sources[int(agent_id)] = {
+                "step": len(pipeline.get("progress", [])),
+                "position": None,
+                "resource_type": int(resource_type),
+                "need_status": "unknown_pickup",
+                "ready_stage_ids": [],
+                "blocked_stage_ids": [],
+            }
+    elif name == "pipeline_wrong_delivery":
+        pipeline["wrong_delivery_events"] = int(pipeline.get("wrong_delivery_events", 0)) + 1
+        source = carry_sources.get(int(agent_id))
+        status = "unknown_pickup"
+        if isinstance(source, Mapping):
+            status = str(source.get("need_status", "unknown_pickup"))
+        pipeline.setdefault("wrong_delivery_provenance_counts", Counter())[status] += 1
+        decision = pipeline.setdefault("last_delivery_decision_by_agent", {}).get(int(agent_id), {})
+        label = str(decision.get("label", "unknown_decision")) if isinstance(decision, Mapping) else "unknown_decision"
+        pipeline.setdefault("wrong_delivery_decision_counts", Counter())[label] += 1
+    elif name in {"delivered", "dropped_resource"}:
+        carry_sources.pop(int(agent_id), None)
+
+
+def _pipeline_resource_need_context(env: SyncOrSinkEnv, resource_type: int) -> dict[str, Any]:
+    stages = list(env.scenario_state.data.get("stages", []))
+    ready_stage_ids: list[int] = []
+    blocked_stage_ids: list[int] = []
+    satisfied_stage_ids: list[int] = []
+    required_anywhere = False
+
+    for stage in stages:
+        if bool(stage.get("done")):
+            continue
+        required = [int(value) for value in stage.get("required", [])]
+        req_count = required.count(int(resource_type))
+        if req_count <= 0:
+            continue
+        required_anywhere = True
+        delivered_count = [int(value) for value in stage.get("delivered", [])].count(int(resource_type))
+        stage_id = int(stage.get("stage", len(ready_stage_ids) + len(blocked_stage_ids)))
+        if delivered_count >= req_count:
+            satisfied_stage_ids.append(stage_id)
+        elif _pipeline_stage_deps_done(stages, stage):
+            ready_stage_ids.append(stage_id)
+        else:
+            blocked_stage_ids.append(stage_id)
+
+    if ready_stage_ids:
+        status = "needed_ready"
+    elif blocked_stage_ids:
+        status = "needed_blocked"
+    elif required_anywhere:
+        status = "already_satisfied"
+    else:
+        status = "not_required"
+    return {
+        "status": status,
+        "ready_stage_ids": ready_stage_ids,
+        "blocked_stage_ids": blocked_stage_ids,
+        "satisfied_stage_ids": satisfied_stage_ids,
+    }
+
+
+def _pipeline_delivery_decision_context(
+    env: SyncOrSinkEnv,
+    pos: tuple[int, int],
+    resource_type: int,
+) -> dict[str, Any]:
+    stages = list(env.scenario_state.data.get("stages", []))
+    open_station_stages = _pipeline_open_station_stages_at(env, pos)
+    done_station_stage_ids = [
+        int(stage.get("stage", idx))
+        for idx, stage in enumerate(stages)
+        if bool(stage.get("done")) and _coerce_pos(stage.get("station")) == pos
+    ]
+    ready_match_stage_ids: list[int] = []
+    blocked_match_stage_ids: list[int] = []
+    already_satisfied_stage_ids: list[int] = []
+    for stage in open_station_stages:
+        stage_id = int(stage.get("stage", len(ready_match_stage_ids) + len(blocked_match_stage_ids)))
+        required = [int(value) for value in stage.get("required", [])]
+        req_count = required.count(int(resource_type))
+        delivered_count = [int(value) for value in stage.get("delivered", [])].count(int(resource_type))
+        if req_count > 0 and delivered_count < req_count:
+            if _pipeline_stage_deps_done(stages, stage):
+                ready_match_stage_ids.append(stage_id)
+            else:
+                blocked_match_stage_ids.append(stage_id)
+        elif req_count > 0:
+            already_satisfied_stage_ids.append(stage_id)
+
+    ready_stations = [
+        station
+        for stage in stages
+        if not bool(stage.get("done"))
+        and _pipeline_stage_deps_done(stages, stage)
+        and int(resource_type) in _pipeline_stage_needs(stage)
+        if (station := _coerce_pos(stage.get("station"))) is not None
+    ]
+    nearest_ready_station_distance = (
+        min(manhattan(pos, station) for station in ready_stations)
+        if ready_stations else None
+    )
+
+    if ready_match_stage_ids:
+        label = "ready_station_resource_match"
+    elif blocked_match_stage_ids:
+        label = "blocked_station_resource_match"
+    elif already_satisfied_stage_ids:
+        label = "already_satisfied_station"
+    elif open_station_stages:
+        label = "wrong_resource_for_station"
+    elif done_station_stage_ids:
+        label = "completed_station"
+    else:
+        label = "not_station"
+    return {
+        "label": label,
+        "nearest_ready_station_distance": nearest_ready_station_distance,
+        "open_station_stage_ids": [int(stage.get("stage", idx)) for idx, stage in enumerate(open_station_stages)],
+        "done_station_stage_ids": done_station_stage_ids,
+        "ready_match_stage_ids": ready_match_stage_ids,
+        "blocked_match_stage_ids": blocked_match_stage_ids,
+        "already_satisfied_stage_ids": already_satisfied_stage_ids,
+    }
+
+
+def _pipeline_open_station_stages_at(
+    env: SyncOrSinkEnv,
+    pos: tuple[int, int],
+) -> list[Mapping[str, Any]]:
+    return [
+        stage
+        for stage in env.scenario_state.data.get("stages", [])
+        if not bool(stage.get("done")) and _coerce_pos(stage.get("station")) == pos
+    ]
+
+
+def _pipeline_stage_deps_done(stages: list[Mapping[str, Any]], stage: Mapping[str, Any]) -> bool:
+    for dep in stage.get("deps", []):
+        try:
+            dep_stage = stages[int(dep)]
+        except (IndexError, TypeError, ValueError):
+            return False
+        if not bool(dep_stage.get("done")):
+            return False
+    return True
 
 
 def _pipeline_target_stage(env: SyncOrSinkEnv) -> Mapping[str, Any] | None:
@@ -1122,6 +1409,13 @@ def _compact_pipeline_summary(pipeline: Mapping[str, Any]) -> dict[str, Any]:
         "missed_delivery_opportunities",
         "missed_sync_interacts",
         "drop_actions",
+        "pickup_status_counts",
+        "delivery_decision_counts",
+        "wrong_delivery_provenance_counts",
+        "wrong_delivery_events",
+        "episodes_with_wrong_delivery_events",
+        "wrong_delivery_after_unneeded_pickup",
+        "avg_wrong_delivery_ready_station_distance",
     )
     return {key: pipeline.get(key) for key in keys if key in pipeline}
 
@@ -1226,6 +1520,19 @@ def _summarize_episode_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             }
     pipeline_rows = [row["pipeline"] for row in rows if "pipeline" in row]
     if pipeline_rows:
+        pickup_status_counts = Counter()
+        delivery_decision_counts = Counter()
+        wrong_delivery_provenance_counts = Counter()
+        wrong_delivery_decision_counts = Counter()
+        for row in pipeline_rows:
+            pickup_status_counts.update(row.get("pickup_status_counts", {}))
+            delivery_decision_counts.update(row.get("delivery_decision_counts", {}))
+            wrong_delivery_provenance_counts.update(row.get("wrong_delivery_provenance_counts", {}))
+            wrong_delivery_decision_counts.update(row.get("wrong_delivery_decision_counts", {}))
+        pickup_attempts = sum(pickup_status_counts.values())
+        delivery_interacts = sum(delivery_decision_counts.values())
+        delivery_matches = int(delivery_decision_counts.get("ready_station_resource_match", 0))
+        wrong_delivery_events = sum(int(row.get("wrong_delivery_events", 0)) for row in pipeline_rows)
         diagnostics["pipeline"] = {
             "avg_stages_completed": _avg_key(pipeline_rows, "stages_completed"),
             "avg_completion_ratio": _avg_key(pipeline_rows, "completion_ratio"),
@@ -1242,6 +1549,52 @@ def _summarize_episode_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "avg_drop_actions": _avg_key(pipeline_rows, "drop_actions"),
             "avg_stall_near_resource_steps": _avg_key(pipeline_rows, "stall_near_resource_steps"),
             "avg_stall_near_station_steps": _avg_key(pipeline_rows, "stall_near_station_steps"),
+            "total_pickup_attempts": int(pickup_attempts),
+            "pickup_status_counts": dict(sorted(pickup_status_counts.items())),
+            "pickup_needed_ready_rate": (
+                float(pickup_status_counts.get("needed_ready", 0)) / float(pickup_attempts)
+                if pickup_attempts else 0.0
+            ),
+            "pickup_unneeded_rate": (
+                float(
+                    pickup_status_counts.get("not_required", 0)
+                    + pickup_status_counts.get("already_satisfied", 0)
+                ) / float(pickup_attempts)
+                if pickup_attempts else 0.0
+            ),
+            "total_delivery_interact_attempts": int(delivery_interacts),
+            "delivery_decision_counts": dict(sorted(delivery_decision_counts.items())),
+            "delivery_ready_match_rate": (
+                float(delivery_matches) / float(delivery_interacts)
+                if delivery_interacts else 0.0
+            ),
+            "avg_delivery_ready_station_distance": _avg_key(
+                pipeline_rows,
+                "avg_delivery_ready_station_distance",
+            ),
+            "avg_wrong_delivery_ready_station_distance": _avg_key(
+                pipeline_rows,
+                "avg_wrong_delivery_ready_station_distance",
+            ),
+            "wrong_delivery_events": int(wrong_delivery_events),
+            "avg_wrong_delivery_events": _avg_key(pipeline_rows, "wrong_delivery_events"),
+            "episodes_with_wrong_delivery_events": sum(
+                1 for row in pipeline_rows if int(row.get("wrong_delivery_events", 0)) > 0
+            ),
+            "wrong_delivery_provenance_counts": dict(sorted(wrong_delivery_provenance_counts.items())),
+            "wrong_delivery_decision_counts": dict(sorted(wrong_delivery_decision_counts.items())),
+            "wrong_delivery_after_unneeded_pickup": sum(
+                int(row.get("wrong_delivery_after_unneeded_pickup", 0)) for row in pipeline_rows
+            ),
+            "wrong_delivery_after_needed_ready_pickup": sum(
+                int(row.get("wrong_delivery_after_needed_ready_pickup", 0)) for row in pipeline_rows
+            ),
+            "wrong_delivery_after_needed_blocked_pickup": sum(
+                int(row.get("wrong_delivery_after_needed_blocked_pickup", 0)) for row in pipeline_rows
+            ),
+            "wrong_delivery_without_pickup_trace": sum(
+                int(row.get("wrong_delivery_without_pickup_trace", 0)) for row in pipeline_rows
+            ),
             "episodes_with_all_stages_completed": sum(
                 1
                 for row in pipeline_rows
@@ -1281,13 +1634,18 @@ def _compare_by_seed(policy_results: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 def _iter_events(info: Mapping[str, Any]):
+    for _agent_id, event in _iter_agent_events(info):
+        yield event
+
+
+def _iter_agent_events(info: Mapping[str, Any]):
     events = info.get("events", {})
     if isinstance(events, Mapping):
-        for agent_events in events.values():
+        for agent_id, agent_events in events.items():
             if isinstance(agent_events, list):
                 for event in agent_events:
                     if isinstance(event, Mapping):
-                        yield event
+                        yield int(agent_id), event
 
 
 def _action_id(action: Any) -> int:

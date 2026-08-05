@@ -224,6 +224,8 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert payload["config"]["recurrent_rl_rollout_eval_decoding"] is True
     assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist"] is False
     assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist_trust_messages"] is False
+    assert payload["config"]["recurrent_rl_pipeline_bad_pickup_penalty"] == 0.1
+    assert payload["config"]["recurrent_rl_pipeline_unneeded_drop_bonus"] == 0.05
     assert payload["config"]["recurrent_obs_memory_mode"] == "auto"
 
     assert commands["signal_hunt"][commands["signal_hunt"].index("--oracle") + 1] == "signal_hint_comm"
@@ -233,6 +235,12 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
         == "planner_comm"
     )
     assert "--bc-action-class-balance" in commands["energy_grid"]
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--rl-pipeline-bad-pickup-penalty") + 1
+    ] == "0.1"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--rl-pipeline-unneeded-drop-bonus") + 1
+    ] == "0.05"
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--bc-action-class-balance-max-weight") + 1
     ] == "5.0"
@@ -519,6 +527,10 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "1.0",
         "--recurrent-bc-comm-kl-coeff",
         "1.5",
+        "--recurrent-rl-pipeline-bad-pickup-penalty",
+        "0.2",
+        "--recurrent-rl-pipeline-unneeded-drop-bonus",
+        "0.075",
         "--recurrent-rl-early-stop-eval-patience",
         "2",
         "--recurrent-rl-balanced-rollouts",
@@ -584,6 +596,8 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_rl_early_stop_eval_patience"] == 2
     assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist"] is False
     assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist_trust_messages"] is False
+    assert payload["config"]["recurrent_rl_pipeline_bad_pickup_penalty"] == 0.2
+    assert payload["config"]["recurrent_rl_pipeline_unneeded_drop_bonus"] == 0.075
     assert "--updates" not in command
     assert "--epochs" not in command
     assert "--save-every" not in command
@@ -596,6 +610,8 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert command[command.index("--max-grad-norm") + 1] == "0.25"
     assert command[command.index("--bc-kl-coeff") + 1] == "1.0"
     assert command[command.index("--bc-comm-kl-coeff") + 1] == "1.5"
+    assert command[command.index("--rl-pipeline-bad-pickup-penalty") + 1] == "0.2"
+    assert command[command.index("--rl-pipeline-unneeded-drop-bonus") + 1] == "0.075"
     assert "--rl-balanced-rollouts" in command
     assert "--rl-rollout-eval-decoding" in command
     assert "--no-rl-restore-best" in command

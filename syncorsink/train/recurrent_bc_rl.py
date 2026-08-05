@@ -268,6 +268,8 @@ class RecurrentConfig:
     rl_rollout_pipeline_navigation_assist_trust_messages: bool = False
     rl_redundant_target_scan_penalty: float = 0.0
     rl_wrong_target_scan_penalty: float = 0.0
+    rl_pipeline_bad_pickup_penalty: float = 0.0
+    rl_pipeline_unneeded_drop_bonus: float = 0.0
     rl_epochs: int = 2
     minibatch_seqs: int = 8  # number of sequences per minibatch
     gamma: float = 0.99
@@ -2431,6 +2433,134 @@ def _apply_wrong_target_scan_penalty(
         rewards[aid] = float(rewards[aid]) - penalty
         applied += 1
     return applied, penalty * applied
+
+
+def _pipeline_stage_deps_done(stages: list[Mapping[str, Any]], stage: Mapping[str, Any]) -> bool:
+    for dep in stage.get("deps", []):
+        try:
+            dep_stage = stages[int(dep)]
+        except (IndexError, TypeError, ValueError):
+            return False
+        if not bool(dep_stage.get("done")):
+            return False
+    return True
+
+
+def _pipeline_resource_need_status(env: SyncOrSinkEnv, resource_type: int) -> str:
+    if getattr(env.config, "scenario", None) != "pipeline_assembly":
+        return "not_required"
+    if int(resource_type) <= 0 or env.scenario_state is None:
+        return "not_required"
+
+    stages = list(env.scenario_state.data.get("stages", []))
+    has_ready_need = False
+    has_blocked_need = False
+    required_anywhere = False
+    for stage in stages:
+        if bool(stage.get("done")):
+            continue
+        required = [int(value) for value in stage.get("required", [])]
+        req_count = required.count(int(resource_type))
+        if req_count <= 0:
+            continue
+        required_anywhere = True
+        delivered_count = [int(value) for value in stage.get("delivered", [])].count(int(resource_type))
+        if delivered_count >= req_count:
+            continue
+        if _pipeline_stage_deps_done(stages, stage):
+            has_ready_need = True
+        else:
+            has_blocked_need = True
+
+    if has_ready_need:
+        return "needed_ready"
+    if has_blocked_need:
+        return "needed_blocked"
+    if required_anywhere:
+        return "already_satisfied"
+    return "not_required"
+
+
+def _pipeline_unneeded_resource_type(env: SyncOrSinkEnv, resource_type: int) -> bool:
+    return _pipeline_resource_need_status(env, int(resource_type)) in {"not_required", "already_satisfied"}
+
+
+def _pipeline_bad_pickup_agents(env: SyncOrSinkEnv, actions: dict[int, dict]) -> list[int]:
+    if getattr(env.config, "scenario", None) != "pipeline_assembly":
+        return []
+    resources = env.scenario_state.data.get("resource_types", {}) if env.scenario_state is not None else {}
+    bad_agents: list[int] = []
+    for aid in range(env.num_agents):
+        if _action_id_from_actions(actions, aid) != int(SyncOrSinkEnv.ACTION_PICKUP):
+            continue
+        if int(env.inventories[int(aid)]) != 0:
+            continue
+        resource_type = int(resources.get(tuple(env.agent_positions[int(aid)]), 0))
+        if resource_type <= 0:
+            continue
+        if _pipeline_unneeded_resource_type(env, resource_type):
+            bad_agents.append(int(aid))
+    return bad_agents
+
+
+def _pipeline_unneeded_drop_agents(env: SyncOrSinkEnv, actions: dict[int, dict]) -> list[int]:
+    if getattr(env.config, "scenario", None) != "pipeline_assembly":
+        return []
+    drop_agents: list[int] = []
+    for aid in range(env.num_agents):
+        if _action_id_from_actions(actions, aid) != int(SyncOrSinkEnv.ACTION_DROP):
+            continue
+        resource_type = int(env.inventories[int(aid)])
+        if resource_type <= 0:
+            continue
+        if _pipeline_unneeded_resource_type(env, resource_type):
+            drop_agents.append(int(aid))
+    return drop_agents
+
+
+def _pipeline_event_agents(info: dict | None, num_agents: int, event_name: str) -> set[int]:
+    return {
+        int(aid)
+        for aid, names in _event_names_by_agent(info, int(num_agents)).items()
+        if str(event_name) in names
+    }
+
+
+def _apply_pipeline_bad_pickup_reward_shaping(
+    rewards: dict[int, float],
+    *,
+    info: dict | None,
+    num_agents: int,
+    bad_pickup_candidates: list[int],
+    unneeded_drop_candidates: list[int],
+    bad_pickup_penalty: float,
+    unneeded_drop_bonus: float,
+) -> tuple[int, float, int, float]:
+    picked_agents = _pipeline_event_agents(info, int(num_agents), "picked_resource")
+    dropped_agents = _pipeline_event_agents(info, int(num_agents), "dropped_resource")
+    bad_pickup_penalty = max(0.0, float(bad_pickup_penalty))
+    unneeded_drop_bonus = max(0.0, float(unneeded_drop_bonus))
+
+    bad_pickups = sorted({int(aid) for aid in bad_pickup_candidates} & picked_agents)
+    recovered_drops = sorted({int(aid) for aid in unneeded_drop_candidates} & dropped_agents)
+    pickup_penalty_sum = 0.0
+    drop_bonus_sum = 0.0
+
+    if bad_pickup_penalty > 0.0:
+        for aid in bad_pickups:
+            if aid not in rewards:
+                continue
+            rewards[aid] = float(rewards[aid]) - bad_pickup_penalty
+            pickup_penalty_sum += bad_pickup_penalty
+
+    if unneeded_drop_bonus > 0.0:
+        for aid in recovered_drops:
+            if aid not in rewards:
+                continue
+            rewards[aid] = float(rewards[aid]) + unneeded_drop_bonus
+            drop_bonus_sum += unneeded_drop_bonus
+
+    return len(bad_pickups), pickup_penalty_sum, len(recovered_drops), drop_bonus_sum
 
 
 def _move_delta_for_action(env: SyncOrSinkEnv, action_id: int) -> tuple[int, int] | None:
@@ -12143,6 +12273,11 @@ def _collect_recurrent_rl_rollout(
     redundant_target_scan_penalty_sum = 0.0
     wrong_target_scan_count = 0
     wrong_target_scan_penalty_sum = 0.0
+    pipeline_bad_pickup_count = 0
+    pipeline_bad_pickup_penalty_sum = 0.0
+    pipeline_unneeded_drop_count = 0
+    pipeline_unneeded_drop_bonus_sum = 0.0
+    pipeline_wrong_delivery_count = 0
     eval_decoding_action_correction_count = 0
     eval_decoding_action_opportunities = 0
 
@@ -12299,6 +12434,8 @@ def _collect_recurrent_rl_rollout(
 
             prev_positions_for_events = _signal_positions_from_obs(obs)
             redundant_target_agents = _redundant_target_scan_agents(env, actions)
+            pipeline_bad_pickup_agents = _pipeline_bad_pickup_agents(env, actions)
+            pipeline_unneeded_drop_agents = _pipeline_unneeded_drop_agents(env, actions)
             next_obs, rewards, done, truncated, info = env.step(actions)
             next_info = info or {}
             redundant_target_scan_count += len(redundant_target_agents)
@@ -12316,6 +12453,29 @@ def _collect_recurrent_rl_rollout(
                 cfg.rl_wrong_target_scan_penalty,
             )
             wrong_target_scan_penalty_sum += penalty_sum
+            (
+                bad_pickup_count,
+                bad_pickup_penalty_sum,
+                unneeded_drop_count,
+                unneeded_drop_bonus_sum,
+            ) = _apply_pipeline_bad_pickup_reward_shaping(
+                rewards,
+                info=next_info,
+                num_agents=num_agents,
+                bad_pickup_candidates=pipeline_bad_pickup_agents,
+                unneeded_drop_candidates=pipeline_unneeded_drop_agents,
+                bad_pickup_penalty=cfg.rl_pipeline_bad_pickup_penalty,
+                unneeded_drop_bonus=cfg.rl_pipeline_unneeded_drop_bonus,
+            )
+            pipeline_bad_pickup_count += bad_pickup_count
+            pipeline_bad_pickup_penalty_sum += bad_pickup_penalty_sum
+            pipeline_unneeded_drop_count += unneeded_drop_count
+            pipeline_unneeded_drop_bonus_sum += unneeded_drop_bonus_sum
+            pipeline_wrong_delivery_count += len(_pipeline_event_agents(
+                next_info,
+                num_agents,
+                "pipeline_wrong_delivery",
+            ))
             next_prev_actions = {aid: int(action["action"]) for aid, action in actions.items()}
             next_prev_msg_lens = _message_lengths(actions)
             segment_end = local_t == int(segment["steps"]) - 1
@@ -12420,6 +12580,11 @@ def _collect_recurrent_rl_rollout(
         "redundant_target_scan_penalty_sum": redundant_target_scan_penalty_sum,
         "wrong_target_scan_count": wrong_target_scan_count,
         "wrong_target_scan_penalty_sum": wrong_target_scan_penalty_sum,
+        "pipeline_bad_pickup_count": pipeline_bad_pickup_count,
+        "pipeline_bad_pickup_penalty_sum": pipeline_bad_pickup_penalty_sum,
+        "pipeline_unneeded_drop_count": pipeline_unneeded_drop_count,
+        "pipeline_unneeded_drop_bonus_sum": pipeline_unneeded_drop_bonus_sum,
+        "pipeline_wrong_delivery_count": pipeline_wrong_delivery_count,
         "eval_decoding_action_correction_count": eval_decoding_action_correction_count,
         "eval_decoding_action_opportunities": eval_decoding_action_opportunities,
     }
@@ -12549,6 +12714,11 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
         redundant_target_scan_penalty_sum = float(rollout.get("redundant_target_scan_penalty_sum", 0.0))
         wrong_target_scan_count = int(rollout.get("wrong_target_scan_count", 0))
         wrong_target_scan_penalty_sum = float(rollout.get("wrong_target_scan_penalty_sum", 0.0))
+        pipeline_bad_pickup_count = int(rollout.get("pipeline_bad_pickup_count", 0))
+        pipeline_bad_pickup_penalty_sum = float(rollout.get("pipeline_bad_pickup_penalty_sum", 0.0))
+        pipeline_unneeded_drop_count = int(rollout.get("pipeline_unneeded_drop_count", 0))
+        pipeline_unneeded_drop_bonus_sum = float(rollout.get("pipeline_unneeded_drop_bonus_sum", 0.0))
+        pipeline_wrong_delivery_count = int(rollout.get("pipeline_wrong_delivery_count", 0))
         eval_decoding_action_correction_count = int(rollout.get("eval_decoding_action_correction_count", 0))
         eval_decoding_action_opportunities = int(rollout.get("eval_decoding_action_opportunities", 0))
         eval_decoding_action_correction_rate = (
@@ -12580,6 +12750,9 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
         T = len(obs_buf)
         redundant_target_scan_rate = redundant_target_scan_count / max(1, T * N)
         wrong_target_scan_rate = wrong_target_scan_count / max(1, T * N)
+        pipeline_bad_pickup_rate = pipeline_bad_pickup_count / max(1, T * N)
+        pipeline_unneeded_drop_rate = pipeline_unneeded_drop_count / max(1, T * N)
+        pipeline_wrong_delivery_rate = pipeline_wrong_delivery_count / max(1, T * N)
         adv_flat = advantages.reshape(T * N).to(device)
         adv_flat = (adv_flat - adv_flat.mean()) / (adv_flat.std() + 1e-8)
         ret_flat = returns.reshape(T * N).to(device)
@@ -12734,6 +12907,7 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
             f"comm_kl {total_comm_kl / denom:.4f} | "
             f"ent {total_entropy / denom:.3f} | ret {mean_ret:.2f} | len {mean_len:.1f} | "
             f"red_scan {redundant_target_scan_count} | wrong_scan {wrong_target_scan_count} | "
+            f"pipe_bad_pick {pipeline_bad_pickup_count} | pipe_wrong_del {pipeline_wrong_delivery_count} | "
             f"assist_corr {eval_decoding_action_correction_count}/{eval_decoding_action_opportunities}"
         )
 
@@ -12774,6 +12948,16 @@ def train_recurrent_rl(cfg: RecurrentConfig, model, device, *, wandb_run=None):
                 "rollout/wrong_target_scans": wrong_target_scan_count,
                 "rollout/wrong_target_scan_rate": wrong_target_scan_rate,
                 "rollout/wrong_target_scan_penalty": wrong_target_scan_penalty_sum,
+                "rollout/pipeline_bad_pickups": pipeline_bad_pickup_count,
+                "rollout/pipeline_bad_pickup_rate": pipeline_bad_pickup_rate,
+                "rollout/pipeline_bad_pickup_penalty": pipeline_bad_pickup_penalty_sum,
+                "rollout/pipeline_bad_pickup_penalty_weight": float(cfg.rl_pipeline_bad_pickup_penalty),
+                "rollout/pipeline_unneeded_drops": pipeline_unneeded_drop_count,
+                "rollout/pipeline_unneeded_drop_rate": pipeline_unneeded_drop_rate,
+                "rollout/pipeline_unneeded_drop_bonus": pipeline_unneeded_drop_bonus_sum,
+                "rollout/pipeline_unneeded_drop_bonus_weight": float(cfg.rl_pipeline_unneeded_drop_bonus),
+                "rollout/pipeline_wrong_deliveries": pipeline_wrong_delivery_count,
+                "rollout/pipeline_wrong_delivery_rate": pipeline_wrong_delivery_rate,
                 "rollout/balanced": int(bool(rollout["balanced"])),
                 "rollout/eval_decoding": int(bool(cfg.rl_rollout_eval_decoding)),
                 "rollout/pipeline_navigation_assist": int(
@@ -13334,6 +13518,18 @@ def main():
     )
     p.add_argument("--rl-redundant-target-scan-penalty", type=float, default=0.0)
     p.add_argument("--rl-wrong-target-scan-penalty", type=float, default=0.0)
+    p.add_argument(
+        "--rl-pipeline-bad-pickup-penalty",
+        type=float,
+        default=RecurrentConfig.rl_pipeline_bad_pickup_penalty,
+        help="Per-agent PPO reward penalty for confirmed Pipeline pickups of no-longer-needed resources.",
+    )
+    p.add_argument(
+        "--rl-pipeline-unneeded-drop-bonus",
+        type=float,
+        default=RecurrentConfig.rl_pipeline_unneeded_drop_bonus,
+        help="Per-agent PPO reward bonus for dropping a no-longer-needed Pipeline resource.",
+    )
     p.add_argument("--rl-epochs", type=int, default=2)
     p.add_argument("--minibatch-seqs", type=int, default=8)
     p.add_argument("--rl-lr", type=float, default=3e-5)
@@ -13709,6 +13905,8 @@ def main():
         ),
         rl_redundant_target_scan_penalty=args.rl_redundant_target_scan_penalty,
         rl_wrong_target_scan_penalty=args.rl_wrong_target_scan_penalty,
+        rl_pipeline_bad_pickup_penalty=args.rl_pipeline_bad_pickup_penalty,
+        rl_pipeline_unneeded_drop_bonus=args.rl_pipeline_unneeded_drop_bonus,
         rl_epochs=args.rl_epochs,
         minibatch_seqs=args.minibatch_seqs,
         rl_lr=args.rl_lr,
