@@ -341,8 +341,9 @@ checkpoint before saving, `eval_metrics` describes that saved checkpoint;
 recurrent summaries also preserve separate `final_eval_metrics` and
 `best_eval_metrics` so PPO regressions are visible. Recurrent trajectory audits
 inherit the checkpoint observation contract and send threshold; recurrent
-trainer runs that load `--recurrent-init` also inherit the checkpoint's
-`eval_send_threshold` when the caller leaves the default threshold in place.
+trainer runs that load `--recurrent-init` also inherit checkpoint observation
+settings and `eval_send_threshold` when the caller leaves those defaults in
+place.
 Use `--recurrent-send-threshold` in audits or `--recurrent-eval-send-threshold`
 in sweeps only for intentional decode overrides. The sweep exposes recurrent
 observation-contract flags such as `--recurrent-obs-exploration-memory`,

@@ -283,6 +283,12 @@ def build_command(
     return cmd
 
 
+def _resolve_recurrent_signal_obs_memory_mode(args) -> str:
+    if args.recurrent_obs_memory_mode == "auto":
+        return "egocentric"
+    return args.recurrent_obs_memory_mode
+
+
 def _build_recurrent_command(
     *,
     case: ScenarioCase,
@@ -300,6 +306,7 @@ def _build_recurrent_command(
     rl_eval_episodes = args.recurrent_rl_eval_episodes
     if rl_eval_episodes is None:
         rl_eval_episodes = eval_episodes
+    signal_specialist = args.recurrent_signal_preset == "specialist" and case.scenario == "signal_hunt"
 
     cmd = [
         sys.executable,
@@ -475,6 +482,13 @@ def _build_recurrent_command(
         cmd.append("--bc-calibrate-send-threshold")
     if args.recurrent_obs_exploration_memory:
         cmd.append("--obs-exploration-memory")
+    if args.recurrent_obs_memory_mode != "auto" and not signal_specialist:
+        cmd.extend([
+            "--obs-memory-mode",
+            args.recurrent_obs_memory_mode,
+            "--obs-memory-radius",
+            str(args.recurrent_obs_memory_radius),
+        ])
     if args.recurrent_obs_feedback:
         cmd.append("--obs-feedback")
     if args.recurrent_obs_normalize_tokens:
@@ -497,13 +511,13 @@ def _build_recurrent_command(
         cmd.append("--eval-pipeline-navigation-assist")
     if args.recurrent_eval_pipeline_navigation_assist_trust_messages and case.scenario == "pipeline_assembly":
         cmd.append("--eval-pipeline-navigation-assist-trust-messages")
-    if args.recurrent_signal_preset == "specialist" and case.scenario == "signal_hunt":
+    if signal_specialist:
         cmd.extend([
             "--obs-exploration-memory",
             "--obs-feedback",
             "--obs-normalize-tokens",
             "--obs-memory-mode",
-            args.recurrent_obs_memory_mode,
+            _resolve_recurrent_signal_obs_memory_mode(args),
             "--obs-memory-radius",
             str(args.recurrent_obs_memory_radius),
             "--obs-navigation-features",
@@ -1395,7 +1409,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-obs-signal-scan-state", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-eval-send-threshold", type=float, default=0.25)
     parser.add_argument("--recurrent-calibrate-send-threshold", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--recurrent-obs-memory-mode", default="egocentric", choices=["full", "egocentric"])
+    parser.add_argument("--recurrent-obs-memory-mode", default="auto", choices=["auto", "full", "egocentric"])
     parser.add_argument("--recurrent-obs-memory-radius", type=int, default=4)
     parser.add_argument("--recurrent-eval-signal-exact-target-memory-steps", type=int, default=32)
     parser.add_argument("--recurrent-eval-pipeline-navigation-assist", action=argparse.BooleanOptionalAction, default=False)

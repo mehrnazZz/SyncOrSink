@@ -224,6 +224,7 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert payload["config"]["recurrent_rl_rollout_eval_decoding"] is True
     assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist"] is False
     assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist_trust_messages"] is False
+    assert payload["config"]["recurrent_obs_memory_mode"] == "auto"
 
     assert commands["signal_hunt"][commands["signal_hunt"].index("--oracle") + 1] == "signal_hint_comm"
     assert commands["energy_grid"][commands["energy_grid"].index("--oracle") + 1] == "planner_comm"
@@ -288,6 +289,8 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     ] == "4"
     assert "--rl-rollout-pipeline-navigation-assist" not in commands["pipeline_assembly"]
     assert "--rl-rollout-pipeline-navigation-assist-trust-messages" not in commands["pipeline_assembly"]
+    assert commands["signal_hunt"][commands["signal_hunt"].index("--obs-memory-mode") + 1] == "egocentric"
+    assert "--obs-memory-mode" not in commands["pipeline_assembly"]
 
 
 def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp_path):
@@ -321,6 +324,8 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
         "--recurrent-obs-signal-target-match-features",
         "--recurrent-obs-signal-sync-feedback",
         "--recurrent-obs-signal-scan-state",
+        "--recurrent-obs-memory-mode",
+        "egocentric",
         "--output-dir",
         str(tmp_path / "runs"),
         "--run-name",
@@ -343,6 +348,7 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
     assert payload["config"]["recurrent_obs_signal_target_match_features"] is True
     assert payload["config"]["recurrent_obs_signal_sync_feedback"] is True
     assert payload["config"]["recurrent_obs_signal_scan_state"] is True
+    assert payload["config"]["recurrent_obs_memory_mode"] == "egocentric"
     assert "--eval-pipeline-navigation-assist" in commands["pipeline_assembly"]
     assert "--eval-pipeline-navigation-assist-trust-messages" in commands["pipeline_assembly"]
     assert "--rl-rollout-pipeline-navigation-assist" in commands["pipeline_assembly"]
@@ -355,6 +361,8 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
     assert "--obs-signal-target-match-features" in commands["pipeline_assembly"]
     assert "--obs-signal-sync-feedback" in commands["pipeline_assembly"]
     assert "--obs-signal-scan-state" in commands["pipeline_assembly"]
+    assert commands["pipeline_assembly"][commands["pipeline_assembly"].index("--obs-memory-mode") + 1] == "egocentric"
+    assert commands["signal_hunt"].count("--obs-memory-mode") == 1
     assert "--eval-pipeline-navigation-assist" not in commands["signal_hunt"]
     assert "--eval-pipeline-navigation-assist-trust-messages" not in commands["signal_hunt"]
     assert "--rl-rollout-pipeline-navigation-assist" not in commands["signal_hunt"]

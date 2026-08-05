@@ -785,21 +785,48 @@ def test_recurrent_init_inherits_eval_send_threshold(tmp_path):
     from syncorsink.train.recurrent_bc_rl import (
         RecurrentConfig,
         _checkpoint_eval_send_threshold,
+        _inherit_recurrent_init_observation_config,
         _inherit_recurrent_init_eval_send_threshold,
     )
 
     threshold_checkpoint = tmp_path / "threshold.pt"
-    torch.save({"config": {"eval_send_threshold": 0.73}}, threshold_checkpoint)
+    torch.save(
+        {
+            "config": {
+                "eval_send_threshold": 0.73,
+                "obs_memory_mode": "egocentric",
+                "obs_memory_radius": 2,
+                "obs_signal_negative_memory": True,
+            }
+        },
+        threshold_checkpoint,
+    )
 
     inherit_cfg = RecurrentConfig(recurrent_init=str(threshold_checkpoint))
+    inherited_obs = _inherit_recurrent_init_observation_config(inherit_cfg)
+    assert inherited_obs == {
+        "obs_memory_mode": "egocentric",
+        "obs_memory_radius": 2,
+        "obs_signal_negative_memory": True,
+    }
+    assert inherit_cfg.obs_memory_mode == "egocentric"
+    assert inherit_cfg.obs_memory_radius == 2
+    assert inherit_cfg.obs_signal_negative_memory is True
     assert _checkpoint_eval_send_threshold(threshold_checkpoint) == pytest.approx(0.73)
     assert _inherit_recurrent_init_eval_send_threshold(inherit_cfg) == pytest.approx(0.73)
     assert inherit_cfg.eval_send_threshold == pytest.approx(0.73)
 
     override_cfg = RecurrentConfig(
         recurrent_init=str(threshold_checkpoint),
+        obs_memory_radius=7,
+        obs_signal_negative_memory=True,
         eval_send_threshold=0.41,
     )
+    inherited_override_obs = _inherit_recurrent_init_observation_config(override_cfg)
+    assert inherited_override_obs == {"obs_memory_mode": "egocentric"}
+    assert override_cfg.obs_memory_mode == "egocentric"
+    assert override_cfg.obs_memory_radius == 7
+    assert override_cfg.obs_signal_negative_memory is True
     assert _inherit_recurrent_init_eval_send_threshold(override_cfg) is None
     assert override_cfg.eval_send_threshold == pytest.approx(0.41)
 
@@ -5888,6 +5915,7 @@ def test_recurrent_actor_checkpoint_init_for_rl_smoke(tmp_path):
         _build_env,
         _build_recurrent_obs_batch,
         _feedback_matrix,
+        _inherit_recurrent_init_observation_config,
         load_recurrent_actor_checkpoint,
         train_recurrent_rl,
     )
@@ -5935,6 +5963,15 @@ def test_recurrent_actor_checkpoint_init_for_rl_smoke(tmp_path):
 
     device = resolve_device(cfg.device)
     loaded = load_recurrent_actor_checkpoint(checkpoint, cfg, device)
+    inherited_shape_cfg = RecurrentConfig(**{
+        **vars(cfg),
+        "recurrent_init": str(checkpoint),
+        "obs_memory_mode": "full",
+    })
+    inherited_shape = _inherit_recurrent_init_observation_config(inherited_shape_cfg)
+    assert inherited_shape == {"obs_memory_mode": "egocentric"}
+    shape_loaded = load_recurrent_actor_checkpoint(checkpoint, inherited_shape_cfg, device)
+    assert shape_loaded.encoder.net[0].weight.shape[1] == obs_dim
     legacy_checkpoint = tmp_path / "recurrent_init_legacy_no_scan_gate.pt"
     legacy_state = {
         key: value

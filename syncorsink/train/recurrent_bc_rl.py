@@ -64,6 +64,24 @@ DEFAULT_DAGGER_FOCUS_EVENTS = (
     f"{PIPELINE_WRONG_DELIVERY_ROOT_PICKUP_EVENT}"
 )
 
+RECURRENT_INIT_OBSERVATION_CONFIG_FIELDS = (
+    "obs_exploration_memory",
+    "obs_exploration_age",
+    "obs_feedback",
+    "obs_normalize_tokens",
+    "obs_memory_mode",
+    "obs_memory_radius",
+    "obs_navigation_features",
+    "obs_pipeline_features",
+    "obs_signal_features",
+    "obs_signal_sync_feedback",
+    "obs_signal_scan_state",
+    "obs_signal_negative_memory",
+    "obs_signal_negative_memory_window",
+    "obs_signal_inferred_target_features",
+    "obs_signal_target_match_features",
+)
+
 
 @dataclass
 class RecurrentConfig:
@@ -11873,6 +11891,40 @@ def _inherit_recurrent_init_eval_send_threshold(cfg: RecurrentConfig) -> float |
     return float(inherited)
 
 
+def _checkpoint_config(path: str | Path) -> dict[str, Any]:
+    try:
+        checkpoint = torch.load(Path(path), map_location="cpu")
+    except Exception:
+        return {}
+    if not isinstance(checkpoint, Mapping):
+        return {}
+    raw_cfg = checkpoint.get("config", {})
+    if not isinstance(raw_cfg, Mapping):
+        return {}
+    return dict(raw_cfg)
+
+
+def _inherit_recurrent_init_observation_config(cfg: RecurrentConfig) -> dict[str, Any]:
+    if not cfg.recurrent_init:
+        return {}
+    raw_cfg = _checkpoint_config(cfg.recurrent_init)
+    if not raw_cfg:
+        return {}
+    defaults = RecurrentConfig()
+    inherited: dict[str, Any] = {}
+    for key in RECURRENT_INIT_OBSERVATION_CONFIG_FIELDS:
+        if key not in raw_cfg:
+            continue
+        if getattr(cfg, key) != getattr(defaults, key):
+            continue
+        value = raw_cfg[key]
+        if value == getattr(cfg, key):
+            continue
+        setattr(cfg, key, value)
+        inherited[key] = value
+    return inherited
+
+
 def _recurrent_training_obs_shape(cfg: RecurrentConfig) -> tuple[int, int]:
     env, sample_cfg = _build_training_env(cfg, 0)
     num_agents = env.num_agents
@@ -13709,6 +13761,12 @@ def main():
         wandb_run=args.wandb_run,
     )
 
+    inherited_obs_config: dict[str, Any] = {}
+    inherited_threshold: float | None = None
+    if cfg.recurrent_init:
+        inherited_obs_config = _inherit_recurrent_init_observation_config(cfg)
+        inherited_threshold = _inherit_recurrent_init_eval_send_threshold(cfg)
+
     device = resolve_device(cfg.device)
     print(f"Using device: {device}")
     wandb_run = _init_recurrent_wandb(cfg)
@@ -13718,7 +13776,14 @@ def main():
     initial_dagger_model = None
     if cfg.recurrent_init:
         print("=== Step 1: Loading recurrent init checkpoint ===")
-        inherited_threshold = _inherit_recurrent_init_eval_send_threshold(cfg)
+        if inherited_obs_config:
+            formatted = ", ".join(
+                f"{key}={value!r}" for key, value in sorted(inherited_obs_config.items())
+            )
+            print(
+                "Inherited recurrent init observation config "
+                f"from {cfg.recurrent_init}: {formatted}"
+            )
         if inherited_threshold is not None:
             print(
                 "Inherited recurrent init eval send threshold "
