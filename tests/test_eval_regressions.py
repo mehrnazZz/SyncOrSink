@@ -9,7 +9,10 @@ def test_episode_success_distinguishes_energy_failure():
 
     assert episode_success("energy_grid", True, {"success": False}) is False
     assert episode_success("energy_grid", True, {"success": True}) is True
-    assert episode_success("signal_hunt", True, {"success": False}) is True
+    assert episode_success("signal_hunt", True, {"success": False}) is False
+    assert episode_success("signal_hunt", True, {"success": True}) is True
+    assert episode_success("pipeline_assembly", True, {"success": False}) is False
+    assert episode_success("pipeline_assembly", True, {"success": True}) is True
     assert episode_success("pipeline_assembly", False, {"success": True}) is False
 
 
@@ -33,6 +36,48 @@ def test_run_episodes_uses_energy_success_flag():
         return {0: {"action": 4, "message_tokens": []}}
 
     summary, episodes = run_episodes(EnergyFailureEnv(), policy, episodes=1, seed=0)
+
+    assert summary.success_rate == 0.0
+    assert episodes[0].success is False
+
+
+def test_random_policy_reset_seed_is_reproducible():
+    from syncorsink.policies.random_policy import random_policy
+
+    policy = random_policy(action_space=None, num_agents=3)
+
+    policy.reset(seed=123)
+    first = policy({}, {}, {})
+    policy.reset(seed=123)
+    second = policy({}, {}, {})
+
+    assert first == second
+
+
+@pytest.mark.parametrize("scenario", ["pipeline_assembly", "signal_hunt"])
+def test_run_episodes_counts_timeout_as_failure(scenario):
+    from syncorsink.eval.runner import run_episodes
+
+    class Config:
+        pass
+
+    class TimeoutEnv:
+        num_agents = 1
+        config = Config()
+
+        def __init__(self):
+            self.config.scenario = scenario
+
+        def reset(self, seed=None):
+            return {0: {}}, {}
+
+        def step(self, actions):
+            return {0: {}}, {0: 0.0}, False, True, {"success": False}
+
+    def policy(obs, info, state):
+        return {0: {"action": 4, "message_tokens": []}}
+
+    summary, episodes = run_episodes(TimeoutEnv(), policy, episodes=1, seed=0)
 
     assert summary.success_rate == 0.0
     assert episodes[0].success is False

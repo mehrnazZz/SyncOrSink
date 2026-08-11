@@ -220,7 +220,7 @@ class PipelineAssembly(ScenarioBase):
         if all(s["done"] for s in stages):
             for i in rewards:
                 rewards[i] += env.reward_complete
-            return rewards, True, {"events": events}
+            return rewards, True, {"events": events, "success": True}
 
         # collect interactions per station
         station_interactors = {}
@@ -381,7 +381,7 @@ class PipelineAssembly(ScenarioBase):
             for i in rewards:
                 rewards[i] += env.reward_complete
                 events[i].append({"event": "pipeline_complete"})
-        return rewards, done, {"events": events}
+        return rewards, done, {"events": events, "success": bool(done)}
 
 
 class EnergyGrid(ScenarioBase):
@@ -808,7 +808,7 @@ class SignalHunt(ScenarioBase):
                 events[aid].append({"event": "joint_target_scan"})
             for i in rewards:
                 rewards[i] += env.reward_complete
-            return rewards, True, {"events": events}
+            return rewards, True, {"events": events, "success": True}
 
         if env.config.signal_shaping:
             shaping = env.scenario_state.data.setdefault("shaping", {
@@ -916,7 +916,7 @@ class SignalHunt(ScenarioBase):
                             if env.steps - last_msg_step <= utility_window:
                                 rewards[sender_id] += env.config.signal_comm_utility
 
-        return rewards, False, {"events": events}
+        return rewards, False, {"events": events, "success": False}
 
 
 SCENARIOS = {

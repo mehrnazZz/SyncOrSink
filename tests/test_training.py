@@ -5820,6 +5820,7 @@ def test_recurrent_pipeline_sync_rendezvous_uses_navigation_memory_to_break_loop
                 "target": [station[0], station[1]],
                 "pos": [20, 9],
                 "action": SyncOrSinkEnv.ACTION_UP,
+                "context": "stage:1:sync",
             }
         },
     }
@@ -6988,6 +6989,7 @@ def test_recurrent_pipeline_navigation_memory_breaks_two_cell_loop():
                 "target": [11, 1],
                 "pos": [9, 4],
                 "action": SyncOrSinkEnv.ACTION_DOWN,
+                "context": "stage:3:deliver:1",
             }
         },
     }
@@ -7001,6 +7003,281 @@ def test_recurrent_pipeline_navigation_memory_breaks_two_cell_loop():
     )
 
     assert action == SyncOrSinkEnv.ACTION_DOWN
+
+
+def test_recurrent_pipeline_navigation_assist_opens_doors_en_route():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_DOOR, TILE_EMPTY
+    from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _pipeline_local_assist_action
+
+    local_grid = np.full((5, 5), TILE_EMPTY, dtype=np.int16)
+    local_grid[2, 3] = TILE_DOOR
+    action_mask = np.ones((8,), dtype=np.float32)
+    action_mask[SyncOrSinkEnv.ACTION_RIGHT] = 0.0
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=32,
+        agents=3,
+        eval_pipeline_navigation_assist=True,
+    )
+    carry_obs = {
+        "self_pos": np.array([16, 4], dtype=np.int16),
+        "inventory": np.array([1], dtype=np.int16),
+        "local_grid": local_grid,
+        "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+        "goal_hint": np.full((16,), -1, dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "action_mask": action_mask,
+    }
+    pipeline_state = {
+        "completed_stages": set(),
+        "delivered_counts": {},
+        "delivered_resources": {},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+        "carry_targets": {
+            0: {
+                "source": "state_carry_target",
+                "stage": 0,
+                "station": (18, 7),
+                "resource_type": 1,
+                "required": [1, 3],
+            }
+        },
+        "terrain_memory": {
+            "passable": {(16, 4)},
+            "blocked": {(17, 4)},
+            "doors": {(17, 4)},
+            "map_size": 32,
+        },
+    }
+
+    carry_action = _pipeline_local_assist_action(
+        cfg,
+        carry_obs,
+        agent_id=0,
+        current_action_id=SyncOrSinkEnv.ACTION_LEFT,
+        pipeline_state=pipeline_state,
+    )
+
+    assert carry_action == SyncOrSinkEnv.ACTION_INTERACT
+
+    search_obs = {
+        **carry_obs,
+        "inventory": np.array([0], dtype=np.int16),
+        "goal_hint": np.array(
+            [0, 18, 7, 1, 1, -1, 0, -1, 0, -1, -1, -1, -1, -1, -1, -1],
+            dtype=np.int16,
+        ),
+    }
+    search_state = {
+        **pipeline_state,
+        "carry_targets": {},
+        "resource_memory": {1: {(18, 7)}},
+    }
+    search_action = _pipeline_local_assist_action(
+        cfg,
+        search_obs,
+        agent_id=0,
+        current_action_id=SyncOrSinkEnv.ACTION_LEFT,
+        pipeline_state=search_state,
+    )
+
+    assert search_action == SyncOrSinkEnv.ACTION_INTERACT
+
+
+def test_recurrent_pipeline_duplicate_carriers_use_compact_navigation_memory(monkeypatch):
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY
+    import syncorsink.train.recurrent_bc_rl as recurrent
+
+    cfg = recurrent.RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=32,
+        agents=3,
+        eval_pipeline_navigation_assist=True,
+    )
+    obs_agent = {
+        "self_pos": np.array([10, 6], dtype=np.int16),
+        "inventory": np.array([4], dtype=np.int16),
+        "local_grid": np.full((5, 5), TILE_EMPTY, dtype=np.int16),
+        "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+        "goal_hint": np.full((16,), -1, dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    duplicate_state = {
+        "completed_stages": set(),
+        "delivered_counts": {},
+        "delivered_resources": {},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+        "carry_targets": {
+            0: {
+                "stage": 1,
+                "station": (7, 6),
+                "resource_type": 4,
+                "required": [4, 4],
+            },
+            2: {
+                "stage": 1,
+                "station": (7, 6),
+                "resource_type": 4,
+                "required": [4, 4],
+            },
+        },
+    }
+    calls = []
+
+    def fake_memory_adjusted(*args, **kwargs):
+        calls.append(kwargs)
+        return SyncOrSinkEnv.ACTION_UP
+
+    monkeypatch.setattr(recurrent, "_pipeline_memory_adjusted_navigation_action", fake_memory_adjusted)
+
+    duplicate_action = recurrent._pipeline_local_assist_action(
+        cfg,
+        obs_agent,
+        agent_id=0,
+        current_action_id=SyncOrSinkEnv.ACTION_STAY,
+        pipeline_state=duplicate_state,
+    )
+
+    assert duplicate_action == SyncOrSinkEnv.ACTION_UP
+    assert calls[-1]["prefer_known_route"] is False
+    assert calls[-1]["compact_avoid_positions"] is True
+    assert calls[-1]["avoid_previous_backtrack_position"] is True
+
+    single_state = {
+        **duplicate_state,
+        "carry_targets": {0: duplicate_state["carry_targets"][0]},
+    }
+    single_action = recurrent._pipeline_local_assist_action(
+        cfg,
+        obs_agent,
+        agent_id=0,
+        current_action_id=SyncOrSinkEnv.ACTION_STAY,
+        pipeline_state=single_state,
+    )
+
+    assert single_action == SyncOrSinkEnv.ACTION_UP
+    assert calls[-1]["prefer_known_route"] is False
+    assert calls[-1]["compact_avoid_positions"] is False
+    assert calls[-1]["avoid_previous_backtrack_position"] is False
+
+
+def test_recurrent_pipeline_partial_non_sync_delivery_prefers_known_route(monkeypatch):
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY
+    import syncorsink.train.recurrent_bc_rl as recurrent
+
+    cfg = recurrent.RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=32,
+        agents=3,
+        eval_pipeline_navigation_assist=True,
+    )
+    obs_agent = {
+        "self_pos": np.array([10, 6], dtype=np.int16),
+        "inventory": np.array([4], dtype=np.int16),
+        "local_grid": np.full((5, 5), TILE_EMPTY, dtype=np.int16),
+        "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+        "goal_hint": np.full((16,), -1, dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    pipeline_state = {
+        "completed_stages": set(),
+        "delivered_counts": {6: 1},
+        "delivered_resources": {6: [2]},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+        "carry_targets": {
+            0: {
+                "stage": 6,
+                "station": (7, 6),
+                "resource_type": 4,
+                "required": [2, 4],
+            },
+        },
+    }
+    calls = []
+
+    def fake_memory_adjusted(*args, **kwargs):
+        calls.append(kwargs)
+        return SyncOrSinkEnv.ACTION_UP
+
+    monkeypatch.setattr(recurrent, "_pipeline_memory_adjusted_navigation_action", fake_memory_adjusted)
+
+    action = recurrent._pipeline_local_assist_action(
+        cfg,
+        obs_agent,
+        agent_id=0,
+        current_action_id=SyncOrSinkEnv.ACTION_STAY,
+        pipeline_state=pipeline_state,
+    )
+
+    assert action == SyncOrSinkEnv.ACTION_UP
+    assert calls[-1]["prefer_known_route"] is True
+    assert calls[-1]["compact_avoid_positions"] is False
+
+
+def test_recurrent_pipeline_carry_target_uses_hint_sync_for_route_trust(monkeypatch):
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY
+    import syncorsink.train.recurrent_bc_rl as recurrent
+
+    cfg = recurrent.RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=32,
+        agents=3,
+        eval_pipeline_navigation_assist=True,
+    )
+    obs_agent = {
+        "self_pos": np.array([10, 6], dtype=np.int16),
+        "inventory": np.array([4], dtype=np.int16),
+        "local_grid": np.full((5, 5), TILE_EMPTY, dtype=np.int16),
+        "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+        "goal_hint": np.array(
+            [1, 7, 6, 2, 4, 2, 0, -1, 1, -1, -1, -1, -1, -1, -1, -1],
+            dtype=np.int16,
+        ),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    pipeline_state = {
+        "completed_stages": set(),
+        "delivered_counts": {},
+        "delivered_resources": {},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+        "carry_targets": {
+            0: {
+                "stage": 1,
+                "station": (7, 6),
+                "resource_type": 4,
+                "required": [4, 2],
+            },
+        },
+    }
+    calls = []
+
+    def fake_memory_adjusted(*args, **kwargs):
+        calls.append(kwargs)
+        return SyncOrSinkEnv.ACTION_UP
+
+    monkeypatch.setattr(recurrent, "_pipeline_memory_adjusted_navigation_action", fake_memory_adjusted)
+
+    action = recurrent._pipeline_local_assist_action(
+        cfg,
+        obs_agent,
+        agent_id=0,
+        current_action_id=SyncOrSinkEnv.ACTION_STAY,
+        pipeline_state=pipeline_state,
+    )
+
+    assert action == SyncOrSinkEnv.ACTION_UP
+    assert calls[-1]["prefer_known_route"] is False
 
 
 def test_recurrent_pipeline_navigation_memory_breaks_repeated_cell_cycle():
@@ -7049,6 +7326,109 @@ def test_recurrent_pipeline_navigation_memory_breaks_repeated_cell_cycle():
         SyncOrSinkEnv.ACTION_LEFT,
     }
     assert pipeline_state["navigation_memory"][0]["recent"][-1]["action"] == action
+
+
+def test_recurrent_pipeline_navigation_memory_ignores_different_route_context():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY
+    from syncorsink.train.recurrent_bc_rl import _pipeline_memory_adjusted_navigation_action
+
+    obs_agent = {
+        "self_pos": np.array([4, 14], dtype=np.int16),
+        "inventory": np.array([4], dtype=np.int16),
+        "local_grid": np.full((3, 3), TILE_EMPTY, dtype=np.int16),
+        "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+        "goal_hint": np.full((16,), -1, dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    pipeline_state = {
+        "navigation_memory": {
+            0: {
+                "target": [2, 7],
+                "pos": [4, 15],
+                "action": SyncOrSinkEnv.ACTION_UP,
+                "context": "stage:1:deliver:3",
+                "recent": [
+                    {
+                        "target": [2, 7],
+                        "pos": [4, 14],
+                        "action": SyncOrSinkEnv.ACTION_UP,
+                        "context": "stage:1:deliver:3",
+                    }
+                ],
+            }
+        }
+    }
+
+    action = _pipeline_memory_adjusted_navigation_action(
+        obs_agent,
+        (2, 7),
+        SyncOrSinkEnv.ACTION_UP,
+        pipeline_state,
+        0,
+        context_key="stage:6:deliver:4",
+    )
+
+    assert action == SyncOrSinkEnv.ACTION_UP
+    assert pipeline_state["navigation_memory"][0]["context"] == "stage:6:deliver:4"
+    assert (
+        pipeline_state["navigation_memory"][0]["recent"][-1]["context"]
+        == "stage:6:deliver:4"
+    )
+
+
+def test_recurrent_pipeline_navigation_memory_prefers_known_route():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY
+    from syncorsink.train.recurrent_bc_rl import _pipeline_memory_adjusted_navigation_action
+
+    obs_agent = {
+        "self_pos": np.array([4, 14], dtype=np.int16),
+        "inventory": np.array([4], dtype=np.int16),
+        "local_grid": np.full((3, 3), TILE_EMPTY, dtype=np.int16),
+        "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+        "goal_hint": np.full((16,), -1, dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    corridor = {(4, y) for y in range(7, 15)} | {(3, 7), (2, 7)}
+    pipeline_state = {
+        "terrain_memory": {
+            "passable": corridor,
+            "blocked": set(),
+            "doors": set(),
+            "map_size": 32,
+        },
+        "navigation_memory": {
+            0: {
+                "target": [2, 7],
+                "pos": [4, 15],
+                "action": SyncOrSinkEnv.ACTION_UP,
+                "context": "stage:6:deliver:4",
+                "recent": [
+                    {
+                        "target": [2, 7],
+                        "pos": [4, 14],
+                        "action": SyncOrSinkEnv.ACTION_UP,
+                        "context": "stage:6:deliver:4",
+                    }
+                ],
+            }
+        },
+    }
+
+    action = _pipeline_memory_adjusted_navigation_action(
+        obs_agent,
+        (2, 7),
+        SyncOrSinkEnv.ACTION_UP,
+        pipeline_state,
+        0,
+        context_key="stage:6:deliver:4",
+        prefer_known_route=True,
+    )
+
+    assert action == SyncOrSinkEnv.ACTION_UP
 
 
 def test_recurrent_pipeline_navigation_routes_to_door_frontier_when_target_path_unknown():
@@ -7178,7 +7558,7 @@ def test_recurrent_pipeline_terrain_memory_skips_unknown_cells():
 
     cfg = RecurrentConfig(
         scenario="pipeline_assembly",
-        map_size=8,
+        map_size=16,
         agents=1,
     )
     obs = {
@@ -7208,6 +7588,39 @@ def test_recurrent_pipeline_terrain_memory_skips_unknown_cells():
     assert (2, 2) in terrain["passable"]
     assert (2, 3) in terrain["passable"]
     assert (1, 1) not in terrain["passable"]
+
+
+def test_recurrent_pipeline_resource_memory_ignores_unknown_cells_when_pruning():
+    from syncorsink.envs.maps import TILE_EMPTY, TILE_UNKNOWN
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _update_pipeline_resource_memory_from_obs,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=32,
+        agents=1,
+    )
+    local_grid = np.full((5, 5), TILE_EMPTY, dtype=np.int16)
+    local_grid[0, 0] = TILE_UNKNOWN
+    obs = {
+        0: {
+            "self_pos": np.array([8, 24], dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "local_grid": local_grid,
+            "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+            "goal_hint": np.full((16,), -1, dtype=np.int16),
+            "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+            "action_mask": np.ones((8,), dtype=np.float32),
+        }
+    }
+    pipeline_state = {"resource_memory": {2: {(6, 22), (6, 23)}}}
+
+    _update_pipeline_resource_memory_from_obs(cfg, pipeline_state, obs)
+
+    assert (6, 22) in pipeline_state["resource_memory"][2]
+    assert (6, 23) not in pipeline_state["resource_memory"][2]
 
 
 def test_recurrent_pipeline_frontier_exploration_assist_searches_for_missing_resource():
@@ -7250,6 +7663,49 @@ def test_recurrent_pipeline_frontier_exploration_assist_searches_for_missing_res
     )
 
     assert int(corrected[0].item()) == SyncOrSinkEnv.ACTION_RIGHT
+
+
+def test_recurrent_pipeline_frontier_exploration_assist_opens_search_doors():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_DOOR, TILE_EMPTY
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_pipeline_frontier_exploration_assist,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=32,
+        agents=1,
+        obs_exploration_memory=True,
+        eval_pipeline_frontier_exploration_assist=True,
+    )
+    local_grid = np.full((5, 5), TILE_EMPTY, dtype=np.int16)
+    local_grid[2, 3] = TILE_DOOR
+    explored = np.ones((32, 32), dtype=np.int8)
+    obs = {
+        0: {
+            "self_pos": np.array([20, 16], dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "local_grid": local_grid,
+            "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+            "goal_hint": np.array(
+                [0, 21, 23, 1, 4, -1, 0, -1, 0, -1, -1, -1, -1, -1, -1, -1],
+                dtype=np.int16,
+            ),
+            "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+            "explored_mask": explored,
+            "action_mask": np.ones((8,), dtype=np.float32),
+        }
+    }
+
+    corrected = _apply_pipeline_frontier_exploration_assist(
+        cfg,
+        obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+    )
+
+    assert int(corrected[0].item()) == SyncOrSinkEnv.ACTION_INTERACT
 
 
 def test_recurrent_pipeline_frontier_exploration_assist_spreads_agents():

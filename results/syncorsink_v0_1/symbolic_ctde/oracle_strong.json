@@ -92,15 +92,15 @@
           "2": 0.0
         },
         "avg_agent_reward": {
-          "0": 1.5625,
-          "1": 1.34375,
-          "2": 1.09375
+          "0": 1.3125,
+          "1": 1.09375,
+          "2": 1.0625
         },
         "avg_comm_tokens": 0.0,
-        "avg_return": 4.0,
-        "avg_steps": 9.59375,
+        "avg_return": 3.46875,
+        "avg_steps": 12.75,
         "episodes": 32,
-        "success_rate": 1.0
+        "success_rate": 0.96875
       },
       "name": "energy_grid_8x8_symmetric_info",
       "seeds": [],
@@ -136,16 +136,16 @@
           "3": 0.0
         },
         "avg_agent_reward": {
-          "0": -4.15625,
-          "1": -4.0625,
-          "2": -4.03125,
-          "3": -4.125
+          "0": 0.1875,
+          "1": 0.375,
+          "2": 0.28125,
+          "3": 0.15625
         },
         "avg_comm_tokens": 0.0,
-        "avg_return": -16.375,
-        "avg_steps": 32.0,
+        "avg_return": 1.0,
+        "avg_steps": 33.03125,
         "episodes": 32,
-        "success_rate": 0.0
+        "success_rate": 0.8125
       },
       "name": "energy_grid_16x16_hard_resource_sharing",
       "seeds": [],
@@ -181,15 +181,15 @@
           "2": 0.0
         },
         "avg_agent_reward": {
-          "0": 12.796875,
-          "1": 11.609375,
-          "2": 10.84375
+          "0": 12.7109375,
+          "1": 12.140625,
+          "2": 11.28125
         },
         "avg_comm_tokens": 0.0,
-        "avg_return": 35.25,
-        "avg_steps": 28.5,
+        "avg_return": 36.1328125,
+        "avg_steps": 20.0,
         "episodes": 32,
-        "success_rate": 0.96875
+        "success_rate": 1.0
       },
       "name": "pipeline_8x8_private_blueprints",
       "seeds": [],
@@ -224,16 +224,16 @@
           "3": 0.0
         },
         "avg_agent_reward": {
-          "0": 9.28125,
-          "1": 9.328125,
-          "2": 9.171875,
-          "3": 9.203125
+          "0": 10.4453125,
+          "1": 9.9921875,
+          "2": 9.3125,
+          "3": 7.28125
         },
         "avg_comm_tokens": 0.0,
-        "avg_return": 36.984375,
-        "avg_steps": 138.5625,
+        "avg_return": 37.03125,
+        "avg_steps": 122.5,
         "episodes": 32,
-        "success_rate": 0.75
+        "success_rate": 0.8125
       },
       "name": "pipeline_16x16_scaled_dependencies",
       "seeds": [],
@@ -261,15 +261,15 @@
       "weight": 1.0
     }
   ],
-  "generated_at": "2026-07-03T03:13:21+00:00",
+  "generated_at": "2026-08-11T03:55:11+00:00",
   "schema_version": "syncorsink.result.v0.1",
   "score": {
     "case_count": 6,
     "mean_avg_comm_tokens": 0.0,
-    "mean_avg_return": 19.9765625,
-    "mean_avg_steps": 36.989583333333336,
-    "mean_success_rate": 0.7864583333333334,
-    "official_score": 78.64583333333334
+    "mean_avg_return": 22.938802083333332,
+    "mean_avg_steps": 33.59375,
+    "mean_success_rate": 0.9322916666666666,
+    "official_score": 93.22916666666666
   },
   "submission": {
     "authors": [

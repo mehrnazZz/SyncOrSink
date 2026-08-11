@@ -1829,12 +1829,88 @@ def _pipeline_nearest_required_resource_target(
     return remembered[0]
 
 
+def _pipeline_known_direct_route_action_from_obs(
+    obs_agent: dict,
+    target: tuple[int, int],
+    pipeline_state: Mapping[str, Any] | None,
+    *,
+    max_extra_steps: int = 2,
+) -> int | None:
+    if not isinstance(pipeline_state, Mapping):
+        return None
+    terrain = pipeline_state.get("terrain_memory")
+    if not isinstance(terrain, Mapping):
+        return None
+    raw_passable = terrain.get("passable")
+    if not isinstance(raw_passable, Iterable) or isinstance(raw_passable, (str, bytes)):
+        return None
+    try:
+        passable = {
+            (int(pos[0]), int(pos[1]))
+            for pos in raw_passable
+            if isinstance(pos, Iterable) and not isinstance(pos, (str, bytes))
+        }
+    except TypeError:
+        return None
+    try:
+        blocked = {
+            (int(pos[0]), int(pos[1]))
+            for pos in (terrain.get("blocked") or set())
+            if isinstance(pos, Iterable) and not isinstance(pos, (str, bytes))
+        }
+    except TypeError:
+        blocked = set()
+    pos = _pipeline_self_position(obs_agent)
+    if pos is None or not passable:
+        return None
+    target = (int(target[0]), int(target[1]))
+    if pos == target:
+        return int(SyncOrSinkEnv.ACTION_INTERACT)
+    if target in blocked:
+        return None
+    passable.add(pos)
+    passable.add(target)
+    action_order = _signal_navigation_action_order(pos, target)
+    action_rank = {int(action_id): rank for rank, action_id in enumerate(action_order)}
+    ordered_deltas = sorted(
+        _SIGNAL_NAV_ACTION_DELTAS,
+        key=lambda row: action_rank.get(int(row[0]), len(action_rank)),
+    )
+    manhattan_dist = abs(int(target[0]) - int(pos[0])) + abs(int(target[1]) - int(pos[1]))
+    max_route_len = int(manhattan_dist) + max(0, int(max_extra_steps))
+    visited = {pos}
+    queue: list[tuple[tuple[int, int], int | None, int]] = [(pos, None, 0)]
+    index = 0
+    while index < len(queue):
+        cur, first_action, dist = queue[index]
+        index += 1
+        if dist > max_route_len:
+            continue
+        if cur == target and first_action is not None:
+            return int(first_action)
+        for action_id, dx, dy in ordered_deltas:
+            next_pos = (int(cur[0]) + int(dx), int(cur[1]) + int(dy))
+            if next_pos in visited or next_pos in blocked or next_pos not in passable:
+                continue
+            next_first = int(first_action) if first_action is not None else int(action_id)
+            if first_action is None and not _action_allowed_from_obs(obs_agent, next_first):
+                continue
+            visited.add(next_pos)
+            queue.append((next_pos, next_first, int(dist) + 1))
+    return None
+
+
 def _pipeline_memory_adjusted_navigation_action(
     obs_agent: dict,
     target: tuple[int, int],
     action_id: int,
     pipeline_state: Mapping[str, Any] | None,
     agent_id: int | None,
+    *,
+    context_key: str | None = None,
+    prefer_known_route: bool = False,
+    compact_avoid_positions: bool = False,
+    avoid_previous_backtrack_position: bool = False,
 ) -> int:
     if agent_id is None or not isinstance(pipeline_state, MutableMapping):
         return int(action_id)
@@ -1842,6 +1918,7 @@ def _pipeline_memory_adjusted_navigation_action(
     if pos is None:
         return int(action_id)
     target = (int(target[0]), int(target[1]))
+    context_value = str(context_key) if context_key is not None else None
     nav_memory = pipeline_state.get("navigation_memory")
     if not isinstance(nav_memory, MutableMapping):
         nav_memory = {}
@@ -1849,14 +1926,29 @@ def _pipeline_memory_adjusted_navigation_action(
     row = nav_memory.get(int(agent_id), nav_memory.get(str(int(agent_id))))
     adjusted = int(action_id)
     dest = _signal_navigation_destination(pos, int(action_id))
+    known_route_matches_action = False
+    if bool(prefer_known_route):
+        known_route_action = _pipeline_known_direct_route_action_from_obs(
+            obs_agent,
+            target,
+            pipeline_state,
+        )
+        known_route_matches_action = bool(
+            known_route_action is not None
+            and int(known_route_action) == int(action_id)
+            and _action_allowed_from_obs(obs_agent, int(known_route_action))
+        )
     previous_pos = None
     previous_target_matches = False
     blocked_actions: set[int] = set()
     avoid_positions: set[tuple[int, int]] = set()
+    recent_same_target: list[tuple[tuple[int, int], int]] = []
     if isinstance(row, Mapping):
         previous_target = _signal_xy(row.get("target"))
         row_previous_pos = _signal_xy(row.get("pos"))
-        if previous_target == target and row_previous_pos is not None:
+        row_context = row.get("context")
+        row_context_matches = context_value is None or str(row_context) == context_value
+        if previous_target == target and row_previous_pos is not None and row_context_matches:
             previous_pos = row_previous_pos
             previous_target_matches = True
         recent = row.get("recent", [])
@@ -1866,22 +1958,43 @@ def _pipeline_memory_adjusted_navigation_action(
                     continue
                 if _signal_xy(raw_step.get("target")) != target:
                     continue
+                if context_value is not None and str(raw_step.get("context")) != context_value:
+                    continue
                 step_pos = _signal_xy(raw_step.get("pos"))
                 if step_pos is None:
                     continue
-                avoid_positions.add(step_pos)
-                if step_pos != pos:
-                    continue
                 try:
-                    blocked_actions.add(int(raw_step.get("action")))
+                    step_action = int(raw_step.get("action"))
                 except (TypeError, ValueError):
                     continue
-    if (
+                recent_same_target.append((step_pos, int(step_action)))
+                if step_pos != pos:
+                    continue
+                if known_route_matches_action and int(step_action) == int(action_id):
+                    continue
+                blocked_actions.add(int(step_action))
+    if compact_avoid_positions:
+        last_current_index = None
+        for index, (step_pos, _step_action) in enumerate(recent_same_target):
+            if step_pos == pos:
+                last_current_index = int(index)
+        if last_current_index is not None:
+            recent_for_avoidance = recent_same_target[last_current_index:][-6:]
+        else:
+            recent_for_avoidance = []
+    else:
+        recent_for_avoidance = recent_same_target
+    for step_pos, _step_action in recent_for_avoidance:
+        avoid_positions.add(step_pos)
+    immediate_backtrack = bool(
         previous_target_matches
         and dest is not None
         and previous_pos == dest
         and dest != target
-    ):
+    )
+    if avoid_previous_backtrack_position and immediate_backtrack and previous_pos is not None:
+        avoid_positions.add(previous_pos)
+    if immediate_backtrack and not known_route_matches_action:
         blocked_actions.add(int(action_id))
     if blocked_actions:
         alternative = _pipeline_navigation_action_from_obs(
@@ -1913,18 +2026,26 @@ def _pipeline_memory_adjusted_navigation_action(
                     "pos": [int(step_pos[0]), int(step_pos[1])],
                     "action": int(step_action),
                 })
-    recent_rows.append({
+                if "context" in raw_step:
+                    recent_rows[-1]["context"] = str(raw_step.get("context"))
+    next_row = {
         "target": [int(target[0]), int(target[1])],
         "pos": [int(pos[0]), int(pos[1])],
         "action": int(adjusted),
-    })
+    }
+    if context_value is not None:
+        next_row["context"] = context_value
+    recent_rows.append(next_row)
     recent_rows = recent_rows[-16:]
-    nav_memory[int(agent_id)] = {
+    next_memory = {
         "target": [int(target[0]), int(target[1])],
         "pos": [int(pos[0]), int(pos[1])],
         "action": int(adjusted),
         "recent": recent_rows,
     }
+    if context_value is not None:
+        next_memory["context"] = context_value
+    nav_memory[int(agent_id)] = next_memory
     return int(adjusted)
 
 
@@ -2270,11 +2391,21 @@ def _update_pipeline_resource_memory_from_obs(
             pos,
             observed_map_size,
         )
+        local_ids = _recurrent_local_grid_ids(
+            obs_agent.get("local_grid", np.zeros((1, 1), dtype=np.int16))
+        )
         h, w = int(local_resource.shape[0]), int(local_resource.shape[1])
         cx, cy = w // 2, h // 2
         visible_types: dict[tuple[int, int], int] = {}
         for y in range(h):
             for x in range(w):
+                if (
+                    local_ids.ndim == 2
+                    and y < int(local_ids.shape[0])
+                    and x < int(local_ids.shape[1])
+                    and int(local_ids[y, x]) == int(TILE_UNKNOWN)
+                ):
+                    continue
                 gx = int(pos[0]) + int(x) - cx
                 gy = int(pos[1]) + int(y) - cy
                 if gx < 0 or gy < 0 or gx >= int(observed_map_size) or gy >= int(observed_map_size):
@@ -2397,6 +2528,9 @@ def _pipeline_frontier_exploration_action_from_obs(
     height, width = int(explored_mask.shape[0]), int(explored_mask.shape[1])
     if not (0 <= sx < width and 0 <= sy < height):
         return None
+    door_action = _pipeline_adjacent_door_interact_action(obs_agent)
+    if door_action is not None:
+        return int(door_action)
     observed_map_size = _observed_map_size(obs_agent, cfg)
     use_coordinated_frontier = _pipeline_use_coordinated_frontier(
         observed_map_size,
@@ -2459,6 +2593,12 @@ def _pipeline_frontier_exploration_action_from_obs(
             frontier,
             pipeline_state,
         )
+        if (
+            action_id is not None
+            and int(action_id) == int(SyncOrSinkEnv.ACTION_INTERACT)
+            and _pipeline_adjacent_door_interact_action(obs_agent) is not None
+        ):
+            return int(SyncOrSinkEnv.ACTION_INTERACT)
         if use_coordinated_frontier and (action_id is None or int(action_id) not in move_actions):
             action_id = _pipeline_greedy_frontier_step_from_obs(obs_agent, frontier)
         if action_id is not None and int(action_id) in move_actions:
@@ -2522,6 +2662,13 @@ def _pipeline_local_assist_action(
     held_type = _pipeline_inventory_type(obs_agent)
     sync_wait_plan = _pipeline_sync_wait_plan(pipeline_state)
     carry_plan = _pipeline_carry_target_plan(pipeline_state, agent_id, held_type)
+    if carry_plan is not None:
+        enriched_carry_plan = _pipeline_plan_with_hint_metadata(
+            carry_plan,
+            _pipeline_plans_from_goal_hint(obs_agent.get("goal_hint"), observed_map_size),
+        )
+        if enriched_carry_plan is not None:
+            carry_plan = enriched_carry_plan
     completed_for_plan = (
         completed_stages
         if completed_stages is not None
@@ -2629,6 +2776,11 @@ def _pipeline_local_assist_action(
                     int(action_id),
                     pipeline_state,
                     agent_id,
+                    context_key=(
+                        f"stage:{stage_id}:sync"
+                        if stage_id >= 0
+                        else None
+                    ),
                 )
             return int(action_id)
 
@@ -2660,7 +2812,18 @@ def _pipeline_local_assist_action(
                     int(action_id),
                     pipeline_state,
                     agent_id,
+                    context_key=(
+                        f"stage:{stage_id}:pickup:{','.join(str(value) for value in sorted(required))}"
+                        if stage_id >= 0
+                        else None
+                    ),
                 )
+            if (
+                action_id is not None
+                and int(action_id) == int(SyncOrSinkEnv.ACTION_INTERACT)
+                and _pipeline_adjacent_door_interact_action(obs_agent) is not None
+            ):
+                return int(SyncOrSinkEnv.ACTION_INTERACT)
         if (
             current == int(SyncOrSinkEnv.ACTION_INTERACT)
             and at_any_station
@@ -2685,14 +2848,41 @@ def _pipeline_local_assist_action(
         if action_id is not None and _action_allowed_from_obs(obs_agent, int(action_id)):
             if int(action_id) != int(SyncOrSinkEnv.ACTION_INTERACT) or at_active_station:
                 if int(action_id) != int(SyncOrSinkEnv.ACTION_INTERACT):
+                    duplicate_carrier_delivery = bool(
+                        held_type > 0
+                        and plan_required_values.count(int(held_type)) > 1
+                        and _pipeline_matching_carry_target_count(
+                            pipeline_state,
+                            stage_id=stage_id,
+                            resource_type=int(held_type),
+                        )
+                        >= 2
+                    )
+                    late_partial_delivery = bool(
+                        observed_map_size >= 32
+                        and stage_id >= 5
+                        and not stage_sync
+                        and not duplicate_carrier_delivery
+                        and _pipeline_stage_delivered_count(pipeline_state, stage_id) > 0
+                    )
                     action_id = _pipeline_memory_adjusted_navigation_action(
                         obs_agent,
                         station,
                         int(action_id),
                         pipeline_state,
                         agent_id,
+                        context_key=(
+                            f"stage:{stage_id}:deliver:{held_type}"
+                            if stage_id >= 0
+                            else None
+                        ),
+                        prefer_known_route=late_partial_delivery,
+                        compact_avoid_positions=duplicate_carrier_delivery,
+                        avoid_previous_backtrack_position=duplicate_carrier_delivery,
                     )
                 return int(action_id)
+            if _pipeline_adjacent_door_interact_action(obs_agent) is not None:
+                return int(SyncOrSinkEnv.ACTION_INTERACT)
         if current in {int(SyncOrSinkEnv.ACTION_INTERACT), int(SyncOrSinkEnv.ACTION_DROP)}:
             if _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY):
                 return int(SyncOrSinkEnv.ACTION_STAY)
@@ -3657,14 +3847,41 @@ def _pipeline_carry_target_plan(
                 required_values.append(required_value)
     if not required_values:
         required_values = [int(held_type)]
-    return {
+    result = {
         "source": "state_carry_target",
         "stage": stage_id,
         "station": (sx, sy),
         "required": required_values,
         "deps": [],
-        "sync": False,
     }
+    if "sync" in raw:
+        result["sync"] = bool(raw.get("sync"))
+    return result
+
+
+def _pipeline_matching_carry_target_count(
+    pipeline_state: Mapping[str, Any] | None,
+    *,
+    stage_id: int,
+    resource_type: int,
+) -> int:
+    if not isinstance(pipeline_state, Mapping):
+        return 0
+    carry_targets = pipeline_state.get("carry_targets")
+    if not isinstance(carry_targets, Mapping):
+        return 0
+    count = 0
+    for raw_target in carry_targets.values():
+        if not isinstance(raw_target, Mapping):
+            continue
+        try:
+            target_stage = int(raw_target.get("stage", -1))
+            target_resource = int(raw_target.get("resource_type", 0))
+        except (TypeError, ValueError):
+            continue
+        if target_stage == int(stage_id) and target_resource == int(resource_type):
+            count += 1
+    return int(count)
 
 
 def _pipeline_stage_delivered_count(
@@ -16866,6 +17083,10 @@ def _apply_pipeline_sync_rendezvous_assist(
     station = _pipeline_plan_station(plan)
     if station is None or not isinstance(obs, dict):
         return acts
+    try:
+        stage_id = int(plan.get("stage", -1)) if isinstance(plan, Mapping) else -1
+    except (TypeError, ValueError):
+        stage_id = -1
     corrected = acts.clone()
     empty_agent_positions: dict[int, tuple[int, int]] = {}
     for aid in range(int(acts.shape[0])):
@@ -16935,6 +17156,11 @@ def _apply_pipeline_sync_rendezvous_assist(
             int(action_id),
             pipeline_state,
             int(aid),
+            context_key=(
+                f"stage:{stage_id}:sync"
+                if stage_id >= 0
+                else None
+            ),
         )
         corrected[aid] = int(action_id)
     return corrected
