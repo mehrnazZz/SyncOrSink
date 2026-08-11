@@ -30,6 +30,7 @@ SCHEMA: Dict[str, Any] = {
         "pipeline_required_per_stage_max": {"type": "integer", "minimum": 1},
         "pipeline_sync_probability": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         "pipeline_dependency_probability": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "pipeline_wrong_delivery_penalty": {"type": "number", "minimum": 0.0},
         "energy_preset": {"type": "string"},
         "energy_private_monitor": {"type": "boolean"},
         "policy_checkpoint": {"type": ["string", "null"]},
@@ -85,6 +86,14 @@ def _manual_validate(data: Dict[str, Any]) -> None:
     for key in ("pipeline_sync_probability", "pipeline_dependency_probability"):
         if key in data and (not isinstance(data[key], (int, float)) or not 0.0 <= float(data[key]) <= 1.0):
             raise ValueError(f"spec.{key} must be a number in [0, 1]")
+    if (
+        "pipeline_wrong_delivery_penalty" in data
+        and (
+            not isinstance(data["pipeline_wrong_delivery_penalty"], (int, float))
+            or float(data["pipeline_wrong_delivery_penalty"]) < 0.0
+        )
+    ):
+        raise ValueError("spec.pipeline_wrong_delivery_penalty must be a number >= 0")
     if "energy_private_monitor" in data and not isinstance(data["energy_private_monitor"], bool):
         raise ValueError("spec.energy_private_monitor must be boolean")
     if "policy_entrypoint" in data and data["policy_entrypoint"] is not None and not isinstance(data["policy_entrypoint"], str):

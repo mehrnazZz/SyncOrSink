@@ -53,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pipeline-required-per-stage-max", type=int, default=2)
     parser.add_argument("--pipeline-sync-probability", type=float, default=0.5)
     parser.add_argument("--pipeline-dependency-probability", type=float, default=0.7)
+    parser.add_argument("--pipeline-wrong-delivery-penalty", type=float, default=0.25)
     parser.add_argument("--energy-shaping", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--energy-shaping-scale", type=float, default=0.01)
     parser.add_argument("--signal-shaping", action=argparse.BooleanOptionalAction, default=True)
@@ -67,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=3000)
     parser.add_argument("--device", default="cpu", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument("--signal-trace", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--pipeline-assist-trace", action=argparse.BooleanOptionalAction, default=False)
 
     parser.add_argument("--oracle", action="append", default=[],
                         choices=[
@@ -148,6 +150,41 @@ def main(argv: list[str] | None = None) -> int:
         action=argparse.BooleanOptionalAction,
         default=None,
     )
+    parser.add_argument(
+        "--recurrent-pipeline-station-interact-guard",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-pipeline-plan-broadcast-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-pipeline-pickup-gate-suppress",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-pipeline-frontier-exploration-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--recurrent-pipeline-interact-gate-threshold", type=float, default=None)
+    parser.add_argument(
+        "--recurrent-pipeline-interact-gate-promote",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--recurrent-pipeline-event-head-threshold", type=float, default=None)
+    parser.add_argument("--recurrent-pipeline-navigation-head-threshold", type=float, default=None)
+    parser.add_argument("--recurrent-pipeline-plan-head-threshold", type=float, default=None)
+    parser.add_argument("--recurrent-pipeline-option-threshold", type=float, default=None)
+    parser.add_argument(
+        "--recurrent-pipeline-option-allow-interact",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
 
     parser.add_argument("--mappo-deterministic", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--mappo-action-mode", default="sample", choices=["argmax", "sample"])
@@ -185,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         pipeline_required_per_stage_max=args.pipeline_required_per_stage_max,
         pipeline_sync_probability=args.pipeline_sync_probability,
         pipeline_dependency_probability=args.pipeline_dependency_probability,
+        pipeline_wrong_delivery_penalty=args.pipeline_wrong_delivery_penalty,
         energy_shaping=args.energy_shaping,
         energy_shaping_scale=args.energy_shaping_scale,
         signal_shaping=args.signal_shaping,
@@ -207,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         episodes=args.episodes,
         seed=args.seed,
         include_signal_trace=args.signal_trace,
+        include_pipeline_assist_trace=args.pipeline_assist_trace,
     )
     run_dir = _run_dir(args)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -305,6 +344,37 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 eval_pipeline_navigation_assist_trust_messages=(
                     args.recurrent_pipeline_navigation_assist_trust_messages
                 ),
+                eval_pipeline_station_interact_guard=(
+                    args.recurrent_pipeline_station_interact_guard
+                ),
+                eval_pipeline_plan_broadcast_assist=(
+                    args.recurrent_pipeline_plan_broadcast_assist
+                ),
+                eval_pipeline_pickup_gate_suppress=(
+                    args.recurrent_pipeline_pickup_gate_suppress
+                ),
+                eval_pipeline_frontier_exploration_assist=(
+                    args.recurrent_pipeline_frontier_exploration_assist
+                ),
+                eval_pipeline_interact_gate_threshold=(
+                    args.recurrent_pipeline_interact_gate_threshold
+                ),
+                eval_pipeline_interact_gate_promote=(
+                    args.recurrent_pipeline_interact_gate_promote
+                ),
+                eval_pipeline_event_head_threshold=(
+                    args.recurrent_pipeline_event_head_threshold
+                ),
+                eval_pipeline_navigation_head_threshold=(
+                    args.recurrent_pipeline_navigation_head_threshold
+                ),
+                eval_pipeline_plan_head_threshold=(
+                    args.recurrent_pipeline_plan_head_threshold
+                ),
+                eval_pipeline_option_threshold=args.recurrent_pipeline_option_threshold,
+                eval_pipeline_option_allow_interact=(
+                    args.recurrent_pipeline_option_allow_interact
+                ),
             ),
             env_config=recurrent_checkpoint_env_config(checkpoint, env_config),
             metadata={
@@ -329,6 +399,37 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 "eval_pipeline_navigation_assist": args.recurrent_pipeline_navigation_assist,
                 "eval_pipeline_navigation_assist_trust_messages": (
                     args.recurrent_pipeline_navigation_assist_trust_messages
+                ),
+                "eval_pipeline_station_interact_guard": (
+                    args.recurrent_pipeline_station_interact_guard
+                ),
+                "eval_pipeline_plan_broadcast_assist": (
+                    args.recurrent_pipeline_plan_broadcast_assist
+                ),
+                "eval_pipeline_pickup_gate_suppress": (
+                    args.recurrent_pipeline_pickup_gate_suppress
+                ),
+                "eval_pipeline_frontier_exploration_assist": (
+                    args.recurrent_pipeline_frontier_exploration_assist
+                ),
+                "eval_pipeline_interact_gate_threshold": (
+                    args.recurrent_pipeline_interact_gate_threshold
+                ),
+                "eval_pipeline_interact_gate_promote": (
+                    args.recurrent_pipeline_interact_gate_promote
+                ),
+                "eval_pipeline_event_head_threshold": (
+                    args.recurrent_pipeline_event_head_threshold
+                ),
+                "eval_pipeline_navigation_head_threshold": (
+                    args.recurrent_pipeline_navigation_head_threshold
+                ),
+                "eval_pipeline_plan_head_threshold": (
+                    args.recurrent_pipeline_plan_head_threshold
+                ),
+                "eval_pipeline_option_threshold": args.recurrent_pipeline_option_threshold,
+                "eval_pipeline_option_allow_interact": (
+                    args.recurrent_pipeline_option_allow_interact
                 ),
             },
         ))

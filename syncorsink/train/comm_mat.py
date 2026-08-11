@@ -68,7 +68,7 @@ class CommMATTrainConfig:
     hidden_dim: int = 128
     n_heads: int = 4
     n_layers: int = 2
-    goal_hint_dim: int = 32
+    goal_hint_dim: int = 64
     comm_disabled: bool = False  # ablation: transformer backbone without communication
     # eval
     send_threshold: float = 0.5
@@ -648,7 +648,7 @@ def main():
     p.add_argument("--hidden-dim", type=int, default=128)
     p.add_argument("--n-heads", type=int, default=4)
     p.add_argument("--n-layers", type=int, default=2)
-    p.add_argument("--goal-hint-dim", type=int, default=32)
+    p.add_argument("--goal-hint-dim", type=int, default=64)
     p.add_argument("--send-threshold", type=float, default=0.5)
     p.add_argument("--comm-disabled", action="store_true",
                     help="Ablation: disable communication (transformer backbone only)")

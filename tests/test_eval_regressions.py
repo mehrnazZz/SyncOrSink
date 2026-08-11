@@ -38,6 +38,45 @@ def test_run_episodes_uses_energy_success_flag():
     assert episodes[0].success is False
 
 
+def test_auxiliary_observation_layers_respect_line_of_sight():
+    import numpy as np
+
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY, TILE_RESOURCE, TILE_WALL
+
+    env = SyncOrSinkEnv(
+        SyncOrSinkConfig(
+            scenario="pipeline_assembly",
+            map_size=8,
+            num_agents=1,
+            fov_preset="easy",
+            max_steps=5,
+        )
+    )
+    env.reset(seed=0)
+    env.grid[:, :] = TILE_EMPTY
+    env.agent_positions[0] = (3, 3)
+    hidden_resource = (3, 1)
+    visible_resource = (4, 3)
+    env.grid[2, 3] = TILE_WALL
+    env.grid[hidden_resource[1], hidden_resource[0]] = TILE_RESOURCE
+    env.grid[visible_resource[1], visible_resource[0]] = TILE_RESOURCE
+    env.scenario_state.data["resource_types"] = {
+        hidden_resource: 3,
+        visible_resource: 2,
+    }
+
+    obs = env._build_observations()[0]
+    local_grid = np.asarray(obs["local_grid"])
+    local_resource_types = np.asarray(obs["local_resource_types"])
+    radius = env.fov_radius
+
+    assert int(local_grid[radius - 2, radius]) != TILE_RESOURCE
+    assert int(local_resource_types[radius - 2, radius]) == 0
+    assert int(local_grid[radius, radius + 1]) == TILE_RESOURCE
+    assert int(local_resource_types[radius, radius + 1]) == 2
+
+
 def test_signal_trajectory_audit_failure_classifier():
     from syncorsink.eval.trajectory_audit import signal_failure_type
 
@@ -89,10 +128,30 @@ def test_pipeline_trajectory_audit_failure_classifier():
     assert pipeline_failure_type({
         **base,
         "event_counts": {"pipeline_sync_wait": 1},
+        "pipeline": {
+            **base["pipeline"],
+            "stages_completed": 1,
+            "max_stages_completed": 1,
+            "max_delivered_resources": 1,
+        },
+    }) == "partial_pipeline"
+    assert pipeline_failure_type({
+        **base,
+        "pipeline": {**base["pipeline"], "sync_ready_stages": 1},
     }) == "sync_wait"
     assert pipeline_failure_type({
         **base,
         "pipeline": {**base["pipeline"], "missed_pickup_opportunities": 2},
+    }) == "missed_pickup"
+    assert pipeline_failure_type({
+        **base,
+        "pipeline": {
+            **base["pipeline"],
+            "stages_completed": 1,
+            "max_stages_completed": 1,
+            "max_delivered_resources": 1,
+            "missed_pickup_opportunities": 2,
+        },
     }) == "missed_pickup"
     assert pipeline_failure_type({
         **base,
@@ -199,6 +258,186 @@ def test_pipeline_trajectory_audit_wrong_delivery_provenance():
     assert summary["pipeline"]["wrong_delivery_after_unneeded_pickup"] == 1
 
 
+def test_pipeline_trajectory_audit_splits_empty_sync_station_decisions():
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.eval.trajectory_audit import (
+        _finalize_pipeline_episode_state,
+        _new_pipeline_episode_state,
+        _record_pipeline_action_opportunities,
+    )
+
+    env = SyncOrSinkEnv(SyncOrSinkConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        num_agents=3,
+        fov_preset="easy",
+        max_steps=20,
+        pipeline_stage_count=1,
+        pipeline_required_per_stage_min=1,
+        pipeline_required_per_stage_max=1,
+        pipeline_sync_probability=1.0,
+        pipeline_dependency_probability=0.0,
+    ))
+    env.reset(seed=0)
+    station = (3, 3)
+    stage = {
+        "stage": 0,
+        "station": station,
+        "required": [1],
+        "delivered": [],
+        "deps": [],
+        "sync": True,
+        "done": False,
+    }
+    env.scenario_state.data["stages"] = [stage]
+    env.agent_positions[0] = station
+    env.inventories[0] = 0
+    actions = {
+        0: {"action": env.ACTION_INTERACT},
+        1: {"action": env.ACTION_STAY},
+        2: {"action": env.ACTION_STAY},
+    }
+
+    premature = _new_pipeline_episode_state(env)
+    _record_pipeline_action_opportunities(env, actions, premature)
+    premature_finalized = _finalize_pipeline_episode_state(env, premature)
+    assert premature_finalized["delivery_decision_counts"] == {"premature_sync_station": 1}
+
+    stage["delivered"] = [1]
+    ready = _new_pipeline_episode_state(env)
+    _record_pipeline_action_opportunities(env, actions, ready)
+    ready_finalized = _finalize_pipeline_episode_state(env, ready)
+    assert ready_finalized["delivery_decision_counts"] == {"ready_sync_station": 1}
+
+
+def test_pipeline_trajectory_audit_records_assist_corrections():
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.envs.scenarios import TILE_STATION
+    from syncorsink.eval.trajectory_audit import (
+        _finalize_pipeline_episode_state,
+        _new_pipeline_episode_state,
+        _record_pipeline_assist_corrections,
+        _summarize_episode_rows,
+    )
+
+    env = SyncOrSinkEnv(SyncOrSinkConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        num_agents=3,
+        fov_preset="easy",
+        max_steps=20,
+        pipeline_stage_count=1,
+        pipeline_required_per_stage_min=1,
+        pipeline_required_per_stage_max=1,
+        pipeline_sync_probability=0.0,
+        pipeline_dependency_probability=0.0,
+    ))
+    env.reset(seed=0)
+    station = (3, 3)
+    resource = (2, 3)
+    stage = {
+        "stage": 0,
+        "station": station,
+        "required": [1],
+        "delivered": [],
+        "deps": [],
+        "sync": False,
+        "done": False,
+    }
+    env.grid[station[1], station[0]] = TILE_STATION
+    env._add_resource(resource, 1)
+    env.scenario_state.data["stages"] = [stage]
+    env.scenario_state.data["hints"] = {agent_id: [stage] for agent_id in range(env.num_agents)}
+    env.agent_positions[0] = resource
+    env.inventories[0] = 0
+    obs = env._build_observations()
+
+    pipeline = _new_pipeline_episode_state(env, include_assist_trace=True)
+    _record_pipeline_assist_corrections(
+        env,
+        obs,
+        {
+            0: {"action": env.ACTION_STAY, "message_tokens": []},
+            1: {"action": env.ACTION_STAY, "message_tokens": []},
+            2: {"action": env.ACTION_STAY, "message_tokens": []},
+        },
+        pipeline,
+        {
+            "completed_stages": set(),
+            "delivered_counts": {},
+            "delivered_resources": {},
+            "sync_wait_stages": set(),
+            "sync_wait_stations": {},
+        },
+    )
+
+    finalized = _finalize_pipeline_episode_state(env, pipeline)
+    assert finalized["assist_opportunities"] == 3
+    assert finalized["assist_correction_steps"] == 1
+    assert finalized["assist_correction_agents"] == 3
+    assert finalized["assist_correction_action_counts"]["stay->pickup"] == 1
+    assert sum(finalized["assist_correction_action_counts"].values()) == 3
+    assert finalized["assist_first_corrections"][0]["kind"] == "missed_pickup"
+    assert finalized["assist_first_corrections"][0]["to_name"] == "pickup"
+
+    summary = _summarize_episode_rows([{
+        "failure_type": "missed_pickup",
+        "event_counts": {},
+        "action_counts": {},
+        "pipeline": finalized,
+    }])
+    assert summary["pipeline"]["assist_correction_rate"] == 1.0
+    assert summary["pipeline"]["episodes_with_assist_corrections"] == 1
+    assert summary["pipeline"]["assist_correction_action_counts"]["stay->pickup"] == 1
+
+
+def test_pipeline_pickup_event_includes_target_metadata():
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.envs.scenarios import TILE_STATION
+
+    env = SyncOrSinkEnv(SyncOrSinkConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        num_agents=3,
+        fov_preset="easy",
+        max_steps=20,
+        pipeline_stage_count=1,
+        pipeline_required_per_stage_min=1,
+        pipeline_required_per_stage_max=1,
+        pipeline_sync_probability=0.0,
+        pipeline_dependency_probability=0.0,
+    ))
+    env.reset(seed=0)
+    station = (3, 3)
+    resource = (2, 3)
+    env.grid[station[1], station[0]] = TILE_STATION
+    env._add_resource(resource, 1)
+    env.scenario_state.data["stages"] = [{
+        "stage": 4,
+        "station": station,
+        "required": [1, 1],
+        "delivered": [1],
+        "deps": [],
+        "sync": False,
+        "done": False,
+    }]
+    env.agent_positions[0] = resource
+
+    _obs, _rewards, _done, _truncated, info = env.step({
+        0: {"action": env.ACTION_PICKUP, "message_tokens": []},
+        1: {"action": env.ACTION_STAY, "message_tokens": []},
+        2: {"action": env.ACTION_STAY, "message_tokens": []},
+    })
+
+    pickup_event = info["events"][0][0]
+    assert pickup_event["event"] == "picked_resource"
+    assert pickup_event["resource_type"] == 1
+    assert pickup_event["stage"] == 4
+    assert pickup_event["station"] == [3, 3]
+    assert pickup_event["required"] == [1, 1]
+    assert pickup_event["target_ready"] is True
+
+
 def test_signal_trajectory_audit_oracle_smoke():
     from syncorsink.envs import SyncOrSinkConfig
     from syncorsink.eval.trajectory_audit import (
@@ -303,6 +542,11 @@ def test_pipeline_trajectory_audit_oracle_smoke():
     assert policy["diagnostics"]["pipeline"]["episodes_with_all_stages_completed"] == 1
     assert episode["pipeline"]["stages_completed"] == episode["pipeline"]["stages_total"]
     assert episode["pipeline"]["delivered_resources"] == episode["pipeline"]["required_resources"]
+    assert len(episode["pipeline"]["final_agent_positions"]) == 3
+    assert len(episode["pipeline"]["final_agent_inventories"]) == 3
+    assert len(episode["pipeline"]["stage_details"]) == episode["pipeline"]["stages_total"]
+    assert all("station" in stage for stage in episode["pipeline"]["stage_details"])
+    assert episode["pipeline"]["final_resource_positions"]
     assert result["comparison"][0]["oracle"]["pipeline"]["completion_ratio"] == 1.0
 
 
@@ -382,6 +626,7 @@ def test_eval_spec_loads_extended_benchmark_fields(tmp_path):
         "pipeline_required_per_stage_max": 1,
         "pipeline_sync_probability": 0.0,
         "pipeline_dependency_probability": 0.25,
+        "pipeline_wrong_delivery_penalty": 0.75,
         "energy_preset": "easy",
         "energy_private_monitor": True,
         "policy": "comm_mat",
@@ -403,6 +648,7 @@ def test_eval_spec_loads_extended_benchmark_fields(tmp_path):
     assert spec.pipeline_required_per_stage_max == 1
     assert spec.pipeline_sync_probability == 0.0
     assert spec.pipeline_dependency_probability == 0.25
+    assert spec.pipeline_wrong_delivery_penalty == 0.75
     assert spec.energy_preset == "easy"
     assert spec.energy_private_monitor is True
     assert spec.policy_entrypoint == "my_package.agent:build_policy"

@@ -197,13 +197,44 @@ Pipeline Assembly diagnostics:
 - Pipeline BC action-supervision knobs include
   `--bc-pipeline-pickup-action-loss-weight`,
   `--bc-pipeline-delivery-action-loss-weight`,
+  `--bc-pipeline-delivery-progress-action-loss-weight`,
+  `--bc-pipeline-navigation-action-loss-weight`,
+  `--bc-pipeline-frontier-exploration-action-loss-weight`,
+  `--bc-pipeline-sync-action-loss-weight`,
+  `--bc-pipeline-station-guard-action-loss-weight`,
+  `--bc-pipeline-pickup-gate-loss-weight`,
   `--bc-pipeline-plan-action-loss-weight`,
+  `--bc-pipeline-plan-head-loss-weight`,
+  `--bc-pipeline-option-loss-weight`,
   `--bc-pipeline-bad-pickup-action-loss-weight`,
   `--bc-pipeline-bad-drop-action-loss-weight`, and
   `--bc-pipeline-bad-interact-action-loss-weight`. Structured planner-message
-  supervision can be upweighted with `--bc-pipeline-message-loss-weight`. W&B
-  logs matching `bc/pipeline_*`, `bc/pipeline_plan_*`,
-  `bc/pipeline_message_*`, and `dagger/collect_pipeline_*` metrics.
+  content supervision can be upweighted with `--bc-pipeline-message-loss-weight`.
+  Use `--bc-pipeline-send-gate-loss-weight` with
+  `--bc-pipeline-send-gate-pos-weight` and
+  `--bc-pipeline-send-gate-neg-weight` to teach when those planner messages
+  should be sent without turning every step into a broadcast. W&B logs matching
+  `bc/pipeline_*`, `bc/pipeline_plan_*`, `bc/pipeline_option_*`,
+  `bc/pipeline_message_*`,
+  `bc/pipeline_send_gate_*`, and `dagger/collect_pipeline_*` metrics. The
+  delivery-progress auxiliary labels agents already carrying a needed resource
+  to move toward the matching active station, then interact there, which is
+  useful when audits show pickup without completion or a collapse to no
+  delivery. The navigation auxiliary distills the existing trusted-plan Pipeline
+  assist into movement-only labels for walking toward needed visible resources
+  or the active station without relying on eval-time navigation assist. The
+  frontier-exploration auxiliary is opt-in and labels exploration-memory
+  frontier moves only when the trusted active stage still needs a resource, the
+  agent is empty-handed, and no required resource is locally visible. It requires
+  `--obs-exploration-memory`; for recurrent multi-map/full-memory runs use
+  `--obs-memory-mode egocentric` to keep the observation contract stable. The
+  pickup-gate auxiliary labels visible pickup opportunities as
+  positive only when the resource belongs to the trusted current active stage,
+  which helps separate active-stage resources from blocked or future-stage
+  resources in Pipeline audits. The station-guard auxiliary labels a concrete
+  non-idle recovery or navigation action whenever station `INTERACT` would be
+  useless or wrong, reducing the chance that the policy treats every station
+  tile as an interaction target.
 - `--dagger-pipeline-wrong-delivery-provenance-labels` is an experimental
   Pipeline DAgger option that traces an actual `pipeline_wrong_delivery` event
   back to the earlier model-only pickup of the same carried resource. When this
@@ -214,21 +245,90 @@ Pipeline Assembly diagnostics:
   `--dagger-replay-event-weights pipeline_wrong_delivery_root_pickup:0.5` and
   `--dagger-replay-event-caps pipeline_wrong_delivery_root_pickup:1`. Keep it
   opt-in until the replay balance is tuned.
+- The guarded Pipeline sweep profile prioritizes `pipeline_sync_wait` replay,
+  so failed rendezvous states are replayed alongside delivery-ready,
+  delivery-miss, station-stall, and wrong-delivery snippets.
 - `--bc-pipeline-proactive-bad-action-labels` is an experimental opt-in that
   adds trusted-plan negative labels for picking up unneeded resources,
   wrong-station interacts, and dropping a still-needed resource, plus
   wrong-item station recovery labels. Keep runs with this flag separate until
   tuned.
+- `--bc-pipeline-interact-gate-*` trains a binary station-interaction gate from
+  action logits: positive labels are station states where `INTERACT` would
+  deliver, sync, or complete a stage; negative labels are station no-ops or
+  wrong-resource interactions. The recurrent actor also trains a learned
+  hidden-state gate from the same labels. W&B logs `bc/pipeline_interact_gate_*`
+  and `bc/pipeline_interact_head_*` metrics, including positive/negative counts,
+  mean probabilities, and predicted interact rates.
+- `--bc-pipeline-plan-head-loss-weight` trains a separate recurrent
+  `pipeline_plan_policy` head from the trusted plan-action labels. This is an
+  experimental distillation path for testing whether a model can learn the
+  local pickup/navigation/delivery action implied by the decoded Pipeline plan
+  without directly enabling the rule navigation assist.
+- `--bc-pipeline-option-loss-weight` trains a separate recurrent
+  `pipeline_option_policy` head over high-level Pipeline options:
+  `none`, `pickup`, `deliver`, `sync`, `drop`, `nav_resource`, `nav_station`,
+  and `wait`. The labels come from the trusted Pipeline plan and current active
+  stage, so this is the first hierarchical distillation path above primitive
+  actions.
+- `--obs-pipeline-feedback` appends recurrent-only Pipeline progress feedback:
+  self-local event bits plus compact metadata for the last Pipeline stage,
+  resource type, and station direction exposed by the previous event. This helps
+  RNN policies learn to stop repeating already-satisfied deliveries and to
+  respond to sync/dependency events without changing the base environment API.
+  Requesting Pipeline feedback implies the parent recurrent `--obs-feedback`
+  block in the training CLI.
+- `--obs-pipeline-shared-feedback` keeps the same feedback width but fills those
+  Pipeline event slots from all agents' previous Pipeline events. This gives
+  recurrent policies public progress feedback while private blueprints still
+  have to move through observations/messages. It also implies
+  `--obs-pipeline-feedback`.
+- `--bc-calibrate-pipeline-interact-gate-threshold` calibrates
+  `--eval-pipeline-interact-gate-threshold` after BC from the learned
+  hidden-state gate probabilities. By default it matches the demo valid-interact
+  label rate; use `--bc-pipeline-interact-gate-threshold-target-rate` to tune a
+  more permissive or stricter gated decoder.
 - `--obs-pipeline-features` adds a compact recurrent observation block decoded
   from local observations, private Pipeline hints, and planner messages:
   active-station direction, needed resource types, held-resource match,
-  pickup/delivery affordances, and wrong-station interact context.
+  held-target direction, pickup/delivery affordances, and wrong-station interact
+  context.
+- `--obs-pipeline-progress-features` appends an opt-in durable Pipeline progress
+  block for recurrent policies: completed-stage fractions, current-stage
+  dependency/readiness/sync flags, delivered/remaining requirement fractions,
+  and remaining/delivered resource masks. It uses event-derived progress state,
+  not simulator-only hidden stage objects.
+- `--pipeline-wrong-delivery-penalty` controls the environment reward penalty
+  for invalid station interactions with carried resources. It is part of the
+  Pipeline task surface and should be recorded in comparable eval specs.
 - `--eval-pipeline-navigation-assist` is an opt-in diagnostic decoder assist:
   it trusts private Pipeline hints by default and uses the local action mask to
   steer required-resource pickup, active-station delivery, and wrong-station
   suppression. Add `--eval-pipeline-navigation-assist-trust-messages` only when
   you want the assist to trust learned planner messages without a matching hint.
   Treat assisted scores separately from plain benchmark scores.
+- `--eval-pipeline-interact-gate-threshold` is an opt-in recurrent eval decoder
+  guard for Pipeline. If set to `>=0`, station `INTERACT` actions below the
+  learned hidden-state gate probability are converted to `STAY`. This is useful
+  for diagnosing whether the policy has learned when interaction is actually
+  valid, but it should be reported as a gated-decoder score.
+- `--eval-pipeline-station-interact-guard` is an opt-in deterministic eval
+  guard for Pipeline station actions. It only touches attempted station
+  `INTERACT` actions, suppressing them with trusted private-hint/progress
+  state when they cannot deliver, sync, or complete. It is narrower than full
+  navigation assist and should still be reported separately from plain scores.
+- `--eval-pipeline-plan-head-threshold` is an opt-in recurrent eval decoder for
+  the learned plan head. If set to `>=0`, the plan head may replace the base
+  action with a non-`STAY` action when a trusted Pipeline plan is visible and
+  the head confidence clears the threshold. Report these results separately
+  from plain benchmark scores.
+- `--eval-pipeline-option-threshold` is an opt-in recurrent eval decoder for
+  the learned option head. If set to `>=0`, confident Pipeline options are
+  decoded into allowed low-risk primitive actions using the visible trusted
+  plan. Direct option-driven DELIVER/SYNC station `INTERACT` promotion is
+  disabled by default; add `--eval-pipeline-option-allow-interact` only for
+  ablations that intentionally test that high-risk decoder path. Report these
+  results separately from plain benchmark scores.
 - `--rl-rollout-pipeline-navigation-assist` applies the same Pipeline assist
   only during recurrent PPO rollout collection. This is the preferred guided
   fine-tuning mode when you want unassisted eval plots/checkpoint selection but
@@ -236,12 +336,83 @@ Pipeline Assembly diagnostics:
   `--rl-rollout-eval-decoding`; use
   `--rl-rollout-pipeline-navigation-assist-trust-messages` only for runs that
   intentionally train from teammate-message plans.
-- `--rl-pipeline-bad-pickup-penalty` and
+- `--rl-eval-decoding-action-loss-weight` adds an opt-in PPO auxiliary loss on
+  actions changed by rollout eval-decoding. This is useful when assisted PPO
+  rollouts produce good trajectories but plain eval does not inherit the
+  corrected actions strongly enough.
+- `--rl-pipeline-assisted-action-loss-weight` adds the broader Pipeline version
+  of that distillation signal: it trains on the final post-assist rollout action
+  across trusted plan/navigation/sync/guard labels plus actual corrections. Use
+  it to teach the plain actor the behavior produced by navigation and station
+  assists.
+- `--rl-pipeline-interact-gate-loss-weight` adds a PPO auxiliary on Pipeline
+  station-tile interact/no-interact decisions. It trains both the raw actor
+  interact logit and the auxiliary interact-gate head, with optional
+  `--rl-pipeline-interact-gate-pos-weight` and
+  `--rl-pipeline-interact-gate-neg-weight`. W&B logs positive and negative
+  station-interact rates under `train/pipeline_interact_gate_*`, plus rollout
+  label counts under `rollout/pipeline_interact_gate_*`.
+- `--rl-pipeline-pickup-gate-loss-weight` adds the matching PPO auxiliary for
+  resource-tile pickup/no-pickup decisions. This is useful for Pipeline runs
+  that pick resources needed by blocked future stages and then produce wrong
+  deliveries. W&B logs `train/pipeline_pickup_gate_*` and
+  `rollout/pipeline_pickup_gate_*`.
+- `--rl-pipeline-delivery-progress-action-loss-weight` adds a PPO action
+  auxiliary for agents already carrying a resource required by the trusted
+  active Pipeline stage. It trains movement toward the matching station and
+  same-station delivery `INTERACT`, which is useful when station guards reduce
+  wrong delivery but audits show many missed delivery opportunities.
+- `--rl-pipeline-navigation-action-loss-weight` adds a movement-only PPO action
+  auxiliary from trusted Pipeline navigation labels. It distills walking toward
+  visible required resources or active stations without directly supervising
+  high-risk `INTERACT` actions. W&B logs `train/pipeline_navigation_action_*`
+  and `rollout/pipeline_navigation_action_labels`.
+- `--rl-pipeline-sync-action-loss-weight` adds a PPO auxiliary for sync-stage
+  rendezvous labels. Empty-handed agents are trained to move toward or
+  `INTERACT` at a sync station once every remaining required resource for that
+  stage is already carried by the team, even before the final delivery happens.
+  W&B logs `train/pipeline_sync_action_*` and
+  `rollout/pipeline_sync_action_labels`.
+- `--rl-pipeline-ready-interact-action-loss-weight` adds a sparse positive PPO
+  auxiliary for Pipeline rollout states where `INTERACT` is immediately valid:
+  delivering a held needed resource at the active station or completing a ready
+  sync stage. W&B logs `train/pipeline_ready_interact_action_*` plus
+  `rollout/pipeline_ready_interact_action_labels`.
+- `--rl-pipeline-station-guard-action-loss-weight` adds a denser PPO auxiliary
+  on Pipeline rollout states where station `INTERACT` would be unsafe. It uses
+  the same station-guard target action, including safe `STAY`/escape/drop
+  actions, and logs `train/pipeline_station_guard_action_*` plus
+  `rollout/pipeline_station_guard_action_labels`.
+- `--rl-pipeline-wrong-station-recovery-action-loss-weight` adds a narrower
+  PPO auxiliary for Pipeline rollout states where an agent is holding a
+  resource on a station tile that cannot use it. The target leaves the current
+  station toward the known station that still needs that resource, and W&B logs
+  `train/pipeline_wrong_station_recovery_action_*` plus
+  `rollout/pipeline_wrong_station_recovery_action_labels`.
+- `--rl-pipeline-plan-action-loss-weight` adds a PPO auxiliary on Pipeline
+  rollout states with a trusted visible plan, training the actor toward the
+  local pickup/navigation/delivery/sync action. W&B logs
+  `train/pipeline_plan_action_*` and `rollout/pipeline_plan_action_labels`.
+- `--rl-pipeline-plan-head-loss-weight` trains the auxiliary recurrent
+  `pipeline_plan_policy` head on those same rollout plan-action labels. W&B
+  logs `train/pipeline_plan_head_*`.
+- `--rl-pipeline-option-loss-weight` trains the auxiliary recurrent
+  `pipeline_option_policy` head on high-level rollout options such as pickup,
+  deliver, sync, navigation, and wait. W&B logs `train/pipeline_option_*` and
+  `rollout/pipeline_option_labels`.
+- `--rl-rollout-pipeline-station-interact-guard` applies only the narrow
+  station `INTERACT` guard during PPO rollout collection. The guarded recurrent
+  PPO sweep profile enables this with `--rl-rollout-eval-decoding` so rollouts
+  avoid the clearest Pipeline safety failures while benchmark eval can remain
+  unassisted or use its own separately reported guard setting.
+- `--rl-pipeline-bad-pickup-penalty`,
+  `--rl-pipeline-bad-interact-penalty`, and
   `--rl-pipeline-unneeded-drop-bonus` shape recurrent PPO rewards for confirmed
-  Pipeline pickup/drop events involving no-longer-needed resources. W&B logs
-  `rollout/pipeline_bad_pickups`, `rollout/pipeline_unneeded_drops`, and
-  `rollout/pipeline_wrong_deliveries` so these runs can be compared against the
-  trajectory audit.
+  Pipeline safety events: no-longer-needed pickups, station interactions that
+  cannot deliver/sync/complete, and recovery drops. W&B logs
+  `rollout/pipeline_bad_pickups`, `rollout/pipeline_bad_interacts`,
+  `rollout/pipeline_unneeded_drops`, and `rollout/pipeline_wrong_deliveries`
+  so these runs can be compared against the trajectory audit.
 - The trajectory audit reports Pipeline failure types such as `missed_pickup`,
   `missed_delivery`, `sync_wait`, `dependency_blocked`, `wrong_delivery`, and
   `partial_pipeline`, plus aggregate stage-completion and delivery ratios. It
@@ -258,6 +429,10 @@ PPO stability controls:
 - `--rl-early-stop-eval-patience N` stops PPO after `N` eval checkpoints fail
   to improve the best eval score, which is useful when PPO starts degrading a
   strong BC/DAgger policy.
+- `--no-dagger-restore-best` makes PPO continue from the latest DAgger round
+  instead of restoring the best short-eval DAgger checkpoint. This is useful
+  when later DAgger rounds add important failure-state coverage even if their
+  immediate eval score is noisier.
 
 Seed schedules:
 
@@ -320,18 +495,69 @@ send-gate choices with `--mappo-eval-send-mode` / `--mappo-eval-send-threshold`.
 
 The sweep also supports `--algorithms recurrent_bc_rl` for the recurrent
 BC/DAgger/PPO trainer. Recurrent runs use `--recurrent-*` flags for oracle,
-demo count, BC epochs, DAgger rounds, checkpoint init, train/eval map schedules,
-Signal Hunt specialist observation/eval assists, and PPO stability controls.
+demo count, BC epochs, DAgger rounds/focus settings, Pipeline wrong-delivery
+provenance labels, checkpoint init, train/eval map schedules, Signal Hunt
+specialist observation/eval assists, and PPO stability controls.
+Use `--recurrent-backbone mlp` for the legacy two-layer flat encoder or
+`--recurrent-backbone residual_mlp` for the LayerNorm residual flat encoder.
+Use `--recurrent-backbone local_cnn` to encode the local grid/resource/node/
+energy FOV planes with a small CNN before fusing them with message, hint,
+memory, feedback, and action-mask features. Checkpoints record the recurrent
+backbone and resume only into matching backbone configs.
 By default, `--recurrent-oracle auto` uses the Signal Hunt specialist oracle for
 Signal Hunt and the scenario planner communication teachers for Energy Grid and
 Pipeline Assembly. The default `--recurrent-ppo-profile guarded` applies the
 safer PPO recipe from the Signal Hunt ablation: lower LR/clip, stronger
-BC/communication KL, balanced rollouts, and eval-decoding rollouts. Use
+BC/communication KL, balanced rollouts, and eval-decoding rollouts. For
+Pipeline Assembly it also enables pickup/delivery/progress supervision,
+plan/option/message distillation, station-guard action supervision,
+  interact-gate supervision with calibrated threshold selection, proactive
+  bad-action labels, focused DAgger replay for delivery misses/wrong deliveries,
+  pre-delivery ready-state replay via `pipeline_delivery_ready`,
+  wrong-delivery provenance labels, and rollout station-interact guarding. Use
 `--recurrent-ppo-profile standard` to recover the trainer defaults, or override
 individual knobs such as `--recurrent-rl-lr`, `--recurrent-clip`,
 `--recurrent-bc-kl-coeff`, and `--recurrent-bc-comm-kl-coeff`. Use
+`--recurrent-bc-pipeline-bad-action-margin-loss-weight` for explicit Pipeline
+bad-action ablations; it is exposed for wrong-station `INTERACT` experiments but
+is not part of the guarded default profile.
+Use `--recurrent-bc-pipeline-wrong-station-recovery-action-loss-weight` for
+explicit wrong-station movement-recovery ablations; it is logged but not part of
+the guarded default profile.
+Use `--recurrent-rl-pipeline-wrong-station-recovery-action-loss-weight` for the
+matching PPO rollout-state recovery auxiliary after DAgger has exposed
+wrong-station failures.
+Use `--recurrent-bc-pipeline-ready-interact-action-loss-weight` and
+`--recurrent-rl-pipeline-ready-interact-action-loss-weight` for positive
+ready-delivery/sync interaction ablations when policies avoid `INTERACT` too
+often after station guards are enabled.
+Use `--recurrent-bc-pipeline-navigation-action-loss-weight` for explicit
+trusted-plan movement distillation ablations; it is logged but not part of the
+guarded default profile.
+Use `--recurrent-rl-pipeline-delivery-progress-action-loss-weight` and
+`--recurrent-rl-pipeline-navigation-action-loss-weight` for the matching PPO
+rollout-state action auxiliaries when audits show carried resources or movement
+plans are visible but the plain actor still misses delivery windows.
+Use `--recurrent-bc-pipeline-frontier-exploration-action-loss-weight` for
+explicit Pipeline resource-search ablations with exploration memory. It labels
+frontier moves when the current trusted plan needs an unseen resource and is
+logged separately from visible-resource navigation.
+Use `--recurrent-bc-pipeline-sync-action-loss-weight` for explicit sync-stage
+rendezvous ablations. It labels empty agents once every remaining required
+resource for a sync stage is already carried by the team, then supervises
+movement to the station and same-tile `INTERACT`; it is logged but not part of
+the guarded default profile.
+Use `--recurrent-rl-pipeline-sync-action-loss-weight` for the matching PPO
+rollout-state rendezvous auxiliary when assisted rollouts reach sync stations
+but the plain actor fails to retain those actions.
+Use `--recurrent-rl-eval-decoding-action-loss-weight` with rollout eval-decoding
+ablations when you want PPO to imitate decoder-corrected actions directly.
+Use
 `--recurrent-rl-early-stop-eval-patience` to tune PPO early stopping; the
 guarded profile defaults this to `4`, while the standard profile disables it.
+Use `--no-recurrent-dagger-retrain-from-scratch` only as an explicit ablation;
+the guarded profile keeps scratch DAgger retraining by default after current
+Pipeline runs showed continuation was weaker.
 Use `--recurrent-init-template` with `{seed}` to fine-tune each seed from its own
 BC/DAgger checkpoint. For non-Signal scenarios,
 `--recurrent-bc-calibrate-send-threshold` passes the recurrent trainer's

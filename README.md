@@ -331,9 +331,9 @@ Observations are dicts per agent with:
 - `local_grid`: local tile view
 - `inventory`: resource id held
 - `self_pos`: absolute `(x,y)` position
-- `local_resource_types`: local resource type ids
-- `local_node_types`: local node type ids
-- `local_node_energy`: local node energy values
+- `local_resource_types`: line-of-sight masked local resource type ids
+- `local_node_types`: line-of-sight masked local node type ids
+- `local_node_energy`: line-of-sight masked local node energy values
 - `messages_tokens`: tokenized message inbox (padded)
 - `message_from`: sender ids
 - `goal_hint`: integer hint tokens (scenario-dependent)
@@ -366,9 +366,9 @@ Each agent observation includes:
 - `local_grid`: `(2*radius+1, 2*radius+1)` grid of tile ids
 - `inventory`: `(1,)` integer item id
 - `self_pos`: `(2,)` absolute position
-- `local_resource_types`: `(2*radius+1, 2*radius+1)` resource type grid
-- `local_node_types`: `(2*radius+1, 2*radius+1)` node type grid
-- `local_node_energy`: `(2*radius+1, 2*radius+1)` node energy grid
+- `local_resource_types`: `(2*radius+1, 2*radius+1)` resource type grid, zeroed where `local_grid` is unknown
+- `local_node_types`: `(2*radius+1, 2*radius+1)` node type grid, zeroed where `local_grid` is unknown
+- `local_node_energy`: `(2*radius+1, 2*radius+1)` node energy grid, zeroed where `local_grid` is unknown
 - `messages_tokens`: `(max_messages, comm_token_limit)` padded tokens
 - `message_from`: `(max_messages,)` sender ids
 - `goal_hint`: `(16,)` integer hint tokens

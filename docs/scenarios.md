@@ -43,6 +43,8 @@ are added.
 - Stage delivery: `reward_stage`
 - Sync completion bonus: `0.5 * reward_stage` per interacting agent
 - Final completion: `reward_complete`
+- Wrong delivery: subtracts `pipeline_wrong_delivery_penalty` when an agent
+  interacts at a station with a carried resource that cannot be accepted there.
 
 **Training/eval events:**
 - Positive progress: `picked_resource`, `delivered`, `stage_completed`,
@@ -53,17 +55,63 @@ are added.
   `pipeline_station_stall_miss`, `pipeline_drop_miss`
 - Optional BC action losses supervise correct pickup/delivery and suppress
   bad drops or wrong-station interactions during Pipeline DAgGER.
+- Ready-interact action losses are available for BC/PPO ablations that need to
+  encourage valid station delivery and sync-completion interactions.
+- PPO delivery-progress and navigation action losses are available for
+  ablations where policies learn to avoid bad station interactions but still
+  fail to move carried resources to the active station or follow visible plans.
 - Additional recurrent BC diagnostics can upweight trusted plan-following
   actions and structured Pipeline planner messages, making it easier to test
   whether a model has learned both "what to say" and "how to execute the plan."
+- Recurrent actors can also train an experimental Pipeline plan-action head
+  (`--bc-pipeline-plan-head-loss-weight`) and audit it with
+  `--eval-pipeline-plan-head-threshold`; keep those scores separate from plain
+  unassisted results.
+- Recurrent actors can train an experimental Pipeline option head
+  (`--bc-pipeline-option-loss-weight`) over high-level intents such as pickup,
+  deliver, sync, and navigation-to-resource/station; audit it with
+  `--eval-pipeline-option-threshold`. By default this decoder only promotes
+  low-risk primitive actions; use `--eval-pipeline-option-allow-interact` for
+  ablations that let options directly trigger delivery/sync `INTERACT`. Keep
+  those decoded scores separate from plain unassisted results.
+- Narrow `--bc-pipeline-sync-action-loss-weight` and
+  `--rl-pipeline-sync-action-loss-weight` ablations label empty-agent
+  rendezvous actions for sync stations once every remaining required resource
+  is already carried by the team. They are useful for testing whether learned
+  policies can coordinate the final synchronized interaction, but are not
+  enabled in the guarded default profile yet.
+- `--bc-pipeline-frontier-exploration-action-loss-weight` is an opt-in
+  recurrent resource-search auxiliary for runs with exploration memory. It
+  labels frontier moves only when the trusted active stage needs a resource that
+  is not locally visible, so it does not reveal hidden resource positions.
 - Recurrent Pipeline runs can enable `--obs-pipeline-features`, which decodes
   private hints and received planner messages into station/resource
-  affordances without exposing simulator-only hidden state.
+  affordances, including held-resource target cues, without exposing
+  simulator-only hidden state.
+- `--obs-pipeline-progress-features` is a separate opt-in recurrent feature
+  block for durable event-derived progress: completed stages, delivered and
+  remaining resources, dependency availability, and sync-wait readiness.
 - `--eval-pipeline-navigation-assist` is available for diagnostic recurrent
   runs that need to test whether private hints are executable; add
   `--eval-pipeline-navigation-assist-trust-messages` only for experiments that
   intentionally trust learned messages. Keep assisted results separate from
   unassisted benchmark scores.
+- `--eval-pipeline-station-interact-guard` is a narrower diagnostic guard that
+  suppresses station `INTERACT` attempts that trusted hints/progress state mark
+  as unable to deliver, sync, or complete.
+- `--rl-rollout-pipeline-station-interact-guard` applies that same narrow
+  guard only while recurrent PPO collects rollouts; the guarded recurrent PPO
+  sweep profile enables it by default. The same guarded profile now also turns
+  on pickup/delivery/progress labels,
+  plan/option/message distillation, interact-gate BC supervision, calibrated
+  interact-gate threshold selection, station-guard action labels, proactive
+  bad-action labels, focused DAgger replay for delivery-ready states, delivery
+  misses, and wrong deliveries,
+  plus wrong-delivery provenance labels for Pipeline sweep runs.
+  Wrong-station recovery labels are available as explicit BC and PPO rollout
+  ablation knobs, but are not part of the guarded default profile.
+  Navigation movement-distillation labels are also available as an explicit
+  ablation knob, but are not part of the guarded default profile.
 
 ## B) Resource Sharing — “Energy Grid”
 

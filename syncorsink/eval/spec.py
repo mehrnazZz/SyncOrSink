@@ -28,6 +28,7 @@ class EvalSpec:
     pipeline_required_per_stage_max: int = 2
     pipeline_sync_probability: float = 0.5
     pipeline_dependency_probability: float = 0.7
+    pipeline_wrong_delivery_penalty: float = 0.25
     energy_preset: str = "hard"
     energy_private_monitor: bool = True
     policy_checkpoint: str | None = None
@@ -63,6 +64,7 @@ def load_spec(path: str) -> EvalSpec:
         pipeline_required_per_stage_max=int(data.get("pipeline_required_per_stage_max", 2)),
         pipeline_sync_probability=float(data.get("pipeline_sync_probability", 0.5)),
         pipeline_dependency_probability=float(data.get("pipeline_dependency_probability", 0.7)),
+        pipeline_wrong_delivery_penalty=float(data.get("pipeline_wrong_delivery_penalty", 0.25)),
         energy_preset=data.get("energy_preset", "hard"),
         energy_private_monitor=bool(data.get("energy_private_monitor", True)),
         policy_checkpoint=data.get("policy_checkpoint"),

@@ -72,14 +72,28 @@ Per‑agent observation dict:
 - If `obs_onehot=True`, `local_grid` becomes `(C,H,W)` one‑hot channels
 - `inventory`: `(1,)` int
 - `self_pos`: `(2,)` absolute `(x,y)` position
-- `local_resource_types`: `(2r+1, 2r+1)` int grid (resource type ids, `0` means none)
-- `local_node_types`: `(2r+1, 2r+1)` int grid (node type ids, `0` means none)
-- `local_node_energy`: `(2r+1, 2r+1)` int grid (node energy values)
+- `local_resource_types`: `(2r+1, 2r+1)` int grid (resource type ids, `0` means none or hidden)
+- `local_node_types`: `(2r+1, 2r+1)` int grid (node type ids, `0` means none or hidden)
+- `local_node_energy`: `(2r+1, 2r+1)` int grid (node energy values, `0` means none or hidden)
 - `messages_tokens`: `(max_messages, comm_token_limit)`
 - `message_from`: `(max_messages,)`
-- `goal_hint`: `(16,)` per-agent private hint tokens (scenario-dependent)
+- `goal_hint`: fixed-size per-agent private hint tokens (default `(64,)`;
+  scenario-dependent payload, configurable with `goal_hint_size`)
 - `explored_mask`: `(map_size, map_size)` binary per-agent explored map (if `obs_exploration_memory=True`)
 - `explored_age`: `(map_size, map_size)` steps since last seen, `-1` unseen (if `obs_exploration_age=True`)
+
+Recurrent training wrappers may append optional feedback features after a step.
+For Pipeline Assembly, `obs_pipeline_feedback=True` adds event-derived features
+for the acting agent's previous Pipeline events: event bits, last event stage,
+last event resource type, and relative direction to the event station when the
+event exposes one. `obs_pipeline_shared_feedback=True` keeps the same feature
+layout but fills the Pipeline event slots from all agents' previous Pipeline
+events, giving recurrent policies public progress feedback without exposing
+private blueprints. This is not part of the base environment observation space.
+`obs_pipeline_progress_features=True` is a separate recurrent-only block that
+summarizes durable event-derived Pipeline state: completed-stage progress,
+current-stage dependency and sync readiness, and delivered/remaining resource
+masks.
 
 Info dict (per step):
 - `messages_text`: list of incoming message strings (text mode)

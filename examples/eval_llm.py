@@ -203,6 +203,7 @@ def main():
     parser.add_argument("--pipeline-required-per-stage-max", type=int, default=2)
     parser.add_argument("--pipeline-sync-probability", type=float, default=0.5)
     parser.add_argument("--pipeline-dependency-probability", type=float, default=0.7)
+    parser.add_argument("--pipeline-wrong-delivery-penalty", type=float, default=0.25)
     parser.add_argument("--energy-preset", choices=["easy", "hard"], default="hard")
     parser.add_argument("--energy-private-monitor", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--provider", choices=["dummy", "openai-chat", "openai-responses", "litellm"], default="dummy")
@@ -244,6 +245,7 @@ def main():
         pipeline_required_per_stage_max=args.pipeline_required_per_stage_max,
         pipeline_sync_probability=args.pipeline_sync_probability,
         pipeline_dependency_probability=args.pipeline_dependency_probability,
+        pipeline_wrong_delivery_penalty=args.pipeline_wrong_delivery_penalty,
         energy_preset=args.energy_preset,
         energy_private_monitor=args.energy_private_monitor,
         render_split_view=args.render_split_view,

@@ -198,33 +198,107 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
         "picked_resource,dropped_resource,delivered,stage_completed,sync_complete,"
         "recharged,joint_target_scan"
     )
-    assert payload["config"]["recurrent_bc_pipeline_pickup_action_loss_weight"] == 0.0
-    assert payload["config"]["recurrent_bc_pipeline_delivery_action_loss_weight"] == 0.0
-    assert payload["config"]["recurrent_bc_pipeline_plan_action_loss_weight"] == 0.0
-    assert payload["config"]["recurrent_bc_pipeline_message_loss_weight"] == 0.0
-    assert payload["config"]["recurrent_bc_pipeline_bad_pickup_action_loss_weight"] == 0.0
-    assert payload["config"]["recurrent_bc_pipeline_bad_drop_action_loss_weight"] == 0.0
-    assert payload["config"]["recurrent_bc_pipeline_bad_interact_action_loss_weight"] == 0.0
-    assert payload["config"]["recurrent_bc_pipeline_proactive_bad_action_labels"] is False
+    assert payload["config"]["recurrent_bc_pipeline_pickup_action_loss_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_delivery_action_loss_weight"] == 2.0
+    assert payload["config"]["recurrent_bc_pipeline_delivery_progress_action_loss_weight"] == 2.0
+    assert payload["config"]["recurrent_bc_pipeline_navigation_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_sync_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_ready_interact_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_station_guard_action_loss_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_wrong_station_recovery_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_rl_pipeline_delivery_progress_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_rl_pipeline_navigation_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_rl_pipeline_sync_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_rl_pipeline_plan_head_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_rl_pipeline_option_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_backbone"] == "mlp"
+    assert payload["config"]["recurrent_bc_pipeline_pickup_gate_loss_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_pickup_gate_pos_weight"] == 2.0
+    assert payload["config"]["recurrent_bc_pipeline_pickup_gate_neg_weight"] == 1.5
+    assert payload["config"]["recurrent_bc_pipeline_plan_action_loss_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_plan_head_loss_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_option_loss_weight"] == 0.75
+    assert payload["config"]["recurrent_bc_pipeline_message_loss_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_send_gate_loss_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_send_gate_pos_weight"] == 3.0
+    assert payload["config"]["recurrent_bc_pipeline_send_gate_neg_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_interact_gate_loss_weight"] == 2.0
+    assert payload["config"]["recurrent_bc_pipeline_interact_gate_pos_weight"] == 3.0
+    assert payload["config"]["recurrent_bc_pipeline_interact_gate_neg_weight"] == 2.5
+    assert payload["config"]["recurrent_bc_calibrate_pipeline_interact_gate_threshold"] is True
+    assert payload["config"]["recurrent_bc_pipeline_interact_gate_threshold_target_rate"] == 0.33
+    assert payload["config"]["recurrent_bc_pipeline_bad_pickup_action_loss_weight"] == 0.5
+    assert payload["config"]["recurrent_bc_pipeline_bad_drop_action_loss_weight"] == 0.5
+    assert payload["config"]["recurrent_bc_pipeline_bad_interact_action_loss_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_bad_action_margin_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_bad_action_margin"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_proactive_bad_action_labels"] is True
     assert payload["config"]["recurrent_pipeline_stage_count"] is None
     assert payload["config"]["recurrent_pipeline_required_per_stage_min"] == 1
     assert payload["config"]["recurrent_pipeline_required_per_stage_max"] == 2
     assert payload["config"]["recurrent_pipeline_sync_probability"] == 0.5
     assert payload["config"]["recurrent_pipeline_dependency_probability"] == 0.7
+    assert payload["config"]["recurrent_pipeline_wrong_delivery_penalty"] == 0.25
     assert payload["config"]["recurrent_obs_pipeline_features"] is True
     assert payload["config"]["recurrent_eval_pipeline_navigation_assist"] is False
     assert payload["config"]["recurrent_eval_pipeline_navigation_assist_trust_messages"] is False
+    assert payload["config"]["recurrent_eval_pipeline_station_interact_guard"] is False
+    assert payload["config"]["recurrent_eval_pipeline_interact_gate_threshold"] == -1.0
+    assert payload["config"]["recurrent_eval_pipeline_event_head_threshold"] == -1.0
+    assert payload["config"]["recurrent_eval_pipeline_plan_head_threshold"] == -1.0
+    assert payload["config"]["recurrent_eval_pipeline_navigation_head_threshold"] == -1.0
+    assert payload["config"]["recurrent_eval_pipeline_option_threshold"] == -1.0
+    assert payload["config"]["recurrent_eval_pipeline_option_allow_interact"] is False
     assert payload["config"]["recurrent_bc_kl_coeff"] == 2.0
     assert payload["config"]["recurrent_bc_comm_kl_coeff"] == 2.0
+    assert payload["config"]["recurrent_bc_comm_send_pos_weight"] == 0.0
     assert payload["config"]["recurrent_dagger_failed_effective_ratio_cap"] == 0.25
     assert payload["config"]["recurrent_dagger_oracle_action_rollin_rate"] == 0.25
     assert payload["config"]["recurrent_dagger_oracle_message_rollin_rate"] == 0.0
+    assert "pipeline_wrong_delivery" in payload["config"]["recurrent_dagger_focus_events"]
+    assert "pipeline_sync_wait" in payload["config"]["recurrent_dagger_focus_events"]
+    assert payload["config"]["recurrent_dagger_focus_error_weight"] == 3.0
+    assert payload["config"]["recurrent_dagger_focus_recovery_weight"] == 2.0
+    assert payload["config"]["recurrent_dagger_focus_window"] == 1
+    assert payload["config"]["recurrent_dagger_focus_replay"] is True
+    assert payload["config"]["recurrent_dagger_retrain_from_scratch"] is True
+    assert payload["config"]["recurrent_dagger_restore_best"] is True
+    assert payload["config"]["recurrent_dagger_pipeline_wrong_delivery_provenance_labels"] is True
+    assert payload["config"]["recurrent_dagger_pipeline_wrong_delivery_provenance_weight"] == 3.0
+    assert payload["config"]["recurrent_dagger_replay_pre_steps"] == 2
+    assert payload["config"]["recurrent_dagger_replay_post_steps"] == 2
+    assert payload["config"]["recurrent_dagger_replay_weight"] == 1.0
+    assert payload["config"]["recurrent_dagger_positive_replay_events"] == (
+        "pipeline_delivery_ready,delivered,stage_completed"
+    )
+    assert payload["config"]["recurrent_dagger_replay_event_weights"] == (
+        "pipeline_delivery_ready:4.0,pipeline_delivery_miss:4.0,"
+        "pipeline_station_stall_miss:3.0,"
+        "pipeline_sync_wait:4.0,"
+        "pipeline_wrong_delivery:3.0,pipeline_wrong_delivery_root_pickup:3.0,"
+        "delivered:2.0,stage_completed:2.0"
+    )
+    assert payload["config"]["recurrent_dagger_replay_event_caps"] == ""
+    assert payload["config"]["recurrent_dagger_replay_success_only_events"] == "delivered,stage_completed"
+    assert payload["config"]["recurrent_dagger_replay_priority_events"] == (
+        "pipeline_delivery_miss,pipeline_delivery_ready,pipeline_wrong_delivery,"
+        "pipeline_wrong_delivery_root_pickup,pipeline_sync_wait"
+    )
+    assert payload["config"]["recurrent_dagger_replay_balance_positive_events"] == ""
+    assert payload["config"]["recurrent_dagger_replay_balance_negative_events"] == ""
+    assert payload["config"]["recurrent_dagger_replay_max_negative_per_positive"] == -1.0
+    assert payload["config"]["recurrent_dagger_max_replay_snippets_per_episode"] == 8
+    assert payload["config"]["recurrent_dagger_max_failed_parent_replay_snippets_per_episode"] == 4
+    assert payload["config"]["recurrent_dagger_failed_parent_replay_weight_scale"] == 1.0
+    assert payload["config"]["recurrent_dagger_expert_max_replay_snippets_per_episode"] == -1
     assert payload["config"]["recurrent_rl_early_stop_eval_patience"] == 4
     assert payload["config"]["recurrent_rl_balanced_rollouts"] is True
     assert payload["config"]["recurrent_rl_rollout_eval_decoding"] is True
     assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist"] is False
     assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist_trust_messages"] is False
+    assert payload["config"]["recurrent_rl_rollout_pipeline_station_interact_guard"] is True
     assert payload["config"]["recurrent_rl_pipeline_bad_pickup_penalty"] == 0.1
+    assert payload["config"]["recurrent_rl_pipeline_bad_interact_penalty"] == 0.1
     assert payload["config"]["recurrent_rl_pipeline_unneeded_drop_bonus"] == 0.05
     assert payload["config"]["recurrent_obs_memory_mode"] == "auto"
 
@@ -237,6 +311,9 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert "--bc-action-class-balance" in commands["energy_grid"]
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--rl-pipeline-bad-pickup-penalty") + 1
+    ] == "0.1"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--rl-pipeline-bad-interact-penalty") + 1
     ] == "0.1"
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--rl-pipeline-unneeded-drop-bonus") + 1
@@ -255,16 +332,89 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     )
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--bc-pipeline-pickup-action-loss-weight") + 1
-    ] == "0.0"
+    ] == "1.0"
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--bc-pipeline-delivery-action-loss-weight") + 1
+    ] == "2.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-delivery-progress-action-loss-weight") + 1
+    ] == "2.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-navigation-action-loss-weight") + 1
     ] == "0.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-sync-action-loss-weight") + 1
+    ] == "0.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-station-guard-action-loss-weight") + 1
+    ] == "1.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index(
+            "--bc-pipeline-wrong-station-recovery-action-loss-weight"
+        ) + 1
+    ] == "0.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-pickup-gate-loss-weight") + 1
+    ] == "1.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-pickup-gate-pos-weight") + 1
+    ] == "2.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-pickup-gate-neg-weight") + 1
+    ] == "1.5"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-plan-action-loss-weight") + 1
+    ] == "1.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-plan-head-loss-weight") + 1
+    ] == "1.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-option-loss-weight") + 1
+    ] == "0.75"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-message-loss-weight") + 1
+    ] == "1.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-send-gate-loss-weight") + 1
+    ] == "1.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-send-gate-pos-weight") + 1
+    ] == "3.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-send-gate-neg-weight") + 1
+    ] == "1.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-interact-gate-loss-weight") + 1
+    ] == "2.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-interact-gate-pos-weight") + 1
+    ] == "3.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-interact-gate-neg-weight") + 1
+    ] == "2.5"
+    assert "--bc-calibrate-pipeline-interact-gate-threshold" in commands["pipeline_assembly"]
+    assert "--bc-calibrate-pipeline-interact-gate-threshold" not in commands["signal_hunt"]
+    assert "--bc-calibrate-pipeline-interact-gate-threshold" not in commands["energy_grid"]
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-interact-gate-threshold-target-rate") + 1
+    ] == "0.33"
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--bc-pipeline-bad-pickup-action-loss-weight") + 1
-    ] == "0.0"
+    ] == "0.5"
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--bc-pipeline-bad-drop-action-loss-weight") + 1
+    ] == "0.5"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-bad-interact-action-loss-weight") + 1
+    ] == "1.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-bad-action-margin-loss-weight") + 1
     ] == "0.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--bc-pipeline-bad-action-margin") + 1
+    ] == "1.0"
+    assert "--bc-pipeline-proactive-bad-action-labels" in commands["pipeline_assembly"]
+    assert "--bc-pipeline-proactive-bad-action-labels" not in commands["signal_hunt"]
     assert "--pipeline-stage-count" not in commands["pipeline_assembly"]
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--pipeline-required-per-stage-min") + 1
@@ -281,6 +431,8 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert "--obs-pipeline-features" in commands["pipeline_assembly"]
     assert "--eval-pipeline-navigation-assist" not in commands["pipeline_assembly"]
     assert "--eval-pipeline-navigation-assist-trust-messages" not in commands["pipeline_assembly"]
+    assert "--eval-pipeline-event-head-threshold" not in commands["pipeline_assembly"]
+    assert "--eval-pipeline-navigation-head-threshold" not in commands["pipeline_assembly"]
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--dagger-failed-effective-ratio-cap") + 1
     ] == "0.25"
@@ -290,6 +442,41 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--dagger-oracle-message-rollin-rate") + 1
     ] == "0.0"
+    assert "--dagger-focus-replay" in commands["pipeline_assembly"]
+    assert "--no-dagger-retrain-from-scratch" not in commands["pipeline_assembly"]
+    assert "--dagger-pipeline-wrong-delivery-provenance-labels" in commands["pipeline_assembly"]
+    assert "--dagger-pipeline-wrong-delivery-provenance-labels" not in commands["signal_hunt"]
+    assert "--dagger-pipeline-wrong-delivery-provenance-labels" not in commands["energy_grid"]
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--dagger-pipeline-wrong-delivery-provenance-weight") + 1
+    ] == "3.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--dagger-replay-pre-steps") + 1
+    ] == "2"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--dagger-replay-post-steps") + 1
+    ] == "2"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--dagger-replay-weight") + 1
+    ] == "1.0"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--dagger-positive-replay-events") + 1
+    ] == "pipeline_delivery_ready,delivered,stage_completed"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--dagger-replay-event-weights") + 1
+    ] == payload["config"]["recurrent_dagger_replay_event_weights"]
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--dagger-replay-success-only-events") + 1
+    ] == "delivered,stage_completed"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--dagger-replay-priority-events") + 1
+    ] == payload["config"]["recurrent_dagger_replay_priority_events"]
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--dagger-max-replay-snippets-per-episode") + 1
+    ] == "8"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--dagger-max-failed-parent-replay-snippets-per-episode") + 1
+    ] == "4"
     assert "--rl-balanced-rollouts" in commands["energy_grid"]
     assert "--rl-rollout-eval-decoding" in commands["pipeline_assembly"]
     assert commands["pipeline_assembly"][
@@ -297,6 +484,8 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     ] == "4"
     assert "--rl-rollout-pipeline-navigation-assist" not in commands["pipeline_assembly"]
     assert "--rl-rollout-pipeline-navigation-assist-trust-messages" not in commands["pipeline_assembly"]
+    assert "--rl-rollout-pipeline-station-interact-guard" in commands["pipeline_assembly"]
+    assert "--rl-rollout-pipeline-station-interact-guard" not in commands["signal_hunt"]
     assert commands["signal_hunt"][commands["signal_hunt"].index("--obs-memory-mode") + 1] == "egocentric"
     assert "--obs-memory-mode" not in commands["pipeline_assembly"]
 
@@ -322,8 +511,39 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
         "0",
         "--recurrent-eval-pipeline-navigation-assist",
         "--recurrent-eval-pipeline-navigation-assist-trust-messages",
+        "--recurrent-eval-pipeline-station-interact-guard",
+        "--recurrent-eval-pipeline-interact-gate-threshold",
+        "0.55",
+        "--recurrent-eval-pipeline-interact-gate-promote",
+        "--recurrent-eval-pipeline-event-head-threshold",
+        "0.57",
+        "--recurrent-eval-pipeline-plan-head-threshold",
+        "0.61",
+        "--recurrent-eval-pipeline-navigation-head-threshold",
+        "0.63",
+        "--recurrent-eval-pipeline-option-threshold",
+        "0.62",
+        "--recurrent-eval-pipeline-option-allow-interact",
         "--recurrent-rl-rollout-pipeline-navigation-assist",
         "--recurrent-rl-rollout-pipeline-navigation-assist-trust-messages",
+        "--recurrent-rl-rollout-pipeline-station-interact-guard",
+        "--recurrent-rl-rollout-pipeline-interact-gate-promote",
+        "--recurrent-pipeline-assisted-rollout-episodes",
+        "5",
+        "--recurrent-pipeline-assisted-rollout-seed-base",
+        "4100",
+        "--recurrent-pipeline-assisted-rollout-seed-list",
+        "8:4100,4101",
+        "--recurrent-pipeline-assisted-rollout-max-steps-per-episode",
+        "12",
+        "--recurrent-pipeline-assisted-rollout-weight",
+        "2.5",
+        "--recurrent-pipeline-assisted-rollout-success-only",
+        "--no-recurrent-pipeline-assisted-rollout-navigation-assist",
+        "--no-recurrent-pipeline-assisted-rollout-navigation-assist-trust-messages",
+        "--no-recurrent-pipeline-assisted-rollout-station-interact-guard",
+        "--recurrent-pipeline-assisted-rollout-bc-epochs",
+        "3",
         "--recurrent-obs-exploration-memory",
         "--recurrent-obs-feedback",
         "--recurrent-obs-normalize-tokens",
@@ -332,6 +552,9 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
         "--recurrent-obs-signal-target-match-features",
         "--recurrent-obs-signal-sync-feedback",
         "--recurrent-obs-signal-scan-state",
+        "--recurrent-obs-pipeline-feedback",
+        "--recurrent-obs-pipeline-progress-features",
+        "--recurrent-obs-pipeline-shared-feedback",
         "--recurrent-obs-memory-mode",
         "egocentric",
         "--output-dir",
@@ -346,8 +569,31 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
 
     assert payload["config"]["recurrent_eval_pipeline_navigation_assist"] is True
     assert payload["config"]["recurrent_eval_pipeline_navigation_assist_trust_messages"] is True
+    assert payload["config"]["recurrent_eval_pipeline_station_interact_guard"] is True
+    assert payload["config"]["recurrent_eval_pipeline_interact_gate_threshold"] == 0.55
+    assert payload["config"]["recurrent_eval_pipeline_interact_gate_promote"] is True
+    assert payload["config"]["recurrent_eval_pipeline_event_head_threshold"] == 0.57
+    assert payload["config"]["recurrent_eval_pipeline_plan_head_threshold"] == 0.61
+    assert payload["config"]["recurrent_eval_pipeline_navigation_head_threshold"] == 0.63
+    assert payload["config"]["recurrent_eval_pipeline_option_threshold"] == 0.62
+    assert payload["config"]["recurrent_eval_pipeline_option_allow_interact"] is True
     assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist"] is True
     assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist_trust_messages"] is True
+    assert payload["config"]["recurrent_rl_rollout_pipeline_station_interact_guard"] is True
+    assert payload["config"]["recurrent_rl_rollout_pipeline_interact_gate_promote"] is True
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_episodes"] == 5
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_seed_base"] == 4100
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_seed_list"] == "8:4100,4101"
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_max_steps_per_episode"] == 12
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_weight"] == 2.5
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_success_only"] is True
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_navigation_assist"] is False
+    assert (
+        payload["config"]["recurrent_pipeline_assisted_rollout_navigation_assist_trust_messages"]
+        is False
+    )
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_station_interact_guard"] is False
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_bc_epochs"] == 3
     assert payload["config"]["recurrent_obs_exploration_memory"] is True
     assert payload["config"]["recurrent_obs_feedback"] is True
     assert payload["config"]["recurrent_obs_normalize_tokens"] is True
@@ -356,11 +602,70 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
     assert payload["config"]["recurrent_obs_signal_target_match_features"] is True
     assert payload["config"]["recurrent_obs_signal_sync_feedback"] is True
     assert payload["config"]["recurrent_obs_signal_scan_state"] is True
+    assert payload["config"]["recurrent_obs_pipeline_feedback"] is True
+    assert payload["config"]["recurrent_obs_pipeline_feedback_metadata"] is True
+    assert payload["config"]["recurrent_obs_pipeline_progress_features"] is True
+    assert payload["config"]["recurrent_obs_pipeline_shared_feedback"] is True
     assert payload["config"]["recurrent_obs_memory_mode"] == "egocentric"
     assert "--eval-pipeline-navigation-assist" in commands["pipeline_assembly"]
     assert "--eval-pipeline-navigation-assist-trust-messages" in commands["pipeline_assembly"]
+    assert "--eval-pipeline-station-interact-guard" in commands["pipeline_assembly"]
+    assert "--eval-pipeline-interact-gate-threshold" in commands["pipeline_assembly"]
+    assert "--eval-pipeline-interact-gate-promote" in commands["pipeline_assembly"]
+    assert "--eval-pipeline-event-head-threshold" in commands["pipeline_assembly"]
+    assert "--eval-pipeline-plan-head-threshold" in commands["pipeline_assembly"]
+    assert "--eval-pipeline-navigation-head-threshold" in commands["pipeline_assembly"]
+    assert "--eval-pipeline-option-threshold" in commands["pipeline_assembly"]
+    assert "--eval-pipeline-option-allow-interact" in commands["pipeline_assembly"]
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--eval-pipeline-interact-gate-threshold") + 1
+    ] == "0.55"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--eval-pipeline-event-head-threshold") + 1
+    ] == "0.57"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--eval-pipeline-plan-head-threshold") + 1
+    ] == "0.61"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--eval-pipeline-navigation-head-threshold") + 1
+    ] == "0.63"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--eval-pipeline-option-threshold") + 1
+    ] == "0.62"
     assert "--rl-rollout-pipeline-navigation-assist" in commands["pipeline_assembly"]
     assert "--rl-rollout-pipeline-navigation-assist-trust-messages" in commands["pipeline_assembly"]
+    assert "--rl-rollout-pipeline-station-interact-guard" in commands["pipeline_assembly"]
+    assert "--rl-rollout-pipeline-interact-gate-promote" in commands["pipeline_assembly"]
+    assert "--pipeline-assisted-rollout-episodes" in commands["pipeline_assembly"]
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--pipeline-assisted-rollout-episodes") + 1
+    ] == "5"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--pipeline-assisted-rollout-seed-base") + 1
+    ] == "4100"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--pipeline-assisted-rollout-seed-list") + 1
+    ] == "8:4100,4101"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--pipeline-assisted-rollout-max-steps-per-episode") + 1
+    ] == "12"
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--pipeline-assisted-rollout-weight") + 1
+    ] == "2.5"
+    assert "--pipeline-assisted-rollout-success-only" in commands["pipeline_assembly"]
+    assert "--no-pipeline-assisted-rollout-navigation-assist" in commands["pipeline_assembly"]
+    assert (
+        "--no-pipeline-assisted-rollout-navigation-assist-trust-messages"
+        in commands["pipeline_assembly"]
+    )
+    assert "--no-pipeline-assisted-rollout-station-interact-guard" in commands["pipeline_assembly"]
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--pipeline-assisted-rollout-bc-epochs") + 1
+    ] == "3"
+    assert "--pipeline-wrong-delivery-penalty" in commands["pipeline_assembly"]
+    assert commands["pipeline_assembly"][
+        commands["pipeline_assembly"].index("--pipeline-wrong-delivery-penalty") + 1
+    ] == "0.25"
     assert "--obs-exploration-memory" in commands["pipeline_assembly"]
     assert "--obs-feedback" in commands["pipeline_assembly"]
     assert "--obs-normalize-tokens" in commands["pipeline_assembly"]
@@ -369,12 +674,165 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
     assert "--obs-signal-target-match-features" in commands["pipeline_assembly"]
     assert "--obs-signal-sync-feedback" in commands["pipeline_assembly"]
     assert "--obs-signal-scan-state" in commands["pipeline_assembly"]
+    assert "--obs-pipeline-feedback" in commands["pipeline_assembly"]
+    assert "--obs-pipeline-feedback-metadata" in commands["pipeline_assembly"]
+    assert "--obs-pipeline-progress-features" in commands["pipeline_assembly"]
+    assert "--obs-pipeline-shared-feedback" in commands["pipeline_assembly"]
     assert commands["pipeline_assembly"][commands["pipeline_assembly"].index("--obs-memory-mode") + 1] == "egocentric"
     assert commands["signal_hunt"].count("--obs-memory-mode") == 1
     assert "--eval-pipeline-navigation-assist" not in commands["signal_hunt"]
     assert "--eval-pipeline-navigation-assist-trust-messages" not in commands["signal_hunt"]
+    assert "--eval-pipeline-station-interact-guard" not in commands["signal_hunt"]
+    assert "--eval-pipeline-option-allow-interact" not in commands["signal_hunt"]
+    assert "--eval-pipeline-interact-gate-threshold" not in commands["signal_hunt"]
+    assert "--eval-pipeline-interact-gate-promote" not in commands["signal_hunt"]
+    assert "--eval-pipeline-event-head-threshold" not in commands["signal_hunt"]
+    assert "--eval-pipeline-plan-head-threshold" not in commands["signal_hunt"]
+    assert "--eval-pipeline-navigation-head-threshold" not in commands["signal_hunt"]
+    assert "--eval-pipeline-option-threshold" not in commands["signal_hunt"]
     assert "--rl-rollout-pipeline-navigation-assist" not in commands["signal_hunt"]
     assert "--rl-rollout-pipeline-navigation-assist-trust-messages" not in commands["signal_hunt"]
+    assert "--rl-rollout-pipeline-station-interact-guard" not in commands["signal_hunt"]
+    assert "--rl-rollout-pipeline-interact-gate-promote" not in commands["signal_hunt"]
+    assert "--pipeline-assisted-rollout-episodes" not in commands["signal_hunt"]
+    assert "--obs-pipeline-feedback" not in commands["signal_hunt"]
+    assert "--obs-pipeline-feedback-metadata" not in commands["signal_hunt"]
+    assert "--obs-pipeline-progress-features" not in commands["signal_hunt"]
+    assert "--obs-pipeline-shared-feedback" not in commands["signal_hunt"]
+
+
+def test_core_training_sweep_recurrent_standard_profile_keeps_pipeline_gate_off(tmp_path):
+    from examples.core_training_sweep import parse_args, run_suite
+
+    args = parse_args([
+        "--algorithms",
+        "recurrent_bc_rl",
+        "--scenarios",
+        "pipeline_assembly",
+        "--updates",
+        "1",
+        "--rollout-steps",
+        "8",
+        "--eval-every",
+        "1",
+        "--eval-episodes",
+        "1",
+        "--seeds",
+        "0",
+        "--recurrent-ppo-profile",
+        "standard",
+        "--output-dir",
+        str(tmp_path / "runs"),
+        "--run-name",
+        "recurrent-standard",
+        "--dry-run",
+    ])
+
+    payload = run_suite(args)
+    command = payload["runs"][0]["command"]
+
+    assert payload["config"]["recurrent_ppo_profile"] == "standard"
+    assert payload["config"]["recurrent_bc_pipeline_pickup_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_delivery_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_delivery_progress_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_navigation_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_sync_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_ready_interact_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_station_guard_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_wrong_station_recovery_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_pickup_gate_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_pickup_gate_pos_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_pickup_gate_neg_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_plan_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_plan_head_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_option_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_message_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_send_gate_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_send_gate_pos_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_send_gate_neg_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_interact_gate_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_interact_gate_pos_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_interact_gate_neg_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_calibrate_pipeline_interact_gate_threshold"] is False
+    assert payload["config"]["recurrent_bc_pipeline_interact_gate_threshold_target_rate"] == -1.0
+    assert payload["config"]["recurrent_bc_pipeline_bad_pickup_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_bad_drop_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_bad_interact_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_bad_action_margin_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_bc_pipeline_bad_action_margin"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_proactive_bad_action_labels"] is False
+    assert payload["config"]["recurrent_obs_pipeline_progress_features"] is False
+    assert payload["config"]["recurrent_pipeline_wrong_delivery_penalty"] == 0.25
+    assert payload["config"]["recurrent_rl_pipeline_delivery_progress_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_rl_pipeline_navigation_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_rl_pipeline_sync_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_rl_pipeline_assisted_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_rl_pipeline_ready_interact_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_rl_pipeline_wrong_station_recovery_action_loss_weight"] == 0.0
+    assert payload["config"]["recurrent_dagger_focus_replay"] is False
+    assert payload["config"]["recurrent_dagger_retrain_from_scratch"] is True
+    assert payload["config"]["recurrent_dagger_pipeline_wrong_delivery_provenance_labels"] is False
+    assert payload["config"]["recurrent_dagger_pipeline_wrong_delivery_provenance_weight"] == -1.0
+    assert payload["config"]["recurrent_dagger_replay_pre_steps"] == 2
+    assert payload["config"]["recurrent_dagger_replay_post_steps"] == 2
+    assert payload["config"]["recurrent_dagger_replay_weight"] == 1.0
+    assert payload["config"]["recurrent_dagger_positive_replay_events"] == ""
+    assert payload["config"]["recurrent_dagger_replay_event_weights"] == ""
+    assert payload["config"]["recurrent_dagger_replay_event_caps"] == ""
+    assert payload["config"]["recurrent_dagger_replay_success_only_events"] == ""
+    assert payload["config"]["recurrent_dagger_replay_priority_events"] == ""
+    assert payload["config"]["recurrent_dagger_replay_balance_positive_events"] == ""
+    assert payload["config"]["recurrent_dagger_replay_balance_negative_events"] == ""
+    assert payload["config"]["recurrent_dagger_replay_max_negative_per_positive"] == -1.0
+    assert payload["config"]["recurrent_dagger_max_replay_snippets_per_episode"] == 4
+    assert payload["config"]["recurrent_dagger_max_failed_parent_replay_snippets_per_episode"] == -1
+    assert payload["config"]["recurrent_dagger_failed_parent_replay_weight_scale"] == 1.0
+    assert payload["config"]["recurrent_dagger_expert_max_replay_snippets_per_episode"] == -1
+    assert payload["config"]["recurrent_eval_pipeline_interact_gate_threshold"] == -1.0
+    assert payload["config"]["recurrent_eval_pipeline_event_head_threshold"] == -1.0
+    assert "--bc-calibrate-pipeline-interact-gate-threshold" not in command
+    assert "--bc-pipeline-proactive-bad-action-labels" not in command
+    assert "--eval-pipeline-interact-gate-threshold" not in command
+    assert "--dagger-focus-replay" not in command
+    assert "--no-dagger-retrain-from-scratch" not in command
+    assert "--dagger-pipeline-wrong-delivery-provenance-labels" not in command
+    assert command[command.index("--dagger-positive-replay-events") + 1] == ""
+    assert command[command.index("--dagger-max-replay-snippets-per-episode") + 1] == "4"
+
+
+def test_core_training_sweep_pipeline_feedback_implies_parent_feedback(tmp_path):
+    from examples.core_training_sweep import parse_args, run_suite
+
+    args = parse_args([
+        "--algorithms",
+        "recurrent_bc_rl",
+        "--scenarios",
+        "pipeline_assembly",
+        "--updates",
+        "1",
+        "--rollout-steps",
+        "8",
+        "--eval-every",
+        "1",
+        "--eval-episodes",
+        "1",
+        "--seeds",
+        "0",
+        "--recurrent-obs-pipeline-shared-feedback",
+        "--output-dir",
+        str(tmp_path / "runs"),
+        "--run-name",
+        "recurrent-pipeline-feedback",
+        "--dry-run",
+    ])
+
+    payload = run_suite(args)
+    command = payload["runs"][0]["command"]
+
+    assert "--obs-feedback" in command
+    assert "--obs-pipeline-feedback" in command
+    assert "--obs-pipeline-feedback-metadata" in command
+    assert "--obs-pipeline-shared-feedback" in command
 
 
 def test_core_training_sweep_recurrent_eval_seed_range_sets_audit_panel_defaults(tmp_path):
@@ -474,16 +932,61 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "0.25",
         "--recurrent-bc-pipeline-delivery-action-loss-weight",
         "0.5",
+        "--recurrent-bc-pipeline-delivery-progress-action-loss-weight",
+        "0.8",
+        "--recurrent-bc-pipeline-navigation-action-loss-weight",
+        "1.2",
+        "--recurrent-bc-pipeline-frontier-exploration-action-loss-weight",
+        "0.7",
+        "--recurrent-bc-pipeline-frontier-exploration-min-map-size",
+        "8",
+            "--recurrent-bc-pipeline-sync-action-loss-weight",
+            "1.3",
+            "--recurrent-bc-pipeline-ready-interact-action-loss-weight",
+            "1.45",
+            "--recurrent-bc-pipeline-station-guard-action-loss-weight",
+            "1.1",
+        "--recurrent-bc-pipeline-wrong-station-recovery-action-loss-weight",
+        "1.6",
+        "--recurrent-bc-pipeline-pickup-gate-loss-weight",
+        "0.9",
+        "--recurrent-bc-pipeline-pickup-gate-pos-weight",
+        "2.2",
+        "--recurrent-bc-pipeline-pickup-gate-neg-weight",
+        "1.3",
         "--recurrent-bc-pipeline-plan-action-loss-weight",
         "1.75",
+        "--recurrent-bc-pipeline-plan-head-loss-weight",
+        "1.9",
+        "--recurrent-bc-pipeline-option-loss-weight",
+        "2.1",
         "--recurrent-bc-pipeline-message-loss-weight",
         "2.25",
+        "--recurrent-bc-pipeline-send-gate-loss-weight",
+        "1.5",
+        "--recurrent-bc-pipeline-send-gate-pos-weight",
+        "2.0",
+        "--recurrent-bc-pipeline-send-gate-neg-weight",
+        "1.25",
+        "--recurrent-bc-pipeline-interact-gate-loss-weight",
+        "1.4",
+        "--recurrent-bc-pipeline-interact-gate-pos-weight",
+        "2.5",
+        "--recurrent-bc-pipeline-interact-gate-neg-weight",
+        "1.1",
+        "--recurrent-bc-calibrate-pipeline-interact-gate-threshold",
+        "--recurrent-bc-pipeline-interact-gate-threshold-target-rate",
+        "0.33",
         "--recurrent-bc-pipeline-bad-pickup-action-loss-weight",
         "0.6",
         "--recurrent-bc-pipeline-bad-drop-action-loss-weight",
         "0.75",
         "--recurrent-bc-pipeline-bad-interact-action-loss-weight",
         "1.25",
+        "--recurrent-bc-pipeline-bad-action-margin-loss-weight",
+        "1.35",
+        "--recurrent-bc-pipeline-bad-action-margin",
+        "0.8",
         "--recurrent-bc-pipeline-proactive-bad-action-labels",
         "--recurrent-pipeline-stage-count",
         "2",
@@ -495,10 +998,16 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "0.0",
         "--recurrent-pipeline-dependency-probability",
         "0.0",
+        "--recurrent-eval-pipeline-interact-gate-threshold",
+        "0.42",
+        "--recurrent-eval-pipeline-event-head-threshold",
+        "0.44",
         "--no-recurrent-obs-pipeline-features",
         "--recurrent-bc-calibrate-send-threshold",
         "--recurrent-bc-send-threshold-target-rate",
         "0.15",
+        "--recurrent-bc-comm-send-pos-weight",
+        "-1",
         "--recurrent-bc-comm-send-rate-penalty-weight",
         "0.25",
         "--recurrent-bc-comm-send-rate-target",
@@ -513,6 +1022,50 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "0.4",
         "--recurrent-dagger-oracle-message-rollin-rate",
         "0.3",
+        "--recurrent-dagger-focus-events",
+        "pipeline_wrong_delivery,pipeline_bad_pickup",
+        "--recurrent-dagger-focus-error-weight",
+        "4.5",
+        "--recurrent-dagger-focus-recovery-weight",
+        "2.5",
+        "--recurrent-dagger-focus-window",
+        "3",
+        "--recurrent-dagger-focus-replay",
+        "--no-recurrent-dagger-retrain-from-scratch",
+        "--no-recurrent-dagger-restore-best",
+        "--recurrent-dagger-pipeline-wrong-delivery-provenance-labels",
+        "--recurrent-dagger-pipeline-wrong-delivery-provenance-weight",
+        "1.75",
+        "--recurrent-dagger-replay-pre-steps",
+        "1",
+        "--recurrent-dagger-replay-post-steps",
+        "4",
+        "--recurrent-dagger-replay-weight",
+        "2.25",
+        "--recurrent-dagger-positive-replay-events",
+        "delivered,stage_completed",
+        "--recurrent-dagger-replay-event-weights",
+        "pipeline_wrong_delivery:5.0,delivered:2.0",
+        "--recurrent-dagger-replay-event-caps",
+        "pipeline_wrong_delivery:2",
+        "--recurrent-dagger-replay-success-only-events",
+        "delivered",
+        "--recurrent-dagger-replay-priority-events",
+        "pipeline_wrong_delivery",
+        "--recurrent-dagger-replay-balance-positive-events",
+        "delivered",
+        "--recurrent-dagger-replay-balance-negative-events",
+        "pipeline_wrong_delivery",
+        "--recurrent-dagger-replay-max-negative-per-positive",
+        "1.5",
+        "--recurrent-dagger-max-replay-snippets-per-episode",
+        "7",
+        "--recurrent-dagger-max-failed-parent-replay-snippets-per-episode",
+        "3",
+        "--recurrent-dagger-failed-parent-replay-weight-scale",
+        "0.5",
+        "--recurrent-dagger-expert-max-replay-snippets-per-episode",
+        "2",
         "--recurrent-rl-updates",
         "0",
         "--recurrent-rl-lr",
@@ -529,8 +1082,44 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "1.5",
         "--recurrent-rl-pipeline-bad-pickup-penalty",
         "0.2",
+        "--recurrent-rl-pipeline-bad-interact-penalty",
+        "0.15",
         "--recurrent-rl-pipeline-unneeded-drop-bonus",
         "0.075",
+        "--recurrent-rl-eval-decoding-action-loss-weight",
+        "0.35",
+        "--recurrent-rl-pipeline-assisted-action-loss-weight",
+        "0.92",
+        "--recurrent-rl-pipeline-interact-gate-loss-weight",
+        "0.55",
+        "--recurrent-rl-pipeline-interact-gate-pos-weight",
+        "2.0",
+        "--recurrent-rl-pipeline-interact-gate-neg-weight",
+        "3.0",
+        "--recurrent-rl-pipeline-pickup-gate-loss-weight",
+        "0.75",
+        "--recurrent-rl-pipeline-pickup-gate-pos-weight",
+        "2.5",
+        "--recurrent-rl-pipeline-pickup-gate-neg-weight",
+        "3.5",
+        "--recurrent-rl-pipeline-delivery-progress-action-loss-weight",
+        "0.6",
+        "--recurrent-rl-pipeline-navigation-action-loss-weight",
+        "0.7",
+        "--recurrent-rl-pipeline-sync-action-loss-weight",
+        "0.7",
+        "--recurrent-rl-pipeline-ready-interact-action-loss-weight",
+        "0.95",
+        "--recurrent-rl-pipeline-station-guard-action-loss-weight",
+        "0.45",
+        "--recurrent-rl-pipeline-wrong-station-recovery-action-loss-weight",
+        "0.85",
+        "--recurrent-rl-pipeline-plan-action-loss-weight",
+        "0.65",
+        "--recurrent-rl-pipeline-plan-head-loss-weight",
+        "0.72",
+        "--recurrent-rl-pipeline-option-loss-weight",
+        "0.82",
         "--recurrent-rl-early-stop-eval-patience",
         "2",
         "--recurrent-rl-balanced-rollouts",
@@ -550,6 +1139,8 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "--recurrent-init-template",
         "logs/{scenario}/seed{seed}/{algorithm}_{map_size}x.pt",
         "--recurrent-init-for-dagger",
+        "--recurrent-backbone",
+        "residual_mlp",
         "--recurrent-calibrate-send-threshold",
         "--output-dir",
         str(tmp_path / "runs"),
@@ -572,11 +1163,34 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_bc_event_action_events"] == "delivered,sync_complete"
     assert payload["config"]["recurrent_bc_pipeline_pickup_action_loss_weight"] == 0.25
     assert payload["config"]["recurrent_bc_pipeline_delivery_action_loss_weight"] == 0.5
+    assert payload["config"]["recurrent_bc_pipeline_delivery_progress_action_loss_weight"] == 0.8
+    assert payload["config"]["recurrent_bc_pipeline_navigation_action_loss_weight"] == 1.2
+    assert payload["config"]["recurrent_bc_pipeline_frontier_exploration_action_loss_weight"] == 0.7
+    assert payload["config"]["recurrent_bc_pipeline_frontier_exploration_min_map_size"] == 8
+    assert payload["config"]["recurrent_bc_pipeline_sync_action_loss_weight"] == 1.3
+    assert payload["config"]["recurrent_bc_pipeline_ready_interact_action_loss_weight"] == 1.45
+    assert payload["config"]["recurrent_bc_pipeline_station_guard_action_loss_weight"] == 1.1
+    assert payload["config"]["recurrent_bc_pipeline_wrong_station_recovery_action_loss_weight"] == 1.6
+    assert payload["config"]["recurrent_bc_pipeline_pickup_gate_loss_weight"] == 0.9
+    assert payload["config"]["recurrent_bc_pipeline_pickup_gate_pos_weight"] == 2.2
+    assert payload["config"]["recurrent_bc_pipeline_pickup_gate_neg_weight"] == 1.3
     assert payload["config"]["recurrent_bc_pipeline_plan_action_loss_weight"] == 1.75
+    assert payload["config"]["recurrent_bc_pipeline_plan_head_loss_weight"] == 1.9
+    assert payload["config"]["recurrent_bc_pipeline_option_loss_weight"] == 2.1
     assert payload["config"]["recurrent_bc_pipeline_message_loss_weight"] == 2.25
+    assert payload["config"]["recurrent_bc_pipeline_send_gate_loss_weight"] == 1.5
+    assert payload["config"]["recurrent_bc_pipeline_send_gate_pos_weight"] == 2.0
+    assert payload["config"]["recurrent_bc_pipeline_send_gate_neg_weight"] == 1.25
+    assert payload["config"]["recurrent_bc_pipeline_interact_gate_loss_weight"] == 1.4
+    assert payload["config"]["recurrent_bc_pipeline_interact_gate_pos_weight"] == 2.5
+    assert payload["config"]["recurrent_bc_pipeline_interact_gate_neg_weight"] == 1.1
+    assert payload["config"]["recurrent_bc_calibrate_pipeline_interact_gate_threshold"] is True
+    assert payload["config"]["recurrent_bc_pipeline_interact_gate_threshold_target_rate"] == 0.33
     assert payload["config"]["recurrent_bc_pipeline_bad_pickup_action_loss_weight"] == 0.6
     assert payload["config"]["recurrent_bc_pipeline_bad_drop_action_loss_weight"] == 0.75
     assert payload["config"]["recurrent_bc_pipeline_bad_interact_action_loss_weight"] == 1.25
+    assert payload["config"]["recurrent_bc_pipeline_bad_action_margin_loss_weight"] == 1.35
+    assert payload["config"]["recurrent_bc_pipeline_bad_action_margin"] == 0.8
     assert payload["config"]["recurrent_bc_pipeline_proactive_bad_action_labels"] is True
     assert payload["config"]["recurrent_pipeline_stage_count"] == 2
     assert payload["config"]["recurrent_pipeline_required_per_stage_min"] == 1
@@ -586,18 +1200,72 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_obs_pipeline_features"] is False
     assert payload["config"]["recurrent_eval_pipeline_navigation_assist"] is False
     assert payload["config"]["recurrent_eval_pipeline_navigation_assist_trust_messages"] is False
+    assert payload["config"]["recurrent_eval_pipeline_station_interact_guard"] is False
+    assert payload["config"]["recurrent_eval_pipeline_interact_gate_threshold"] == 0.42
+    assert payload["config"]["recurrent_eval_pipeline_event_head_threshold"] == 0.44
+    assert payload["config"]["recurrent_eval_pipeline_plan_head_threshold"] == -1.0
+    assert payload["config"]["recurrent_eval_pipeline_navigation_head_threshold"] == -1.0
+    assert payload["config"]["recurrent_eval_pipeline_option_threshold"] == -1.0
+    assert payload["config"]["recurrent_eval_pipeline_option_allow_interact"] is False
     assert payload["config"]["recurrent_bc_calibrate_send_threshold"] is True
     assert payload["config"]["recurrent_bc_send_threshold_target_rate"] == 0.15
+    assert payload["config"]["recurrent_bc_comm_send_pos_weight"] == -1
     assert payload["config"]["recurrent_bc_comm_send_rate_penalty_weight"] == 0.25
     assert payload["config"]["recurrent_bc_comm_send_rate_target"] == 0.15
     assert payload["config"]["recurrent_dagger_failed_effective_ratio_cap"] == 0.5
     assert payload["config"]["recurrent_dagger_oracle_action_rollin_rate"] == 0.4
     assert payload["config"]["recurrent_dagger_oracle_message_rollin_rate"] == 0.3
+    assert payload["config"]["recurrent_dagger_focus_events"] == "pipeline_wrong_delivery,pipeline_bad_pickup"
+    assert payload["config"]["recurrent_dagger_focus_error_weight"] == 4.5
+    assert payload["config"]["recurrent_dagger_focus_recovery_weight"] == 2.5
+    assert payload["config"]["recurrent_dagger_focus_window"] == 3
+    assert payload["config"]["recurrent_dagger_focus_replay"] is True
+    assert payload["config"]["recurrent_dagger_retrain_from_scratch"] is False
+    assert payload["config"]["recurrent_dagger_restore_best"] is False
+    assert payload["config"]["recurrent_dagger_pipeline_wrong_delivery_provenance_labels"] is True
+    assert payload["config"]["recurrent_dagger_pipeline_wrong_delivery_provenance_weight"] == 1.75
+    assert payload["config"]["recurrent_dagger_replay_pre_steps"] == 1
+    assert payload["config"]["recurrent_dagger_replay_post_steps"] == 4
+    assert payload["config"]["recurrent_dagger_replay_weight"] == 2.25
+    assert payload["config"]["recurrent_dagger_positive_replay_events"] == "delivered,stage_completed"
+    assert payload["config"]["recurrent_dagger_replay_event_weights"] == (
+        "pipeline_wrong_delivery:5.0,delivered:2.0"
+    )
+    assert payload["config"]["recurrent_dagger_replay_event_caps"] == "pipeline_wrong_delivery:2"
+    assert payload["config"]["recurrent_dagger_replay_success_only_events"] == "delivered"
+    assert payload["config"]["recurrent_dagger_replay_priority_events"] == "pipeline_wrong_delivery"
+    assert payload["config"]["recurrent_dagger_replay_balance_positive_events"] == "delivered"
+    assert payload["config"]["recurrent_dagger_replay_balance_negative_events"] == "pipeline_wrong_delivery"
+    assert payload["config"]["recurrent_dagger_replay_max_negative_per_positive"] == 1.5
+    assert payload["config"]["recurrent_dagger_max_replay_snippets_per_episode"] == 7
+    assert payload["config"]["recurrent_dagger_max_failed_parent_replay_snippets_per_episode"] == 3
+    assert payload["config"]["recurrent_dagger_failed_parent_replay_weight_scale"] == 0.5
+    assert payload["config"]["recurrent_dagger_expert_max_replay_snippets_per_episode"] == 2
     assert payload["config"]["recurrent_rl_early_stop_eval_patience"] == 2
     assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist"] is False
     assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist_trust_messages"] is False
+    assert payload["config"]["recurrent_rl_rollout_pipeline_station_interact_guard"] is True
+    assert payload["config"]["recurrent_rl_eval_decoding_action_loss_weight"] == 0.35
+    assert payload["config"]["recurrent_rl_pipeline_assisted_action_loss_weight"] == 0.92
+    assert payload["config"]["recurrent_rl_pipeline_interact_gate_loss_weight"] == 0.55
+    assert payload["config"]["recurrent_rl_pipeline_interact_gate_pos_weight"] == 2.0
+    assert payload["config"]["recurrent_rl_pipeline_interact_gate_neg_weight"] == 3.0
+    assert payload["config"]["recurrent_rl_pipeline_pickup_gate_loss_weight"] == 0.75
+    assert payload["config"]["recurrent_rl_pipeline_pickup_gate_pos_weight"] == 2.5
+    assert payload["config"]["recurrent_rl_pipeline_pickup_gate_neg_weight"] == 3.5
+    assert payload["config"]["recurrent_rl_pipeline_delivery_progress_action_loss_weight"] == 0.6
+    assert payload["config"]["recurrent_rl_pipeline_navigation_action_loss_weight"] == 0.7
+    assert payload["config"]["recurrent_rl_pipeline_sync_action_loss_weight"] == 0.7
+    assert payload["config"]["recurrent_rl_pipeline_ready_interact_action_loss_weight"] == 0.95
+    assert payload["config"]["recurrent_rl_pipeline_station_guard_action_loss_weight"] == 0.45
+    assert payload["config"]["recurrent_rl_pipeline_wrong_station_recovery_action_loss_weight"] == 0.85
+    assert payload["config"]["recurrent_rl_pipeline_plan_action_loss_weight"] == 0.65
+    assert payload["config"]["recurrent_rl_pipeline_plan_head_loss_weight"] == 0.72
+    assert payload["config"]["recurrent_rl_pipeline_option_loss_weight"] == 0.82
+    assert payload["config"]["recurrent_rl_pipeline_bad_interact_penalty"] == 0.15
     assert payload["config"]["recurrent_rl_pipeline_bad_pickup_penalty"] == 0.2
     assert payload["config"]["recurrent_rl_pipeline_unneeded_drop_bonus"] == 0.075
+    assert payload["config"]["recurrent_backbone"] == "residual_mlp"
     assert "--updates" not in command
     assert "--epochs" not in command
     assert "--save-every" not in command
@@ -611,7 +1279,43 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert command[command.index("--bc-kl-coeff") + 1] == "1.0"
     assert command[command.index("--bc-comm-kl-coeff") + 1] == "1.5"
     assert command[command.index("--rl-pipeline-bad-pickup-penalty") + 1] == "0.2"
+    assert command[command.index("--rl-pipeline-bad-interact-penalty") + 1] == "0.15"
     assert command[command.index("--rl-pipeline-unneeded-drop-bonus") + 1] == "0.075"
+    assert command[command.index("--rl-eval-decoding-action-loss-weight") + 1] == "0.35"
+    assert command[command.index("--rl-pipeline-assisted-action-loss-weight") + 1] == "0.92"
+    assert command[command.index("--rl-pipeline-interact-gate-loss-weight") + 1] == "0.55"
+    assert command[command.index("--rl-pipeline-interact-gate-pos-weight") + 1] == "2.0"
+    assert command[command.index("--rl-pipeline-interact-gate-neg-weight") + 1] == "3.0"
+    assert command[command.index("--rl-pipeline-pickup-gate-loss-weight") + 1] == "0.75"
+    assert command[command.index("--rl-pipeline-pickup-gate-pos-weight") + 1] == "2.5"
+    assert command[command.index("--rl-pipeline-pickup-gate-neg-weight") + 1] == "3.5"
+    assert command[
+        command.index("--rl-pipeline-delivery-progress-action-loss-weight") + 1
+    ] == "0.6"
+    assert command[command.index("--rl-pipeline-navigation-action-loss-weight") + 1] == "0.7"
+    assert command[command.index("--rl-pipeline-sync-action-loss-weight") + 1] == "0.7"
+    assert command[
+        command.index("--rl-pipeline-ready-interact-action-loss-weight") + 1
+    ] == "0.95"
+    assert command[
+        command.index("--rl-pipeline-station-guard-action-loss-weight") + 1
+    ] == "0.45"
+    assert command[
+        command.index("--rl-pipeline-wrong-station-recovery-action-loss-weight") + 1
+    ] == "0.85"
+    assert command[command.index("--rl-pipeline-plan-action-loss-weight") + 1] == "0.65"
+    assert command[command.index("--rl-pipeline-plan-head-loss-weight") + 1] == "0.72"
+    assert command[command.index("--rl-pipeline-option-loss-weight") + 1] == "0.82"
+    assert command[command.index("--recurrent-backbone") + 1] == "residual_mlp"
+    assert command[
+        command.index("--bc-pipeline-frontier-exploration-action-loss-weight") + 1
+    ] == "0.7"
+    assert command[
+        command.index("--bc-pipeline-frontier-exploration-min-map-size") + 1
+    ] == "8"
+    assert command[
+        command.index("--bc-pipeline-ready-interact-action-loss-weight") + 1
+    ] == "1.45"
     assert "--rl-balanced-rollouts" in command
     assert "--rl-rollout-eval-decoding" in command
     assert "--no-rl-restore-best" in command
@@ -623,19 +1327,47 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert command[command.index("--bc-event-action-events") + 1] == "delivered,sync_complete"
     assert command[command.index("--bc-pipeline-pickup-action-loss-weight") + 1] == "0.25"
     assert command[command.index("--bc-pipeline-delivery-action-loss-weight") + 1] == "0.5"
+    assert command[command.index("--bc-pipeline-delivery-progress-action-loss-weight") + 1] == "0.8"
+    assert command[command.index("--bc-pipeline-navigation-action-loss-weight") + 1] == "1.2"
+    assert command[command.index("--bc-pipeline-sync-action-loss-weight") + 1] == "1.3"
+    assert command[command.index("--bc-pipeline-station-guard-action-loss-weight") + 1] == "1.1"
+    assert (
+        command[
+            command.index("--bc-pipeline-wrong-station-recovery-action-loss-weight") + 1
+        ]
+        == "1.6"
+    )
+    assert command[command.index("--bc-pipeline-pickup-gate-loss-weight") + 1] == "0.9"
+    assert command[command.index("--bc-pipeline-pickup-gate-pos-weight") + 1] == "2.2"
+    assert command[command.index("--bc-pipeline-pickup-gate-neg-weight") + 1] == "1.3"
     assert command[command.index("--bc-pipeline-plan-action-loss-weight") + 1] == "1.75"
+    assert command[command.index("--bc-pipeline-plan-head-loss-weight") + 1] == "1.9"
+    assert command[command.index("--bc-pipeline-option-loss-weight") + 1] == "2.1"
     assert command[command.index("--bc-pipeline-message-loss-weight") + 1] == "2.25"
+    assert command[command.index("--bc-pipeline-send-gate-loss-weight") + 1] == "1.5"
+    assert command[command.index("--bc-pipeline-send-gate-pos-weight") + 1] == "2.0"
+    assert command[command.index("--bc-pipeline-send-gate-neg-weight") + 1] == "1.25"
+    assert command[command.index("--bc-pipeline-interact-gate-loss-weight") + 1] == "1.4"
+    assert command[command.index("--bc-pipeline-interact-gate-pos-weight") + 1] == "2.5"
+    assert command[command.index("--bc-pipeline-interact-gate-neg-weight") + 1] == "1.1"
+    assert "--bc-calibrate-pipeline-interact-gate-threshold" not in command
+    assert command[command.index("--bc-pipeline-interact-gate-threshold-target-rate") + 1] == "0.33"
     assert command[command.index("--bc-pipeline-bad-pickup-action-loss-weight") + 1] == "0.6"
     assert command[command.index("--bc-pipeline-bad-drop-action-loss-weight") + 1] == "0.75"
     assert command[command.index("--bc-pipeline-bad-interact-action-loss-weight") + 1] == "1.25"
-    assert "--bc-pipeline-proactive-bad-action-labels" in command
+    assert command[command.index("--bc-pipeline-bad-action-margin-loss-weight") + 1] == "1.35"
+    assert command[command.index("--bc-pipeline-bad-action-margin") + 1] == "0.8"
+    assert "--bc-pipeline-proactive-bad-action-labels" not in command
     assert command[command.index("--pipeline-stage-count") + 1] == "2"
     assert command[command.index("--pipeline-required-per-stage-min") + 1] == "1"
     assert command[command.index("--pipeline-required-per-stage-max") + 1] == "1"
     assert command[command.index("--pipeline-sync-probability") + 1] == "0.0"
     assert command[command.index("--pipeline-dependency-probability") + 1] == "0.0"
+    assert "--eval-pipeline-interact-gate-threshold" not in command
+    assert "--eval-pipeline-event-head-threshold" not in command
     assert "--bc-calibrate-send-threshold" in command
     assert command[command.index("--bc-send-threshold-target-rate") + 1] == "0.15"
+    assert command[command.index("--bc-comm-send-pos-weight") + 1] == "-1.0"
     assert command[command.index("--bc-comm-send-rate-penalty-weight") + 1] == "0.25"
     assert command[command.index("--bc-comm-send-rate-target") + 1] == "0.15"
     assert "--dagger-rounds" in command
@@ -643,6 +1375,32 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert command[command.index("--dagger-failed-effective-ratio-cap") + 1] == "0.5"
     assert command[command.index("--dagger-oracle-action-rollin-rate") + 1] == "0.4"
     assert command[command.index("--dagger-oracle-message-rollin-rate") + 1] == "0.3"
+    assert command[command.index("--dagger-focus-events") + 1] == "pipeline_wrong_delivery,pipeline_bad_pickup"
+    assert command[command.index("--dagger-focus-error-weight") + 1] == "4.5"
+    assert command[command.index("--dagger-focus-recovery-weight") + 1] == "2.5"
+    assert command[command.index("--dagger-focus-window") + 1] == "3"
+    assert "--dagger-focus-replay" in command
+    assert "--no-dagger-retrain-from-scratch" in command
+    assert "--no-dagger-restore-best" in command
+    assert "--dagger-pipeline-wrong-delivery-provenance-labels" not in command
+    assert "--dagger-pipeline-wrong-delivery-provenance-weight" not in command
+    assert command[command.index("--dagger-replay-pre-steps") + 1] == "1"
+    assert command[command.index("--dagger-replay-post-steps") + 1] == "4"
+    assert command[command.index("--dagger-replay-weight") + 1] == "2.25"
+    assert command[command.index("--dagger-positive-replay-events") + 1] == "delivered,stage_completed"
+    assert command[command.index("--dagger-replay-event-weights") + 1] == (
+        "pipeline_wrong_delivery:5.0,delivered:2.0"
+    )
+    assert command[command.index("--dagger-replay-event-caps") + 1] == "pipeline_wrong_delivery:2"
+    assert command[command.index("--dagger-replay-success-only-events") + 1] == "delivered"
+    assert command[command.index("--dagger-replay-priority-events") + 1] == "pipeline_wrong_delivery"
+    assert command[command.index("--dagger-replay-balance-positive-events") + 1] == "delivered"
+    assert command[command.index("--dagger-replay-balance-negative-events") + 1] == "pipeline_wrong_delivery"
+    assert command[command.index("--dagger-replay-max-negative-per-positive") + 1] == "1.5"
+    assert command[command.index("--dagger-max-replay-snippets-per-episode") + 1] == "7"
+    assert command[command.index("--dagger-max-failed-parent-replay-snippets-per-episode") + 1] == "3"
+    assert command[command.index("--dagger-failed-parent-replay-weight-scale") + 1] == "0.5"
+    assert command[command.index("--dagger-expert-max-replay-snippets-per-episode") + 1] == "2"
     assert "--train-map-sizes" in command
     assert "--eval-map-sizes" in command
     assert "--eval-seed-list" in command

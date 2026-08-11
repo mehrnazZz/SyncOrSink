@@ -113,8 +113,14 @@ def test_pipeline_stage_completion_emits_training_events():
     })
 
     assert done is True
-    assert {"event": "delivered", "stage": 0} in info["events"][0]
-    assert {"event": "stage_completed", "stage": 0} in info["events"][0]
+    assert any(
+        event.get("event") == "delivered" and event.get("stage") == 0
+        for event in info["events"][0]
+    )
+    assert any(
+        event.get("event") == "stage_completed" and event.get("stage") == 0
+        for event in info["events"][0]
+    )
     assert all({"event": "pipeline_complete"} in events for events in info["events"].values())
 
 
@@ -136,13 +142,14 @@ def test_pipeline_wrong_delivery_and_sync_wait_emit_focus_events():
     wrong_env.agent_positions[0] = wrong_stage["station"]
     wrong_env.inventories[0] = 99
 
-    _, _, _, _, wrong_info = wrong_env.step({
+    _, wrong_rewards, _, _, wrong_info = wrong_env.step({
         0: {"action": wrong_env.ACTION_INTERACT},
         1: {"action": wrong_env.ACTION_STAY},
         2: {"action": wrong_env.ACTION_STAY},
     })
 
     assert {"event": "pipeline_wrong_delivery", "resource_type": 99} in wrong_info["events"][0]
+    assert wrong_rewards[0] == -wrong_config.pipeline_wrong_delivery_penalty
 
     sync_config = SyncOrSinkConfig(
         scenario="pipeline_assembly",
@@ -168,7 +175,10 @@ def test_pipeline_wrong_delivery_and_sync_wait_emit_focus_events():
     })
 
     assert done is False
-    assert {"event": "pipeline_sync_wait", "stage": 0} in sync_info["events"][0]
+    assert any(
+        event.get("event") == "pipeline_sync_wait" and event.get("stage") == 0
+        for event in sync_info["events"][0]
+    )
 
 
 def test_pipeline_dependency_blocked_emits_focus_event():

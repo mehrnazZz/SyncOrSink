@@ -125,13 +125,95 @@ RECURRENT_PPO_PROFILES = {
         "recurrent_max_grad_norm": 0.5,
         "recurrent_bc_kl_coeff": 0.5,
         "recurrent_bc_comm_kl_coeff": 0.5,
+        "recurrent_bc_pipeline_pickup_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_delivery_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_delivery_progress_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_navigation_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_frontier_exploration_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_frontier_exploration_min_map_size": 8,
+        "recurrent_bc_pipeline_sync_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_ready_interact_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_station_guard_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_wrong_station_recovery_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_pickup_gate_loss_weight": 0.0,
+        "recurrent_bc_pipeline_pickup_gate_pos_weight": 1.0,
+        "recurrent_bc_pipeline_pickup_gate_neg_weight": 1.0,
+        "recurrent_bc_pipeline_plan_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_plan_head_loss_weight": 0.0,
+        "recurrent_bc_pipeline_option_loss_weight": 0.0,
+        "recurrent_bc_pipeline_message_loss_weight": 0.0,
+        "recurrent_bc_pipeline_send_gate_loss_weight": 0.0,
+        "recurrent_bc_pipeline_send_gate_pos_weight": 1.0,
+        "recurrent_bc_pipeline_send_gate_neg_weight": 1.0,
+        "recurrent_bc_pipeline_interact_gate_loss_weight": 0.0,
+        "recurrent_bc_pipeline_interact_gate_pos_weight": 1.0,
+        "recurrent_bc_pipeline_interact_gate_neg_weight": 1.0,
+        "recurrent_bc_calibrate_pipeline_interact_gate_threshold": False,
+        "recurrent_bc_pipeline_interact_gate_threshold_target_rate": -1.0,
+        "recurrent_bc_pipeline_bad_pickup_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_bad_drop_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_bad_interact_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_bad_action_margin_loss_weight": 0.0,
+        "recurrent_bc_pipeline_bad_action_margin": 1.0,
+        "recurrent_bc_pipeline_proactive_bad_action_labels": False,
+        "recurrent_dagger_focus_replay": False,
+        "recurrent_dagger_retrain_from_scratch": True,
+        "recurrent_dagger_pipeline_wrong_delivery_provenance_labels": False,
+        "recurrent_dagger_pipeline_wrong_delivery_provenance_weight": -1.0,
+        "recurrent_dagger_replay_pre_steps": 2,
+        "recurrent_dagger_replay_post_steps": 2,
+        "recurrent_dagger_replay_weight": 1.0,
+        "recurrent_dagger_positive_replay_events": "",
+        "recurrent_dagger_replay_event_weights": "",
+        "recurrent_dagger_replay_event_caps": "",
+        "recurrent_dagger_replay_success_only_events": "",
+        "recurrent_dagger_replay_priority_events": "",
+        "recurrent_dagger_replay_balance_positive_events": "",
+        "recurrent_dagger_replay_balance_negative_events": "",
+        "recurrent_dagger_replay_max_negative_per_positive": -1.0,
+        "recurrent_dagger_max_replay_snippets_per_episode": 4,
+        "recurrent_dagger_max_failed_parent_replay_snippets_per_episode": -1,
+        "recurrent_dagger_failed_parent_replay_weight_scale": 1.0,
+        "recurrent_dagger_expert_max_replay_snippets_per_episode": -1,
+        "recurrent_pipeline_assisted_rollout_episodes": 0,
+        "recurrent_pipeline_assisted_rollout_seed_base": 20000,
+        "recurrent_pipeline_assisted_rollout_max_steps_per_episode": 0,
+        "recurrent_pipeline_assisted_rollout_weight": 1.0,
+        "recurrent_pipeline_assisted_rollout_success_only": False,
+        "recurrent_pipeline_assisted_rollout_navigation_assist": True,
+        "recurrent_pipeline_assisted_rollout_navigation_assist_trust_messages": True,
+        "recurrent_pipeline_assisted_rollout_station_interact_guard": True,
+        "recurrent_pipeline_assisted_rollout_bc_epochs": -1,
         "recurrent_rl_balanced_rollouts": False,
         "recurrent_rl_rollout_eval_decoding": False,
         "recurrent_rl_rollout_pipeline_navigation_assist": False,
         "recurrent_rl_rollout_pipeline_navigation_assist_trust_messages": False,
+        "recurrent_rl_rollout_pipeline_station_interact_guard": False,
+        "recurrent_rl_rollout_pipeline_interact_gate_promote": False,
+        "recurrent_rl_eval_decoding_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_assisted_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_interact_gate_loss_weight": 0.0,
+        "recurrent_rl_pipeline_interact_gate_pos_weight": 1.0,
+        "recurrent_rl_pipeline_interact_gate_neg_weight": 1.0,
+        "recurrent_rl_pipeline_pickup_gate_loss_weight": 0.0,
+        "recurrent_rl_pipeline_pickup_gate_pos_weight": 1.0,
+        "recurrent_rl_pipeline_pickup_gate_neg_weight": 1.0,
+        "recurrent_rl_pipeline_delivery_progress_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_navigation_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_sync_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_ready_interact_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_station_guard_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_wrong_station_recovery_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_plan_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_plan_head_loss_weight": 0.0,
+        "recurrent_rl_pipeline_option_loss_weight": 0.0,
         "recurrent_rl_pipeline_bad_pickup_penalty": 0.0,
+        "recurrent_rl_pipeline_bad_interact_penalty": 0.0,
         "recurrent_rl_pipeline_unneeded_drop_bonus": 0.0,
         "recurrent_rl_early_stop_eval_patience": 0,
+        "recurrent_eval_pipeline_interact_gate_threshold": -1.0,
+        "recurrent_eval_pipeline_event_head_threshold": -1.0,
+        "recurrent_eval_pipeline_navigation_head_threshold": -1.0,
     },
     "guarded": {
         "recurrent_rl_lr": 1e-5,
@@ -140,13 +222,106 @@ RECURRENT_PPO_PROFILES = {
         "recurrent_max_grad_norm": 0.25,
         "recurrent_bc_kl_coeff": 2.0,
         "recurrent_bc_comm_kl_coeff": 2.0,
+        "recurrent_bc_pipeline_pickup_action_loss_weight": 1.0,
+        "recurrent_bc_pipeline_delivery_action_loss_weight": 2.0,
+        "recurrent_bc_pipeline_delivery_progress_action_loss_weight": 2.0,
+        "recurrent_bc_pipeline_navigation_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_frontier_exploration_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_frontier_exploration_min_map_size": 8,
+        "recurrent_bc_pipeline_sync_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_ready_interact_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_station_guard_action_loss_weight": 1.0,
+        "recurrent_bc_pipeline_wrong_station_recovery_action_loss_weight": 0.0,
+        "recurrent_bc_pipeline_pickup_gate_loss_weight": 1.0,
+        "recurrent_bc_pipeline_pickup_gate_pos_weight": 2.0,
+        "recurrent_bc_pipeline_pickup_gate_neg_weight": 1.5,
+        "recurrent_bc_pipeline_plan_action_loss_weight": 1.0,
+        "recurrent_bc_pipeline_plan_head_loss_weight": 1.0,
+        "recurrent_bc_pipeline_option_loss_weight": 0.75,
+        "recurrent_bc_pipeline_message_loss_weight": 1.0,
+        "recurrent_bc_pipeline_send_gate_loss_weight": 1.0,
+        "recurrent_bc_pipeline_send_gate_pos_weight": 3.0,
+        "recurrent_bc_pipeline_send_gate_neg_weight": 1.0,
+        "recurrent_bc_pipeline_interact_gate_loss_weight": 2.0,
+        "recurrent_bc_pipeline_interact_gate_pos_weight": 3.0,
+        "recurrent_bc_pipeline_interact_gate_neg_weight": 2.5,
+        "recurrent_bc_calibrate_pipeline_interact_gate_threshold": True,
+        "recurrent_bc_pipeline_interact_gate_threshold_target_rate": 0.33,
+        "recurrent_bc_pipeline_bad_pickup_action_loss_weight": 0.5,
+        "recurrent_bc_pipeline_bad_drop_action_loss_weight": 0.5,
+        "recurrent_bc_pipeline_bad_interact_action_loss_weight": 1.0,
+        "recurrent_bc_pipeline_bad_action_margin_loss_weight": 0.0,
+        "recurrent_bc_pipeline_bad_action_margin": 1.0,
+        "recurrent_bc_pipeline_proactive_bad_action_labels": True,
+        "recurrent_dagger_focus_replay": True,
+        "recurrent_dagger_retrain_from_scratch": True,
+        "recurrent_dagger_pipeline_wrong_delivery_provenance_labels": True,
+        "recurrent_dagger_pipeline_wrong_delivery_provenance_weight": 3.0,
+        "recurrent_dagger_replay_pre_steps": 2,
+        "recurrent_dagger_replay_post_steps": 2,
+        "recurrent_dagger_replay_weight": 1.0,
+        "recurrent_dagger_positive_replay_events": (
+            "pipeline_delivery_ready,delivered,stage_completed"
+        ),
+        "recurrent_dagger_replay_event_weights": (
+            "pipeline_delivery_ready:4.0,pipeline_delivery_miss:4.0,"
+            "pipeline_station_stall_miss:3.0,"
+            "pipeline_sync_wait:4.0,"
+            "pipeline_wrong_delivery:3.0,pipeline_wrong_delivery_root_pickup:3.0,"
+            "delivered:2.0,stage_completed:2.0"
+        ),
+        "recurrent_dagger_replay_event_caps": "",
+        "recurrent_dagger_replay_success_only_events": "delivered,stage_completed",
+        "recurrent_dagger_replay_priority_events": (
+            "pipeline_delivery_miss,pipeline_delivery_ready,pipeline_wrong_delivery,"
+            "pipeline_wrong_delivery_root_pickup,pipeline_sync_wait"
+        ),
+        "recurrent_dagger_replay_balance_positive_events": "",
+        "recurrent_dagger_replay_balance_negative_events": "",
+        "recurrent_dagger_replay_max_negative_per_positive": -1.0,
+        "recurrent_dagger_max_replay_snippets_per_episode": 8,
+        "recurrent_dagger_max_failed_parent_replay_snippets_per_episode": 4,
+        "recurrent_dagger_failed_parent_replay_weight_scale": 1.0,
+        "recurrent_dagger_expert_max_replay_snippets_per_episode": -1,
+        "recurrent_pipeline_assisted_rollout_episodes": 0,
+        "recurrent_pipeline_assisted_rollout_seed_base": 20000,
+        "recurrent_pipeline_assisted_rollout_max_steps_per_episode": 0,
+        "recurrent_pipeline_assisted_rollout_weight": 1.0,
+        "recurrent_pipeline_assisted_rollout_success_only": False,
+        "recurrent_pipeline_assisted_rollout_navigation_assist": True,
+        "recurrent_pipeline_assisted_rollout_navigation_assist_trust_messages": True,
+        "recurrent_pipeline_assisted_rollout_station_interact_guard": True,
+        "recurrent_pipeline_assisted_rollout_bc_epochs": -1,
         "recurrent_rl_balanced_rollouts": True,
         "recurrent_rl_rollout_eval_decoding": True,
         "recurrent_rl_rollout_pipeline_navigation_assist": False,
         "recurrent_rl_rollout_pipeline_navigation_assist_trust_messages": False,
+        "recurrent_rl_rollout_pipeline_station_interact_guard": True,
+        "recurrent_rl_rollout_pipeline_interact_gate_promote": False,
+        "recurrent_rl_eval_decoding_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_assisted_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_interact_gate_loss_weight": 0.0,
+        "recurrent_rl_pipeline_interact_gate_pos_weight": 1.0,
+        "recurrent_rl_pipeline_interact_gate_neg_weight": 1.0,
+        "recurrent_rl_pipeline_pickup_gate_loss_weight": 0.0,
+        "recurrent_rl_pipeline_pickup_gate_pos_weight": 1.0,
+        "recurrent_rl_pipeline_pickup_gate_neg_weight": 1.0,
+        "recurrent_rl_pipeline_delivery_progress_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_navigation_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_sync_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_ready_interact_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_station_guard_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_wrong_station_recovery_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_plan_action_loss_weight": 0.0,
+        "recurrent_rl_pipeline_plan_head_loss_weight": 0.0,
+        "recurrent_rl_pipeline_option_loss_weight": 0.0,
         "recurrent_rl_pipeline_bad_pickup_penalty": 0.1,
+        "recurrent_rl_pipeline_bad_interact_penalty": 0.1,
         "recurrent_rl_pipeline_unneeded_drop_bonus": 0.05,
         "recurrent_rl_early_stop_eval_patience": 4,
+        "recurrent_eval_pipeline_interact_gate_threshold": -1.0,
+        "recurrent_eval_pipeline_event_head_threshold": -1.0,
+        "recurrent_eval_pipeline_navigation_head_threshold": -1.0,
     },
 }
 
@@ -346,16 +521,60 @@ def _build_recurrent_command(
         str(args.recurrent_bc_pipeline_pickup_action_loss_weight),
         "--bc-pipeline-delivery-action-loss-weight",
         str(args.recurrent_bc_pipeline_delivery_action_loss_weight),
+        "--bc-pipeline-delivery-progress-action-loss-weight",
+        str(args.recurrent_bc_pipeline_delivery_progress_action_loss_weight),
+        "--bc-pipeline-navigation-action-loss-weight",
+        str(args.recurrent_bc_pipeline_navigation_action_loss_weight),
+        "--bc-pipeline-frontier-exploration-action-loss-weight",
+        str(args.recurrent_bc_pipeline_frontier_exploration_action_loss_weight),
+        "--bc-pipeline-frontier-exploration-min-map-size",
+        str(args.recurrent_bc_pipeline_frontier_exploration_min_map_size),
+        "--bc-pipeline-sync-action-loss-weight",
+        str(args.recurrent_bc_pipeline_sync_action_loss_weight),
+        "--bc-pipeline-ready-interact-action-loss-weight",
+        str(args.recurrent_bc_pipeline_ready_interact_action_loss_weight),
+        "--bc-pipeline-station-guard-action-loss-weight",
+        str(args.recurrent_bc_pipeline_station_guard_action_loss_weight),
+        "--bc-pipeline-wrong-station-recovery-action-loss-weight",
+        str(args.recurrent_bc_pipeline_wrong_station_recovery_action_loss_weight),
+        "--bc-pipeline-pickup-gate-loss-weight",
+        str(args.recurrent_bc_pipeline_pickup_gate_loss_weight),
+        "--bc-pipeline-pickup-gate-pos-weight",
+        str(args.recurrent_bc_pipeline_pickup_gate_pos_weight),
+        "--bc-pipeline-pickup-gate-neg-weight",
+        str(args.recurrent_bc_pipeline_pickup_gate_neg_weight),
         "--bc-pipeline-plan-action-loss-weight",
         str(args.recurrent_bc_pipeline_plan_action_loss_weight),
+        "--bc-pipeline-plan-head-loss-weight",
+        str(args.recurrent_bc_pipeline_plan_head_loss_weight),
+        "--bc-pipeline-option-loss-weight",
+        str(args.recurrent_bc_pipeline_option_loss_weight),
         "--bc-pipeline-message-loss-weight",
         str(args.recurrent_bc_pipeline_message_loss_weight),
+        "--bc-pipeline-send-gate-loss-weight",
+        str(args.recurrent_bc_pipeline_send_gate_loss_weight),
+        "--bc-pipeline-send-gate-pos-weight",
+        str(args.recurrent_bc_pipeline_send_gate_pos_weight),
+        "--bc-pipeline-send-gate-neg-weight",
+        str(args.recurrent_bc_pipeline_send_gate_neg_weight),
+        "--bc-pipeline-interact-gate-loss-weight",
+        str(args.recurrent_bc_pipeline_interact_gate_loss_weight),
+        "--bc-pipeline-interact-gate-pos-weight",
+        str(args.recurrent_bc_pipeline_interact_gate_pos_weight),
+        "--bc-pipeline-interact-gate-neg-weight",
+        str(args.recurrent_bc_pipeline_interact_gate_neg_weight),
+        "--bc-pipeline-interact-gate-threshold-target-rate",
+        str(args.recurrent_bc_pipeline_interact_gate_threshold_target_rate),
         "--bc-pipeline-bad-pickup-action-loss-weight",
         str(args.recurrent_bc_pipeline_bad_pickup_action_loss_weight),
         "--bc-pipeline-bad-drop-action-loss-weight",
         str(args.recurrent_bc_pipeline_bad_drop_action_loss_weight),
         "--bc-pipeline-bad-interact-action-loss-weight",
         str(args.recurrent_bc_pipeline_bad_interact_action_loss_weight),
+        "--bc-pipeline-bad-action-margin-loss-weight",
+        str(args.recurrent_bc_pipeline_bad_action_margin_loss_weight),
+        "--bc-pipeline-bad-action-margin",
+        str(args.recurrent_bc_pipeline_bad_action_margin),
         "--pipeline-required-per-stage-min",
         str(args.recurrent_pipeline_required_per_stage_min),
         "--pipeline-required-per-stage-max",
@@ -364,6 +583,10 @@ def _build_recurrent_command(
         str(args.recurrent_pipeline_sync_probability),
         "--pipeline-dependency-probability",
         str(args.recurrent_pipeline_dependency_probability),
+        "--pipeline-wrong-delivery-penalty",
+        str(args.recurrent_pipeline_wrong_delivery_penalty),
+        "--bc-comm-send-pos-weight",
+        str(args.recurrent_bc_comm_send_pos_weight),
         "--bc-comm-send-rate-penalty-weight",
         str(args.recurrent_bc_comm_send_rate_penalty_weight),
         "--bc-comm-send-rate-target",
@@ -380,6 +603,44 @@ def _build_recurrent_command(
         str(args.recurrent_dagger_oracle_action_rollin_rate),
         "--dagger-oracle-message-rollin-rate",
         str(args.recurrent_dagger_oracle_message_rollin_rate),
+        "--dagger-focus-events",
+        args.recurrent_dagger_focus_events,
+        "--dagger-focus-error-weight",
+        str(args.recurrent_dagger_focus_error_weight),
+        "--dagger-focus-recovery-weight",
+        str(args.recurrent_dagger_focus_recovery_weight),
+        "--dagger-focus-window",
+        str(args.recurrent_dagger_focus_window),
+        "--dagger-replay-pre-steps",
+        str(args.recurrent_dagger_replay_pre_steps),
+        "--dagger-replay-post-steps",
+        str(args.recurrent_dagger_replay_post_steps),
+        "--dagger-replay-weight",
+        str(args.recurrent_dagger_replay_weight),
+        "--dagger-positive-replay-events",
+        args.recurrent_dagger_positive_replay_events,
+        "--dagger-replay-event-weights",
+        args.recurrent_dagger_replay_event_weights,
+        "--dagger-replay-event-caps",
+        args.recurrent_dagger_replay_event_caps,
+        "--dagger-replay-success-only-events",
+        args.recurrent_dagger_replay_success_only_events,
+        "--dagger-replay-priority-events",
+        args.recurrent_dagger_replay_priority_events,
+        "--dagger-replay-balance-positive-events",
+        args.recurrent_dagger_replay_balance_positive_events,
+        "--dagger-replay-balance-negative-events",
+        args.recurrent_dagger_replay_balance_negative_events,
+        "--dagger-replay-max-negative-per-positive",
+        str(args.recurrent_dagger_replay_max_negative_per_positive),
+        "--dagger-max-replay-snippets-per-episode",
+        str(args.recurrent_dagger_max_replay_snippets_per_episode),
+        "--dagger-max-failed-parent-replay-snippets-per-episode",
+        str(args.recurrent_dagger_max_failed_parent_replay_snippets_per_episode),
+        "--dagger-failed-parent-replay-weight-scale",
+        str(args.recurrent_dagger_failed_parent_replay_weight_scale),
+        "--dagger-expert-max-replay-snippets-per-episode",
+        str(args.recurrent_dagger_expert_max_replay_snippets_per_episode),
         "--rl-updates",
         str(rl_updates),
         "--rl-early-stop-eval-patience",
@@ -402,8 +663,44 @@ def _build_recurrent_command(
         str(args.recurrent_bc_kl_coeff),
         "--bc-comm-kl-coeff",
         str(args.recurrent_bc_comm_kl_coeff),
+        "--rl-eval-decoding-action-loss-weight",
+        str(args.recurrent_rl_eval_decoding_action_loss_weight),
+        "--rl-pipeline-assisted-action-loss-weight",
+        str(args.recurrent_rl_pipeline_assisted_action_loss_weight),
+        "--rl-pipeline-interact-gate-loss-weight",
+        str(args.recurrent_rl_pipeline_interact_gate_loss_weight),
+        "--rl-pipeline-interact-gate-pos-weight",
+        str(args.recurrent_rl_pipeline_interact_gate_pos_weight),
+        "--rl-pipeline-interact-gate-neg-weight",
+        str(args.recurrent_rl_pipeline_interact_gate_neg_weight),
+        "--rl-pipeline-pickup-gate-loss-weight",
+        str(args.recurrent_rl_pipeline_pickup_gate_loss_weight),
+        "--rl-pipeline-pickup-gate-pos-weight",
+        str(args.recurrent_rl_pipeline_pickup_gate_pos_weight),
+        "--rl-pipeline-pickup-gate-neg-weight",
+        str(args.recurrent_rl_pipeline_pickup_gate_neg_weight),
+        "--rl-pipeline-delivery-progress-action-loss-weight",
+        str(args.recurrent_rl_pipeline_delivery_progress_action_loss_weight),
+        "--rl-pipeline-navigation-action-loss-weight",
+        str(args.recurrent_rl_pipeline_navigation_action_loss_weight),
+        "--rl-pipeline-sync-action-loss-weight",
+        str(args.recurrent_rl_pipeline_sync_action_loss_weight),
+        "--rl-pipeline-ready-interact-action-loss-weight",
+        str(args.recurrent_rl_pipeline_ready_interact_action_loss_weight),
+        "--rl-pipeline-station-guard-action-loss-weight",
+        str(args.recurrent_rl_pipeline_station_guard_action_loss_weight),
+        "--rl-pipeline-wrong-station-recovery-action-loss-weight",
+        str(args.recurrent_rl_pipeline_wrong_station_recovery_action_loss_weight),
+        "--rl-pipeline-plan-action-loss-weight",
+        str(args.recurrent_rl_pipeline_plan_action_loss_weight),
+        "--rl-pipeline-plan-head-loss-weight",
+        str(args.recurrent_rl_pipeline_plan_head_loss_weight),
+        "--rl-pipeline-option-loss-weight",
+        str(args.recurrent_rl_pipeline_option_loss_weight),
         "--rl-pipeline-bad-pickup-penalty",
         str(args.recurrent_rl_pipeline_bad_pickup_penalty),
+        "--rl-pipeline-bad-interact-penalty",
+        str(args.recurrent_rl_pipeline_bad_interact_penalty),
         "--rl-pipeline-unneeded-drop-bonus",
         str(args.recurrent_rl_pipeline_unneeded_drop_bonus),
         "--rl-eval-every",
@@ -418,6 +715,8 @@ def _build_recurrent_command(
         str(args.recurrent_eval_send_threshold),
         "--hidden-dim",
         str(args.recurrent_hidden_dim),
+        "--recurrent-backbone",
+        args.recurrent_backbone,
         "--comm-token-limit",
         str(args.recurrent_comm_token_limit),
         "--comm-vocab-size",
@@ -453,6 +752,35 @@ def _build_recurrent_command(
         cmd.extend(["--eval-seed-list", args.recurrent_eval_seed_list])
     if args.recurrent_dagger_seed_list:
         cmd.extend(["--dagger-seed-list", args.recurrent_dagger_seed_list])
+    if (
+        case.scenario == "pipeline_assembly"
+        and int(args.recurrent_pipeline_assisted_rollout_episodes) > 0
+    ):
+        cmd.extend([
+            "--pipeline-assisted-rollout-episodes",
+            str(args.recurrent_pipeline_assisted_rollout_episodes),
+            "--pipeline-assisted-rollout-seed-base",
+            str(args.recurrent_pipeline_assisted_rollout_seed_base),
+            "--pipeline-assisted-rollout-max-steps-per-episode",
+            str(args.recurrent_pipeline_assisted_rollout_max_steps_per_episode),
+            "--pipeline-assisted-rollout-weight",
+            str(args.recurrent_pipeline_assisted_rollout_weight),
+            "--pipeline-assisted-rollout-bc-epochs",
+            str(args.recurrent_pipeline_assisted_rollout_bc_epochs),
+        ])
+        if args.recurrent_pipeline_assisted_rollout_seed_list:
+            cmd.extend([
+                "--pipeline-assisted-rollout-seed-list",
+                args.recurrent_pipeline_assisted_rollout_seed_list,
+            ])
+        if args.recurrent_pipeline_assisted_rollout_success_only:
+            cmd.append("--pipeline-assisted-rollout-success-only")
+        if not args.recurrent_pipeline_assisted_rollout_navigation_assist:
+            cmd.append("--no-pipeline-assisted-rollout-navigation-assist")
+        if not args.recurrent_pipeline_assisted_rollout_navigation_assist_trust_messages:
+            cmd.append("--no-pipeline-assisted-rollout-navigation-assist-trust-messages")
+        if not args.recurrent_pipeline_assisted_rollout_station_interact_guard:
+            cmd.append("--no-pipeline-assisted-rollout-station-interact-guard")
     recurrent_init = _resolve_recurrent_init(
         args,
         case=case,
@@ -480,6 +808,16 @@ def _build_recurrent_command(
         and case.scenario == "pipeline_assembly"
     ):
         cmd.append("--rl-rollout-pipeline-navigation-assist-trust-messages")
+    if (
+        args.recurrent_rl_rollout_pipeline_station_interact_guard
+        and case.scenario == "pipeline_assembly"
+    ):
+        cmd.append("--rl-rollout-pipeline-station-interact-guard")
+    if (
+        args.recurrent_rl_rollout_pipeline_interact_gate_promote
+        and case.scenario == "pipeline_assembly"
+    ):
+        cmd.append("--rl-rollout-pipeline-interact-gate-promote")
     if not args.recurrent_rl_restore_best:
         cmd.append("--no-rl-restore-best")
     if not args.recurrent_rl_save_best:
@@ -497,7 +835,21 @@ def _build_recurrent_command(
             "--obs-memory-radius",
             str(args.recurrent_obs_memory_radius),
         ])
-    if args.recurrent_obs_feedback:
+    recurrent_pipeline_feedback = (
+        case.scenario == "pipeline_assembly"
+        and (
+            args.recurrent_obs_pipeline_feedback
+            or args.recurrent_obs_pipeline_shared_feedback
+        )
+    )
+    recurrent_signal_feedback = (
+        case.scenario == "signal_hunt"
+        and (
+            args.recurrent_obs_signal_sync_feedback
+            or args.recurrent_obs_signal_scan_state
+        )
+    )
+    if args.recurrent_obs_feedback or recurrent_pipeline_feedback or recurrent_signal_feedback:
         cmd.append("--obs-feedback")
     if args.recurrent_obs_normalize_tokens:
         cmd.append("--obs-normalize-tokens")
@@ -511,14 +863,93 @@ def _build_recurrent_command(
         cmd.append("--obs-signal-sync-feedback")
     if args.recurrent_obs_signal_scan_state:
         cmd.append("--obs-signal-scan-state")
-    if args.recurrent_bc_pipeline_proactive_bad_action_labels:
+    if (
+        args.recurrent_bc_pipeline_proactive_bad_action_labels
+        and case.scenario == "pipeline_assembly"
+    ):
         cmd.append("--bc-pipeline-proactive-bad-action-labels")
+    if (
+        args.recurrent_bc_calibrate_pipeline_interact_gate_threshold
+        and case.scenario == "pipeline_assembly"
+    ):
+        cmd.append("--bc-calibrate-pipeline-interact-gate-threshold")
+    if args.recurrent_dagger_focus_replay:
+        cmd.append("--dagger-focus-replay")
+    if not args.recurrent_dagger_retrain_from_scratch:
+        cmd.append("--no-dagger-retrain-from-scratch")
+    if not args.recurrent_dagger_restore_best:
+        cmd.append("--no-dagger-restore-best")
+    if (
+        args.recurrent_dagger_pipeline_wrong_delivery_provenance_labels
+        and case.scenario == "pipeline_assembly"
+    ):
+        cmd.extend([
+            "--dagger-pipeline-wrong-delivery-provenance-labels",
+            "--dagger-pipeline-wrong-delivery-provenance-weight",
+            str(args.recurrent_dagger_pipeline_wrong_delivery_provenance_weight),
+        ])
     if args.recurrent_obs_pipeline_features and case.scenario == "pipeline_assembly":
         cmd.append("--obs-pipeline-features")
+    if args.recurrent_obs_pipeline_progress_features and case.scenario == "pipeline_assembly":
+        cmd.append("--obs-pipeline-progress-features")
+    if recurrent_pipeline_feedback:
+        cmd.append("--obs-pipeline-feedback")
+        if args.recurrent_obs_pipeline_feedback_metadata:
+            cmd.append("--obs-pipeline-feedback-metadata")
+        else:
+            cmd.append("--no-obs-pipeline-feedback-metadata")
+        if args.recurrent_obs_pipeline_shared_feedback:
+            cmd.append("--obs-pipeline-shared-feedback")
     if args.recurrent_eval_pipeline_navigation_assist and case.scenario == "pipeline_assembly":
         cmd.append("--eval-pipeline-navigation-assist")
     if args.recurrent_eval_pipeline_navigation_assist_trust_messages and case.scenario == "pipeline_assembly":
         cmd.append("--eval-pipeline-navigation-assist-trust-messages")
+    if args.recurrent_eval_pipeline_station_interact_guard and case.scenario == "pipeline_assembly":
+        cmd.append("--eval-pipeline-station-interact-guard")
+    if (
+        float(args.recurrent_eval_pipeline_interact_gate_threshold) >= 0.0
+        and case.scenario == "pipeline_assembly"
+    ):
+        cmd.extend([
+            "--eval-pipeline-interact-gate-threshold",
+            str(args.recurrent_eval_pipeline_interact_gate_threshold),
+        ])
+    if args.recurrent_eval_pipeline_interact_gate_promote and case.scenario == "pipeline_assembly":
+        cmd.append("--eval-pipeline-interact-gate-promote")
+    if (
+        float(args.recurrent_eval_pipeline_event_head_threshold) >= 0.0
+        and case.scenario == "pipeline_assembly"
+    ):
+        cmd.extend([
+            "--eval-pipeline-event-head-threshold",
+            str(args.recurrent_eval_pipeline_event_head_threshold),
+        ])
+    if (
+        float(args.recurrent_eval_pipeline_navigation_head_threshold) >= 0.0
+        and case.scenario == "pipeline_assembly"
+    ):
+        cmd.extend([
+            "--eval-pipeline-navigation-head-threshold",
+            str(args.recurrent_eval_pipeline_navigation_head_threshold),
+        ])
+    if (
+        float(args.recurrent_eval_pipeline_plan_head_threshold) >= 0.0
+        and case.scenario == "pipeline_assembly"
+    ):
+        cmd.extend([
+            "--eval-pipeline-plan-head-threshold",
+            str(args.recurrent_eval_pipeline_plan_head_threshold),
+        ])
+    if (
+        float(args.recurrent_eval_pipeline_option_threshold) >= 0.0
+        and case.scenario == "pipeline_assembly"
+    ):
+        cmd.extend([
+            "--eval-pipeline-option-threshold",
+            str(args.recurrent_eval_pipeline_option_threshold),
+        ])
+    if args.recurrent_eval_pipeline_option_allow_interact and case.scenario == "pipeline_assembly":
+        cmd.append("--eval-pipeline-option-allow-interact")
     if signal_specialist:
         cmd.extend([
             "--obs-exploration-memory",
@@ -701,11 +1132,74 @@ def run_suite(args) -> dict:
             "recurrent_bc_pipeline_delivery_action_loss_weight": (
                 args.recurrent_bc_pipeline_delivery_action_loss_weight
             ),
+            "recurrent_bc_pipeline_delivery_progress_action_loss_weight": (
+                args.recurrent_bc_pipeline_delivery_progress_action_loss_weight
+            ),
+            "recurrent_bc_pipeline_navigation_action_loss_weight": (
+                args.recurrent_bc_pipeline_navigation_action_loss_weight
+            ),
+            "recurrent_bc_pipeline_frontier_exploration_action_loss_weight": (
+                args.recurrent_bc_pipeline_frontier_exploration_action_loss_weight
+            ),
+            "recurrent_bc_pipeline_frontier_exploration_min_map_size": (
+                args.recurrent_bc_pipeline_frontier_exploration_min_map_size
+            ),
+            "recurrent_bc_pipeline_sync_action_loss_weight": (
+                args.recurrent_bc_pipeline_sync_action_loss_weight
+            ),
+            "recurrent_bc_pipeline_ready_interact_action_loss_weight": (
+                args.recurrent_bc_pipeline_ready_interact_action_loss_weight
+            ),
+            "recurrent_bc_pipeline_station_guard_action_loss_weight": (
+                args.recurrent_bc_pipeline_station_guard_action_loss_weight
+            ),
+            "recurrent_bc_pipeline_wrong_station_recovery_action_loss_weight": (
+                args.recurrent_bc_pipeline_wrong_station_recovery_action_loss_weight
+            ),
+            "recurrent_bc_pipeline_pickup_gate_loss_weight": (
+                args.recurrent_bc_pipeline_pickup_gate_loss_weight
+            ),
+            "recurrent_bc_pipeline_pickup_gate_pos_weight": (
+                args.recurrent_bc_pipeline_pickup_gate_pos_weight
+            ),
+            "recurrent_bc_pipeline_pickup_gate_neg_weight": (
+                args.recurrent_bc_pipeline_pickup_gate_neg_weight
+            ),
             "recurrent_bc_pipeline_plan_action_loss_weight": (
                 args.recurrent_bc_pipeline_plan_action_loss_weight
             ),
+            "recurrent_bc_pipeline_plan_head_loss_weight": (
+                args.recurrent_bc_pipeline_plan_head_loss_weight
+            ),
+            "recurrent_bc_pipeline_option_loss_weight": (
+                args.recurrent_bc_pipeline_option_loss_weight
+            ),
             "recurrent_bc_pipeline_message_loss_weight": (
                 args.recurrent_bc_pipeline_message_loss_weight
+            ),
+            "recurrent_bc_pipeline_send_gate_loss_weight": (
+                args.recurrent_bc_pipeline_send_gate_loss_weight
+            ),
+            "recurrent_bc_pipeline_send_gate_pos_weight": (
+                args.recurrent_bc_pipeline_send_gate_pos_weight
+            ),
+            "recurrent_bc_pipeline_send_gate_neg_weight": (
+                args.recurrent_bc_pipeline_send_gate_neg_weight
+            ),
+            "recurrent_bc_pipeline_interact_gate_loss_weight": (
+                args.recurrent_bc_pipeline_interact_gate_loss_weight
+            ),
+            "recurrent_bc_pipeline_interact_gate_pos_weight": (
+                args.recurrent_bc_pipeline_interact_gate_pos_weight
+            ),
+            "recurrent_bc_pipeline_interact_gate_neg_weight": (
+                args.recurrent_bc_pipeline_interact_gate_neg_weight
+            ),
+            "recurrent_bc_calibrate_pipeline_interact_gate_threshold": (
+                args.recurrent_bc_calibrate_pipeline_interact_gate_threshold
+            ),
+            "recurrent_bc_pipeline_interact_gate_threshold_target_rate": (
+                args.recurrent_bc_pipeline_interact_gate_threshold_target_rate
             ),
             "recurrent_bc_pipeline_bad_pickup_action_loss_weight": (
                 args.recurrent_bc_pipeline_bad_pickup_action_loss_weight
@@ -716,6 +1210,12 @@ def run_suite(args) -> dict:
             "recurrent_bc_pipeline_bad_interact_action_loss_weight": (
                 args.recurrent_bc_pipeline_bad_interact_action_loss_weight
             ),
+            "recurrent_bc_pipeline_bad_action_margin_loss_weight": (
+                args.recurrent_bc_pipeline_bad_action_margin_loss_weight
+            ),
+            "recurrent_bc_pipeline_bad_action_margin": (
+                args.recurrent_bc_pipeline_bad_action_margin
+            ),
             "recurrent_bc_pipeline_proactive_bad_action_labels": (
                 args.recurrent_bc_pipeline_proactive_bad_action_labels
             ),
@@ -724,13 +1224,49 @@ def run_suite(args) -> dict:
             "recurrent_pipeline_required_per_stage_max": args.recurrent_pipeline_required_per_stage_max,
             "recurrent_pipeline_sync_probability": args.recurrent_pipeline_sync_probability,
             "recurrent_pipeline_dependency_probability": args.recurrent_pipeline_dependency_probability,
+            "recurrent_pipeline_wrong_delivery_penalty": args.recurrent_pipeline_wrong_delivery_penalty,
             "recurrent_obs_pipeline_features": args.recurrent_obs_pipeline_features,
+            "recurrent_obs_pipeline_feedback": args.recurrent_obs_pipeline_feedback,
+            "recurrent_obs_pipeline_feedback_metadata": (
+                args.recurrent_obs_pipeline_feedback_metadata
+            ),
+            "recurrent_obs_pipeline_progress_features": (
+                args.recurrent_obs_pipeline_progress_features
+            ),
+            "recurrent_obs_pipeline_shared_feedback": (
+                args.recurrent_obs_pipeline_shared_feedback
+            ),
             "recurrent_eval_pipeline_navigation_assist": args.recurrent_eval_pipeline_navigation_assist,
             "recurrent_eval_pipeline_navigation_assist_trust_messages": (
                 args.recurrent_eval_pipeline_navigation_assist_trust_messages
             ),
+            "recurrent_eval_pipeline_station_interact_guard": (
+                args.recurrent_eval_pipeline_station_interact_guard
+            ),
+            "recurrent_eval_pipeline_interact_gate_threshold": (
+                args.recurrent_eval_pipeline_interact_gate_threshold
+            ),
+            "recurrent_eval_pipeline_interact_gate_promote": (
+                args.recurrent_eval_pipeline_interact_gate_promote
+            ),
+            "recurrent_eval_pipeline_event_head_threshold": (
+                args.recurrent_eval_pipeline_event_head_threshold
+            ),
+            "recurrent_eval_pipeline_navigation_head_threshold": (
+                args.recurrent_eval_pipeline_navigation_head_threshold
+            ),
+            "recurrent_eval_pipeline_plan_head_threshold": (
+                args.recurrent_eval_pipeline_plan_head_threshold
+            ),
+            "recurrent_eval_pipeline_option_threshold": (
+                args.recurrent_eval_pipeline_option_threshold
+            ),
+            "recurrent_eval_pipeline_option_allow_interact": (
+                args.recurrent_eval_pipeline_option_allow_interact
+            ),
             "recurrent_bc_calibrate_send_threshold": args.recurrent_bc_calibrate_send_threshold,
             "recurrent_bc_send_threshold_target_rate": args.recurrent_bc_send_threshold_target_rate,
+            "recurrent_bc_comm_send_pos_weight": args.recurrent_bc_comm_send_pos_weight,
             "recurrent_bc_comm_send_rate_penalty_weight": args.recurrent_bc_comm_send_rate_penalty_weight,
             "recurrent_bc_comm_send_rate_target": args.recurrent_bc_comm_send_rate_target,
             "recurrent_dagger_rounds": args.recurrent_dagger_rounds,
@@ -738,6 +1274,80 @@ def run_suite(args) -> dict:
             "recurrent_dagger_failed_effective_ratio_cap": args.recurrent_dagger_failed_effective_ratio_cap,
             "recurrent_dagger_oracle_action_rollin_rate": args.recurrent_dagger_oracle_action_rollin_rate,
             "recurrent_dagger_oracle_message_rollin_rate": args.recurrent_dagger_oracle_message_rollin_rate,
+            "recurrent_dagger_focus_events": args.recurrent_dagger_focus_events,
+            "recurrent_dagger_focus_error_weight": args.recurrent_dagger_focus_error_weight,
+            "recurrent_dagger_focus_recovery_weight": args.recurrent_dagger_focus_recovery_weight,
+            "recurrent_dagger_focus_window": args.recurrent_dagger_focus_window,
+            "recurrent_dagger_focus_replay": args.recurrent_dagger_focus_replay,
+            "recurrent_dagger_retrain_from_scratch": args.recurrent_dagger_retrain_from_scratch,
+            "recurrent_dagger_restore_best": args.recurrent_dagger_restore_best,
+            "recurrent_dagger_pipeline_wrong_delivery_provenance_labels": (
+                args.recurrent_dagger_pipeline_wrong_delivery_provenance_labels
+            ),
+            "recurrent_dagger_pipeline_wrong_delivery_provenance_weight": (
+                args.recurrent_dagger_pipeline_wrong_delivery_provenance_weight
+            ),
+            "recurrent_dagger_replay_pre_steps": args.recurrent_dagger_replay_pre_steps,
+            "recurrent_dagger_replay_post_steps": args.recurrent_dagger_replay_post_steps,
+            "recurrent_dagger_replay_weight": args.recurrent_dagger_replay_weight,
+            "recurrent_dagger_positive_replay_events": args.recurrent_dagger_positive_replay_events,
+            "recurrent_dagger_replay_event_weights": args.recurrent_dagger_replay_event_weights,
+            "recurrent_dagger_replay_event_caps": args.recurrent_dagger_replay_event_caps,
+            "recurrent_dagger_replay_success_only_events": (
+                args.recurrent_dagger_replay_success_only_events
+            ),
+            "recurrent_dagger_replay_priority_events": args.recurrent_dagger_replay_priority_events,
+            "recurrent_dagger_replay_balance_positive_events": (
+                args.recurrent_dagger_replay_balance_positive_events
+            ),
+            "recurrent_dagger_replay_balance_negative_events": (
+                args.recurrent_dagger_replay_balance_negative_events
+            ),
+            "recurrent_dagger_replay_max_negative_per_positive": (
+                args.recurrent_dagger_replay_max_negative_per_positive
+            ),
+            "recurrent_dagger_max_replay_snippets_per_episode": (
+                args.recurrent_dagger_max_replay_snippets_per_episode
+            ),
+            "recurrent_dagger_max_failed_parent_replay_snippets_per_episode": (
+                args.recurrent_dagger_max_failed_parent_replay_snippets_per_episode
+            ),
+            "recurrent_dagger_failed_parent_replay_weight_scale": (
+                args.recurrent_dagger_failed_parent_replay_weight_scale
+            ),
+            "recurrent_dagger_expert_max_replay_snippets_per_episode": (
+                args.recurrent_dagger_expert_max_replay_snippets_per_episode
+            ),
+            "recurrent_pipeline_assisted_rollout_episodes": (
+                args.recurrent_pipeline_assisted_rollout_episodes
+            ),
+            "recurrent_pipeline_assisted_rollout_seed_base": (
+                args.recurrent_pipeline_assisted_rollout_seed_base
+            ),
+            "recurrent_pipeline_assisted_rollout_seed_list": (
+                args.recurrent_pipeline_assisted_rollout_seed_list
+            ),
+            "recurrent_pipeline_assisted_rollout_max_steps_per_episode": (
+                args.recurrent_pipeline_assisted_rollout_max_steps_per_episode
+            ),
+            "recurrent_pipeline_assisted_rollout_weight": (
+                args.recurrent_pipeline_assisted_rollout_weight
+            ),
+            "recurrent_pipeline_assisted_rollout_success_only": (
+                args.recurrent_pipeline_assisted_rollout_success_only
+            ),
+            "recurrent_pipeline_assisted_rollout_navigation_assist": (
+                args.recurrent_pipeline_assisted_rollout_navigation_assist
+            ),
+            "recurrent_pipeline_assisted_rollout_navigation_assist_trust_messages": (
+                args.recurrent_pipeline_assisted_rollout_navigation_assist_trust_messages
+            ),
+            "recurrent_pipeline_assisted_rollout_station_interact_guard": (
+                args.recurrent_pipeline_assisted_rollout_station_interact_guard
+            ),
+            "recurrent_pipeline_assisted_rollout_bc_epochs": (
+                args.recurrent_pipeline_assisted_rollout_bc_epochs
+            ),
             "recurrent_rl_updates": args.recurrent_rl_updates,
             "recurrent_rl_early_stop_eval_patience": args.recurrent_rl_early_stop_eval_patience,
             "recurrent_rl_eval_episodes": args.recurrent_rl_eval_episodes,
@@ -759,7 +1369,65 @@ def run_suite(args) -> dict:
             "recurrent_rl_rollout_pipeline_navigation_assist_trust_messages": (
                 args.recurrent_rl_rollout_pipeline_navigation_assist_trust_messages
             ),
+            "recurrent_rl_rollout_pipeline_station_interact_guard": (
+                args.recurrent_rl_rollout_pipeline_station_interact_guard
+            ),
+            "recurrent_rl_rollout_pipeline_interact_gate_promote": (
+                args.recurrent_rl_rollout_pipeline_interact_gate_promote
+            ),
+            "recurrent_rl_eval_decoding_action_loss_weight": (
+                args.recurrent_rl_eval_decoding_action_loss_weight
+            ),
+            "recurrent_rl_pipeline_assisted_action_loss_weight": (
+                args.recurrent_rl_pipeline_assisted_action_loss_weight
+            ),
+            "recurrent_rl_pipeline_interact_gate_loss_weight": (
+                args.recurrent_rl_pipeline_interact_gate_loss_weight
+            ),
+            "recurrent_rl_pipeline_interact_gate_pos_weight": (
+                args.recurrent_rl_pipeline_interact_gate_pos_weight
+            ),
+            "recurrent_rl_pipeline_interact_gate_neg_weight": (
+                args.recurrent_rl_pipeline_interact_gate_neg_weight
+            ),
+            "recurrent_rl_pipeline_pickup_gate_loss_weight": (
+                args.recurrent_rl_pipeline_pickup_gate_loss_weight
+            ),
+            "recurrent_rl_pipeline_pickup_gate_pos_weight": (
+                args.recurrent_rl_pipeline_pickup_gate_pos_weight
+            ),
+            "recurrent_rl_pipeline_pickup_gate_neg_weight": (
+                args.recurrent_rl_pipeline_pickup_gate_neg_weight
+            ),
+            "recurrent_rl_pipeline_delivery_progress_action_loss_weight": (
+                args.recurrent_rl_pipeline_delivery_progress_action_loss_weight
+            ),
+            "recurrent_rl_pipeline_navigation_action_loss_weight": (
+                args.recurrent_rl_pipeline_navigation_action_loss_weight
+            ),
+            "recurrent_rl_pipeline_sync_action_loss_weight": (
+                args.recurrent_rl_pipeline_sync_action_loss_weight
+            ),
+            "recurrent_rl_pipeline_ready_interact_action_loss_weight": (
+                args.recurrent_rl_pipeline_ready_interact_action_loss_weight
+            ),
+            "recurrent_rl_pipeline_station_guard_action_loss_weight": (
+                args.recurrent_rl_pipeline_station_guard_action_loss_weight
+            ),
+            "recurrent_rl_pipeline_wrong_station_recovery_action_loss_weight": (
+                args.recurrent_rl_pipeline_wrong_station_recovery_action_loss_weight
+            ),
+            "recurrent_rl_pipeline_plan_action_loss_weight": (
+                args.recurrent_rl_pipeline_plan_action_loss_weight
+            ),
+            "recurrent_rl_pipeline_plan_head_loss_weight": (
+                args.recurrent_rl_pipeline_plan_head_loss_weight
+            ),
+            "recurrent_rl_pipeline_option_loss_weight": (
+                args.recurrent_rl_pipeline_option_loss_weight
+            ),
             "recurrent_rl_pipeline_bad_pickup_penalty": args.recurrent_rl_pipeline_bad_pickup_penalty,
+            "recurrent_rl_pipeline_bad_interact_penalty": args.recurrent_rl_pipeline_bad_interact_penalty,
             "recurrent_rl_pipeline_unneeded_drop_bonus": args.recurrent_rl_pipeline_unneeded_drop_bonus,
             "recurrent_rl_restore_best": args.recurrent_rl_restore_best,
             "recurrent_rl_save_best": args.recurrent_rl_save_best,
@@ -780,6 +1448,7 @@ def run_suite(args) -> dict:
             "recurrent_comm_token_limit": args.recurrent_comm_token_limit,
             "recurrent_comm_vocab_size": args.recurrent_comm_vocab_size,
             "recurrent_hidden_dim": args.recurrent_hidden_dim,
+            "recurrent_backbone": args.recurrent_backbone,
             "recurrent_obs_exploration_memory": args.recurrent_obs_exploration_memory,
             "recurrent_obs_feedback": args.recurrent_obs_feedback,
             "recurrent_obs_normalize_tokens": args.recurrent_obs_normalize_tokens,
@@ -1290,23 +1959,87 @@ def parse_args(argv: list[str] | None = None):
         default="picked_resource,dropped_resource,delivered,stage_completed,sync_complete,"
         "recharged,joint_target_scan",
     )
-    parser.add_argument("--recurrent-bc-pipeline-pickup-action-loss-weight", type=float, default=0.0)
-    parser.add_argument("--recurrent-bc-pipeline-delivery-action-loss-weight", type=float, default=0.0)
-    parser.add_argument("--recurrent-bc-pipeline-plan-action-loss-weight", type=float, default=0.0)
-    parser.add_argument("--recurrent-bc-pipeline-message-loss-weight", type=float, default=0.0)
-    parser.add_argument("--recurrent-bc-pipeline-bad-pickup-action-loss-weight", type=float, default=0.0)
-    parser.add_argument("--recurrent-bc-pipeline-bad-drop-action-loss-weight", type=float, default=0.0)
-    parser.add_argument("--recurrent-bc-pipeline-bad-interact-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--recurrent-bc-pipeline-pickup-action-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-delivery-action-loss-weight", type=float, default=None)
+    parser.add_argument(
+        "--recurrent-bc-pipeline-delivery-progress-action-loss-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-bc-pipeline-navigation-action-loss-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-bc-pipeline-frontier-exploration-action-loss-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-bc-pipeline-frontier-exploration-min-map-size",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-bc-pipeline-sync-action-loss-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-bc-pipeline-ready-interact-action-loss-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-bc-pipeline-station-guard-action-loss-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-bc-pipeline-wrong-station-recovery-action-loss-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument("--recurrent-bc-pipeline-pickup-gate-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-pickup-gate-pos-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-pickup-gate-neg-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-plan-action-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-plan-head-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-option-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-message-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-send-gate-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-send-gate-pos-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-send-gate-neg-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-interact-gate-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-interact-gate-pos-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-interact-gate-neg-weight", type=float, default=None)
+    parser.add_argument(
+        "--recurrent-bc-calibrate-pipeline-interact-gate-threshold",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-bc-pipeline-interact-gate-threshold-target-rate",
+        type=float,
+        default=None,
+    )
+    parser.add_argument("--recurrent-bc-pipeline-bad-pickup-action-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-bad-drop-action-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-bad-interact-action-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-bad-action-margin-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-bc-pipeline-bad-action-margin", type=float, default=None)
     parser.add_argument(
         "--recurrent-bc-pipeline-proactive-bad-action-labels",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=None,
     )
     parser.add_argument("--recurrent-pipeline-stage-count", type=int, default=None)
     parser.add_argument("--recurrent-pipeline-required-per-stage-min", type=int, default=1)
     parser.add_argument("--recurrent-pipeline-required-per-stage-max", type=int, default=2)
     parser.add_argument("--recurrent-pipeline-sync-probability", type=float, default=0.5)
     parser.add_argument("--recurrent-pipeline-dependency-probability", type=float, default=0.7)
+    parser.add_argument("--recurrent-pipeline-wrong-delivery-penalty", type=float, default=0.25)
     parser.add_argument("--recurrent-obs-pipeline-features", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--recurrent-bc-calibrate-send-threshold",
@@ -1314,6 +2047,7 @@ def parse_args(argv: list[str] | None = None):
         default=False,
     )
     parser.add_argument("--recurrent-bc-send-threshold-target-rate", type=float, default=-1.0)
+    parser.add_argument("--recurrent-bc-comm-send-pos-weight", type=float, default=0.0)
     parser.add_argument("--recurrent-bc-comm-send-rate-penalty-weight", type=float, default=0.0)
     parser.add_argument("--recurrent-bc-comm-send-rate-target", type=float, default=-1.0)
     parser.add_argument("--recurrent-dagger-rounds", type=int, default=0)
@@ -1321,6 +2055,62 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-dagger-failed-effective-ratio-cap", type=float, default=0.25)
     parser.add_argument("--recurrent-dagger-oracle-action-rollin-rate", type=float, default=0.25)
     parser.add_argument("--recurrent-dagger-oracle-message-rollin-rate", type=float, default=0.0)
+    parser.add_argument(
+        "--recurrent-dagger-focus-events",
+        default=(
+            "missed_delivery,missed_target_scan,solo_target_interact,target_interact_miss,"
+            "movement_stall_miss,pipeline_wrong_delivery,pipeline_dependency_blocked,"
+            "pipeline_sync_wait,pipeline_pickup_miss,pipeline_delivery_miss,pipeline_station_stall_miss,"
+            "pipeline_drop_miss,pipeline_bad_pickup,pipeline_wrong_delivery_root_pickup"
+        ),
+    )
+    parser.add_argument("--recurrent-dagger-focus-error-weight", type=float, default=3.0)
+    parser.add_argument("--recurrent-dagger-focus-recovery-weight", type=float, default=2.0)
+    parser.add_argument("--recurrent-dagger-focus-window", type=int, default=1)
+    parser.add_argument(
+        "--recurrent-dagger-focus-replay",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-dagger-retrain-from-scratch",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-dagger-restore-best",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--recurrent-dagger-pipeline-wrong-delivery-provenance-labels",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-dagger-pipeline-wrong-delivery-provenance-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument("--recurrent-dagger-replay-pre-steps", type=int, default=None)
+    parser.add_argument("--recurrent-dagger-replay-post-steps", type=int, default=None)
+    parser.add_argument("--recurrent-dagger-replay-weight", type=float, default=None)
+    parser.add_argument("--recurrent-dagger-positive-replay-events", default=None)
+    parser.add_argument("--recurrent-dagger-replay-event-weights", default=None)
+    parser.add_argument("--recurrent-dagger-replay-event-caps", default=None)
+    parser.add_argument("--recurrent-dagger-replay-success-only-events", default=None)
+    parser.add_argument("--recurrent-dagger-replay-priority-events", default=None)
+    parser.add_argument("--recurrent-dagger-replay-balance-positive-events", default=None)
+    parser.add_argument("--recurrent-dagger-replay-balance-negative-events", default=None)
+    parser.add_argument("--recurrent-dagger-replay-max-negative-per-positive", type=float, default=None)
+    parser.add_argument("--recurrent-dagger-max-replay-snippets-per-episode", type=int, default=None)
+    parser.add_argument(
+        "--recurrent-dagger-max-failed-parent-replay-snippets-per-episode",
+        type=int,
+        default=None,
+    )
+    parser.add_argument("--recurrent-dagger-failed-parent-replay-weight-scale", type=float, default=None)
+    parser.add_argument("--recurrent-dagger-expert-max-replay-snippets-per-episode", type=int, default=None)
     parser.add_argument(
         "--recurrent-eval-episodes",
         type=int,
@@ -1372,7 +2162,63 @@ def parse_args(argv: list[str] | None = None):
         action=argparse.BooleanOptionalAction,
         default=None,
     )
+    parser.add_argument(
+        "--recurrent-rl-rollout-pipeline-station-interact-guard",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-rl-rollout-pipeline-interact-gate-promote",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--recurrent-rl-eval-decoding-action-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-rl-pipeline-assisted-action-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-rl-pipeline-interact-gate-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-rl-pipeline-interact-gate-pos-weight", type=float, default=None)
+    parser.add_argument("--recurrent-rl-pipeline-interact-gate-neg-weight", type=float, default=None)
+    parser.add_argument("--recurrent-rl-pipeline-pickup-gate-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-rl-pipeline-pickup-gate-pos-weight", type=float, default=None)
+    parser.add_argument("--recurrent-rl-pipeline-pickup-gate-neg-weight", type=float, default=None)
+    parser.add_argument(
+        "--recurrent-rl-pipeline-delivery-progress-action-loss-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-rl-pipeline-navigation-action-loss-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument("--recurrent-rl-pipeline-sync-action-loss-weight", type=float, default=None)
+    parser.add_argument("--recurrent-rl-pipeline-ready-interact-action-loss-weight", type=float, default=None)
+    parser.add_argument(
+        "--recurrent-rl-pipeline-station-guard-action-loss-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-rl-pipeline-wrong-station-recovery-action-loss-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-rl-pipeline-plan-action-loss-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-rl-pipeline-plan-head-loss-weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-rl-pipeline-option-loss-weight",
+        type=float,
+        default=None,
+    )
     parser.add_argument("--recurrent-rl-pipeline-bad-pickup-penalty", type=float, default=None)
+    parser.add_argument("--recurrent-rl-pipeline-bad-interact-penalty", type=float, default=None)
     parser.add_argument("--recurrent-rl-pipeline-unneeded-drop-bonus", type=float, default=None)
     parser.add_argument("--recurrent-rl-restore-best", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--recurrent-rl-save-best", action=argparse.BooleanOptionalAction, default=True)
@@ -1391,6 +2237,36 @@ def parse_args(argv: list[str] | None = None):
     )
     parser.add_argument("--recurrent-eval-seed-list", default="")
     parser.add_argument("--recurrent-dagger-seed-list", default="")
+    parser.add_argument("--recurrent-pipeline-assisted-rollout-episodes", type=int, default=None)
+    parser.add_argument("--recurrent-pipeline-assisted-rollout-seed-base", type=int, default=None)
+    parser.add_argument("--recurrent-pipeline-assisted-rollout-seed-list", default="")
+    parser.add_argument(
+        "--recurrent-pipeline-assisted-rollout-max-steps-per-episode",
+        type=int,
+        default=None,
+    )
+    parser.add_argument("--recurrent-pipeline-assisted-rollout-weight", type=float, default=None)
+    parser.add_argument(
+        "--recurrent-pipeline-assisted-rollout-success-only",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-pipeline-assisted-rollout-navigation-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-pipeline-assisted-rollout-navigation-assist-trust-messages",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-pipeline-assisted-rollout-station-interact-guard",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--recurrent-pipeline-assisted-rollout-bc-epochs", type=int, default=None)
     parser.add_argument("--recurrent-skip-bc", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-init", default=None)
     parser.add_argument(
@@ -1407,6 +2283,12 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-comm-token-limit", type=int, default=8)
     parser.add_argument("--recurrent-comm-vocab-size", type=int, default=32)
     parser.add_argument("--recurrent-hidden-dim", type=int, default=128)
+    parser.add_argument(
+        "--recurrent-backbone",
+        choices=["mlp", "residual_mlp", "local_cnn"],
+        default="mlp",
+        help="Recurrent actor encoder backbone.",
+    )
     parser.add_argument("--recurrent-obs-exploration-memory", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-obs-feedback", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-obs-normalize-tokens", action=argparse.BooleanOptionalAction, default=False)
@@ -1419,6 +2301,22 @@ def parse_args(argv: list[str] | None = None):
     )
     parser.add_argument("--recurrent-obs-signal-sync-feedback", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-obs-signal-scan-state", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--recurrent-obs-pipeline-feedback", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--recurrent-obs-pipeline-feedback-metadata",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--recurrent-obs-pipeline-progress-features",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--recurrent-obs-pipeline-shared-feedback",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--recurrent-eval-send-threshold", type=float, default=0.25)
     parser.add_argument("--recurrent-calibrate-send-threshold", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-obs-memory-mode", default="auto", choices=["auto", "full", "egocentric"])
@@ -1427,6 +2325,26 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-eval-pipeline-navigation-assist", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--recurrent-eval-pipeline-navigation-assist-trust-messages",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--recurrent-eval-pipeline-station-interact-guard",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--recurrent-eval-pipeline-interact-gate-threshold", type=float, default=None)
+    parser.add_argument(
+        "--recurrent-eval-pipeline-interact-gate-promote",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--recurrent-eval-pipeline-event-head-threshold", type=float, default=-1.0)
+    parser.add_argument("--recurrent-eval-pipeline-navigation-head-threshold", type=float, default=-1.0)
+    parser.add_argument("--recurrent-eval-pipeline-plan-head-threshold", type=float, default=-1.0)
+    parser.add_argument("--recurrent-eval-pipeline-option-threshold", type=float, default=-1.0)
+    parser.add_argument(
+        "--recurrent-eval-pipeline-option-allow-interact",
         action=argparse.BooleanOptionalAction,
         default=False,
     )

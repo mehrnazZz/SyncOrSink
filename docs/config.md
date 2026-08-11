@@ -25,6 +25,7 @@ All configuration options are defined in `syncorsink/envs/base.py` under `SyncOr
 | `pipeline_required_per_stage_max` | int | `2` | Maximum resources required by each Pipeline stage. |
 | `pipeline_sync_probability` | float | `0.5` | Probability that a Pipeline stage requires synchronized interaction by at least two agents. |
 | `pipeline_dependency_probability` | float | `0.7` | Probability that a Pipeline stage depends on an earlier stage. |
+| `pipeline_wrong_delivery_penalty` | float | `0.25` | Reward penalty when an agent interacts at a station with a carried resource that cannot be accepted there. |
 | `energy_preset` | str | `"hard"` | Energy Grid difficulty preset: `easy` or `hard`. |
 | `energy_private_monitor` | bool | `True` | If true, each Energy Grid node's energy is visible only to its assigned monitor; use `False` only for the legacy symmetric-information ablation. |
 | `map_seed` | int? | `None` | Fixed map seed. |

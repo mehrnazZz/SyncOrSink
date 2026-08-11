@@ -20,7 +20,7 @@ class CommMATPolicyConfig:
     comm_token_limit: int = 24
     max_messages: int = 8
     max_agents: int = 16
-    goal_hint_dim: int = 32
+    goal_hint_dim: int = 64
     hidden_dim: int = 128
     n_heads: int = 4
     n_layers: int = 2

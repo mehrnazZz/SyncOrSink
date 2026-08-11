@@ -3,7 +3,36 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from syncorsink.models import MLPEncoder, TransformerEncoder, PolicyHead, ValueHead
+from syncorsink.models import (
+    LocalCNNFlatEncoder,
+    MLPEncoder,
+    ResidualMLPEncoder,
+    TransformerEncoder,
+    PolicyHead,
+    ValueHead,
+)
+
+
+def _make_actor_encoder(
+    backbone: str,
+    obs_dim: int,
+    hidden_dim: int,
+    *,
+    fov_radius: int | None = None,
+) -> nn.Module:
+    if backbone == "transformer":
+        return TransformerEncoder(token_dim=obs_dim, hidden_dim=hidden_dim)
+    if backbone == "local_cnn":
+        if fov_radius is None:
+            raise ValueError("local_cnn actor backbone requires fov_radius")
+        return LocalCNNFlatEncoder(obs_dim, fov_radius=fov_radius, hidden_dim=hidden_dim)
+    if backbone == "residual_mlp":
+        return ResidualMLPEncoder(obs_dim, hidden_dim=hidden_dim, depth=3)
+    if backbone == "mlp":
+        return MLPEncoder(obs_dim, hidden_dim=hidden_dim, depth=2)
+    raise ValueError(
+        f"unsupported actor backbone {backbone!r}; expected mlp, residual_mlp, local_cnn, or transformer"
+    )
 
 
 class MAPPOActor(nn.Module):
@@ -21,6 +50,7 @@ class MAPPOActor(nn.Module):
         action_dim: int,
         hidden_dim: int = 128,
         backbone: str = "mlp",
+        fov_radius: int | None = None,
         comm_enabled: bool = False,
         comm_token_limit: int = 0,
         comm_vocab_size: int = 0,
@@ -30,10 +60,7 @@ class MAPPOActor(nn.Module):
         self.comm_enabled = comm_enabled
         self.comm_token_limit = comm_token_limit
         self.comm_vocab_size = comm_vocab_size
-        if backbone == "transformer":
-            self.encoder = TransformerEncoder(token_dim=obs_dim, hidden_dim=hidden_dim)
-        else:
-            self.encoder = MLPEncoder(obs_dim, hidden_dim=hidden_dim, depth=2)
+        self.encoder = _make_actor_encoder(backbone, obs_dim, hidden_dim, fov_radius=fov_radius)
         self.policy = PolicyHead(hidden_dim, action_dim)
         if comm_enabled:
             self.comm_send = nn.Linear(hidden_dim, 1)
@@ -67,23 +94,34 @@ class MAPPORecurrentActor(nn.Module):
         obs_dim: int,
         action_dim: int,
         hidden_dim: int = 128,
+        backbone: str = "mlp",
+        fov_radius: int | None = None,
         comm_enabled: bool = False,
         comm_token_limit: int = 0,
         comm_vocab_size: int = 0,
+        pipeline_option_dim: int = 8,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
+        self.backbone = backbone
         self.comm_enabled = comm_enabled
         self.comm_token_limit = comm_token_limit
         self.comm_vocab_size = comm_vocab_size
 
-        self.encoder = MLPEncoder(obs_dim, hidden_dim=hidden_dim, depth=2)
+        if backbone == "transformer":
+            raise ValueError("MAPPORecurrentActor does not support transformer backbone")
+        self.encoder = _make_actor_encoder(backbone, obs_dim, hidden_dim, fov_radius=fov_radius)
         self.lstm = nn.LSTMCell(hidden_dim, hidden_dim)
         self.policy = PolicyHead(hidden_dim, action_dim)
         self.signal_scan_gate = nn.Linear(hidden_dim, 1)
         self.signal_target_validity = nn.Linear(hidden_dim, 1)
         self.signal_target_decision = nn.Linear(hidden_dim, 1)
         self.signal_target_aux = nn.Linear(hidden_dim, 3)
+        self.pipeline_interact_gate = nn.Linear(hidden_dim, 1)
+        self.pipeline_event_policy = nn.Linear(hidden_dim, action_dim)
+        self.pipeline_navigation_policy = nn.Linear(hidden_dim, action_dim)
+        self.pipeline_plan_policy = nn.Linear(hidden_dim, action_dim)
+        self.pipeline_option_policy = nn.Linear(hidden_dim, pipeline_option_dim)
         if comm_enabled:
             self.comm_send = nn.Linear(hidden_dim, 1)
             self.comm_tokens = nn.Linear(hidden_dim, comm_token_limit * comm_vocab_size)

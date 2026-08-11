@@ -42,6 +42,7 @@ class SyncOrSinkConfig:
     comm_radius: int | None = None
     comm_cost: float = 0.01
     comm_len_cost: float = 0.0
+    goal_hint_size: int = 64
     # map / rendering options
     use_rooms: bool = True
     use_doors: bool = True
@@ -58,6 +59,7 @@ class SyncOrSinkConfig:
     pipeline_required_per_stage_max: int = 2
     pipeline_sync_probability: float = 0.5
     pipeline_dependency_probability: float = 0.7
+    pipeline_wrong_delivery_penalty: float = 0.25
     # energy grid shaping
     energy_shaping: bool = False
     energy_shaping_scale: float = 0.01
@@ -202,7 +204,12 @@ class SyncOrSinkEnv(gym.Env):
                 dtype=np.int16,
             ),
             "message_from": spaces.Box(low=-1, high=self.num_agents - 1, shape=(self.max_messages,), dtype=np.int16),
-            "goal_hint": spaces.Box(low=-1, high=1024, shape=(16,), dtype=np.int16),
+            "goal_hint": spaces.Box(
+                low=-1,
+                high=1024,
+                shape=(self._goal_hint_size(),),
+                dtype=np.int16,
+            ),
         })
         if self.obs_action_mask:
             self.observation_space.spaces["action_mask"] = spaces.Box(
@@ -317,10 +324,12 @@ class SyncOrSinkEnv(gym.Env):
                         resource_type = self._resource_positions()[pos]
                         self.inventories[agent_id] = resource_type
                         self._remove_resource(pos)
-                        interaction_events[agent_id].append({
+                        event = {
                             "event": "picked_resource",
                             "resource_type": int(resource_type),
-                        })
+                        }
+                        event.update(self._pipeline_pickup_event_metadata(int(resource_type)))
+                        interaction_events[agent_id].append(event)
             elif action["action"] == self.ACTION_DROP:
                 if self.inventories[agent_id] != 0 and self.grid[pos[1], pos[0]] == TILE_EMPTY:
                     resource_type = int(self.inventories[agent_id])
@@ -527,6 +536,52 @@ class SyncOrSinkEnv(gym.Env):
     def _resource_positions(self) -> dict[tuple[int, int], int]:
         return self.scenario_state.data.get("resource_types", {})
 
+    def _pipeline_pickup_event_metadata(self, resource_type: int) -> dict[str, Any]:
+        if self.config.scenario != "pipeline_assembly":
+            return {}
+        stages = list(self.scenario_state.data.get("stages", []))
+        if not stages:
+            return {}
+        completed = {
+            int(stage.get("stage", idx))
+            for idx, stage in enumerate(stages)
+            if bool(stage.get("done"))
+        }
+        ready: list[dict[str, Any]] = []
+        blocked: list[dict[str, Any]] = []
+        for idx, stage in enumerate(stages):
+            if bool(stage.get("done")):
+                continue
+            required = [int(value) for value in stage.get("required", [])]
+            if int(resource_type) not in required:
+                continue
+            req_count = required.count(int(resource_type))
+            delivered = [int(value) for value in stage.get("delivered", [])]
+            if delivered.count(int(resource_type)) >= req_count:
+                continue
+            deps = [int(dep) for dep in stage.get("deps", []) if int(dep) >= 0]
+            row = {"idx": idx, "stage": stage, "deps": deps}
+            if all(dep in completed for dep in deps):
+                ready.append(row)
+            else:
+                blocked.append(row)
+        candidates = ready or blocked
+        if not candidates:
+            return {}
+        target = candidates[0]
+        stage = target["stage"]
+        station = stage.get("station")
+        try:
+            sx, sy = station
+        except (TypeError, ValueError):
+            return {}
+        return {
+            "stage": int(stage.get("stage", target["idx"])),
+            "station": [int(sx), int(sy)],
+            "required": [int(value) for value in stage.get("required", [])],
+            "target_ready": bool(target in ready),
+        }
+
     def _remove_resource(self, pos: tuple[int, int]):
         if pos in self.scenario_state.data.get("resource_types", {}):
             self.scenario_state.data["resource_types"].pop(pos, None)
@@ -566,7 +621,9 @@ class SyncOrSinkEnv(gym.Env):
                 agent_energy_grids[agent_id] = masked
 
         for agent_id in range(self.num_agents):
-            local = extract_local(self.grid, self.agent_positions[agent_id], self.fov_radius)
+            local_grid = extract_local(self.grid, self.agent_positions[agent_id], self.fov_radius)
+            visible_aux_mask = local_grid != TILE_UNKNOWN
+            local = local_grid
             if self.obs_onehot:
                 local = self._onehot(local)
             local_resource_types = extract_local(resource_type_grid, self.agent_positions[agent_id], self.fov_radius)
@@ -575,6 +632,9 @@ class SyncOrSinkEnv(gym.Env):
                 local_node_energy = extract_local(agent_energy_grids[agent_id], self.agent_positions[agent_id], self.fov_radius)
             else:
                 local_node_energy = extract_local(node_energy_grid, self.agent_positions[agent_id], self.fov_radius)
+            local_resource_types = np.where(visible_aux_mask, local_resource_types, 0).astype(np.int16)
+            local_node_types = np.where(visible_aux_mask, local_node_types, 0).astype(np.int16)
+            local_node_energy = np.where(visible_aux_mask, local_node_energy, 0).astype(np.int16)
             messages_tokens, message_from = self._encode_messages(self.inboxes[agent_id])
             hint_tokens = self._encode_hint(agent_id)
             obs[agent_id] = {
@@ -721,11 +781,18 @@ class SyncOrSinkEnv(gym.Env):
                     continue
                 seen_specs.add(key)
                 hint.extend(encoded)
-                if len(hint) >= 16:
+                if len(hint) >= self._signal_hint_cap():
                     break
-        hint = hint[:16]
-        padded = hint + [-1] * (16 - len(hint))
+        hint_size = self._goal_hint_size()
+        hint = hint[:hint_size]
+        padded = hint + [-1] * (hint_size - len(hint))
         return np.array(padded, dtype=np.int16)
+
+    def _goal_hint_size(self) -> int:
+        return max(16, int(getattr(self.config, "goal_hint_size", 64)))
+
+    def _signal_hint_cap(self) -> int:
+        return min(16, self._goal_hint_size())
 
     def _encode_signal_constraint(self, constraint: dict) -> list[int]:
         ctype = constraint.get("type")

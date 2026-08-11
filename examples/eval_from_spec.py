@@ -139,6 +139,7 @@ def main():
         pipeline_required_per_stage_max=spec.pipeline_required_per_stage_max,
         pipeline_sync_probability=spec.pipeline_sync_probability,
         pipeline_dependency_probability=spec.pipeline_dependency_probability,
+        pipeline_wrong_delivery_penalty=spec.pipeline_wrong_delivery_penalty,
         energy_preset=spec.energy_preset,
         energy_private_monitor=spec.energy_private_monitor,
     )

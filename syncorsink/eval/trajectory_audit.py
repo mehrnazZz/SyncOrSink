@@ -50,6 +50,7 @@ def run_trajectory_audit(
     episodes: int = 100,
     seed: int = 3000,
     include_signal_trace: bool = False,
+    include_pipeline_assist_trace: bool = False,
 ) -> dict[str, Any]:
     if episodes < 1:
         raise ValueError("episodes must be >= 1")
@@ -65,6 +66,7 @@ def run_trajectory_audit(
                 episodes=episodes,
                 seed=seed,
                 include_signal_trace=include_signal_trace,
+                include_pipeline_assist_trace=include_pipeline_assist_trace,
             )
         )
 
@@ -75,6 +77,7 @@ def run_trajectory_audit(
             "episodes": episodes,
             "seed": seed,
             "include_signal_trace": include_signal_trace,
+            "include_pipeline_assist_trace": include_pipeline_assist_trace,
         },
         "policies": policy_results,
         "comparison": _compare_by_seed(policy_results),
@@ -88,6 +91,7 @@ def audit_policy(
     episodes: int,
     seed: int,
     include_signal_trace: bool = False,
+    include_pipeline_assist_trace: bool = False,
 ) -> dict[str, Any]:
     from syncorsink.train.seed import set_global_seeds
 
@@ -105,6 +109,7 @@ def audit_policy(
             ep,
             ep_seed,
             include_signal_trace=include_signal_trace,
+            include_pipeline_assist_trace=include_pipeline_assist_trace,
         )
         episode_rows.append(row)
         stats.append(ep_stats)
@@ -252,6 +257,17 @@ def make_recurrent_checkpoint_policy_factory(
     eval_signal_scan_refresh_threshold: float | None = None,
     eval_pipeline_navigation_assist: bool | None = None,
     eval_pipeline_navigation_assist_trust_messages: bool | None = None,
+    eval_pipeline_station_interact_guard: bool | None = None,
+    eval_pipeline_plan_broadcast_assist: bool | None = None,
+    eval_pipeline_pickup_gate_suppress: bool | None = None,
+    eval_pipeline_frontier_exploration_assist: bool | None = None,
+    eval_pipeline_interact_gate_threshold: float | None = None,
+    eval_pipeline_interact_gate_promote: bool | None = None,
+    eval_pipeline_event_head_threshold: float | None = None,
+    eval_pipeline_navigation_head_threshold: float | None = None,
+    eval_pipeline_plan_head_threshold: float | None = None,
+    eval_pipeline_option_threshold: float | None = None,
+    eval_pipeline_option_allow_interact: bool | None = None,
 ) -> PolicyFactory:
     def _factory(env: SyncOrSinkEnv) -> PolicyFn:
         del env
@@ -276,6 +292,19 @@ def make_recurrent_checkpoint_policy_factory(
             eval_signal_scan_refresh_threshold=eval_signal_scan_refresh_threshold,
             eval_pipeline_navigation_assist=eval_pipeline_navigation_assist,
             eval_pipeline_navigation_assist_trust_messages=eval_pipeline_navigation_assist_trust_messages,
+            eval_pipeline_station_interact_guard=eval_pipeline_station_interact_guard,
+            eval_pipeline_plan_broadcast_assist=eval_pipeline_plan_broadcast_assist,
+            eval_pipeline_pickup_gate_suppress=eval_pipeline_pickup_gate_suppress,
+            eval_pipeline_frontier_exploration_assist=eval_pipeline_frontier_exploration_assist,
+            eval_pipeline_interact_gate_threshold=eval_pipeline_interact_gate_threshold,
+            eval_pipeline_interact_gate_promote=eval_pipeline_interact_gate_promote,
+            eval_pipeline_event_head_threshold=eval_pipeline_event_head_threshold,
+            eval_pipeline_navigation_head_threshold=(
+                eval_pipeline_navigation_head_threshold
+            ),
+            eval_pipeline_plan_head_threshold=eval_pipeline_plan_head_threshold,
+            eval_pipeline_option_threshold=eval_pipeline_option_threshold,
+            eval_pipeline_option_allow_interact=eval_pipeline_option_allow_interact,
         )
 
     return _factory
@@ -311,6 +340,7 @@ def recurrent_checkpoint_env_config(
         "pipeline_required_per_stage_max": "pipeline_required_per_stage_max",
         "pipeline_sync_probability": "pipeline_sync_probability",
         "pipeline_dependency_probability": "pipeline_dependency_probability",
+        "pipeline_wrong_delivery_penalty": "pipeline_wrong_delivery_penalty",
         "energy_shaping": "energy_shaping",
         "energy_shaping_scale": "energy_shaping_scale",
         "signal_shaping": "signal_shaping",
@@ -364,15 +394,17 @@ def pipeline_failure_type(row: Mapping[str, Any]) -> str:
         return "wrong_delivery"
     if int(events.get("pipeline_dependency_blocked", 0)) > 0:
         return "dependency_blocked"
-    if int(events.get("pipeline_sync_wait", 0)) > 0 or int(pipeline.get("missed_sync_interacts", 0)) > 0:
+    if int(pipeline.get("missed_sync_interacts", 0)) > 0 or int(pipeline.get("sync_ready_stages", 0)) > 0:
         return "sync_wait"
     if int(pipeline.get("max_delivered_resources", 0)) == 0:
         if int(pipeline.get("missed_pickup_opportunities", 0)) > 0:
             return "missed_pickup"
         return "no_delivery"
+    if int(pipeline.get("missed_delivery_opportunities", 0)) > 0:
+        return "missed_delivery"
+    if int(pipeline.get("missed_pickup_opportunities", 0)) > 0:
+        return "missed_pickup"
     if int(pipeline.get("max_stages_completed", 0)) == 0:
-        if int(pipeline.get("missed_delivery_opportunities", 0)) > 0:
-            return "missed_delivery"
         return "no_stage_completed"
     if int(pipeline.get("stages_completed", 0)) < int(pipeline.get("stages_total", 0)):
         return "partial_pipeline"
@@ -399,6 +431,7 @@ def _run_single_episode(
     seed: int,
     *,
     include_signal_trace: bool = False,
+    include_pipeline_assist_trace: bool = False,
 ) -> tuple[dict[str, Any], EpisodeStats]:
     obs, info = env.reset(seed=seed)
     reset_policy(policy, episode=episode, seed=seed)
@@ -412,16 +445,19 @@ def _run_single_episode(
     event_counts: Counter[str] = Counter()
     action_counts: Counter[str] = Counter()
     signal = _new_signal_episode_state(env, include_trace=include_signal_trace)
-    pipeline = _new_pipeline_episode_state(env)
+    pipeline = _new_pipeline_episode_state(env, include_assist_trace=include_pipeline_assist_trace)
+    pipeline_state = _initial_pipeline_assist_state(env)
     last_info: dict[str, Any] = {}
 
     while not (done or truncated):
         actions = policy(obs, info, {"step": steps})
+        _record_pipeline_assist_corrections(env, obs, actions, pipeline, pipeline_state)
         _record_actions(env, actions, action_counts, signal, pipeline)
         obs, rewards, done, truncated, info = env.step(actions)
         last_info = info or {}
         _record_events(last_info, event_counts, signal, pipeline)
         _record_post_step(env, signal, pipeline)
+        pipeline_state = _update_pipeline_assist_state(env, pipeline_state, last_info)
 
         steps += 1
         total_reward += sum(rewards.values())
@@ -589,10 +625,15 @@ def _finalize_signal_episode_state(env: SyncOrSinkEnv, signal: Mapping[str, Any]
     return result
 
 
-def _new_pipeline_episode_state(env: SyncOrSinkEnv) -> dict[str, Any]:
+def _new_pipeline_episode_state(
+    env: SyncOrSinkEnv,
+    *,
+    include_assist_trace: bool = False,
+) -> dict[str, Any]:
     active = getattr(env.config, "scenario", None) == "pipeline_assembly"
     return {
         "active": active,
+        "include_assist_trace": bool(include_assist_trace),
         "message_steps": set(),
         "message_tokens": 0,
         "event_counts": Counter(),
@@ -617,6 +658,177 @@ def _new_pipeline_episode_state(env: SyncOrSinkEnv) -> dict[str, Any]:
         "delivery_ready_station_distances": [],
         "wrong_delivery_ready_station_distances": [],
         "wrong_delivery_events": 0,
+        "assist_opportunities": 0,
+        "assist_correction_steps": 0,
+        "assist_correction_agents": 0,
+        "assist_correction_action_counts": Counter(),
+        "assist_first_corrections": [],
+    }
+
+
+def _initial_pipeline_assist_state(env: SyncOrSinkEnv) -> dict[str, Any] | None:
+    if getattr(env.config, "scenario", None) != "pipeline_assembly":
+        return None
+    try:
+        from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _initial_pipeline_state
+    except Exception:
+        return None
+    return dict(_initial_pipeline_state(_pipeline_recurrent_assist_config(env, RecurrentConfig)))
+
+
+def _update_pipeline_assist_state(
+    env: SyncOrSinkEnv,
+    pipeline_state: dict[str, Any] | None,
+    info: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if getattr(env.config, "scenario", None) != "pipeline_assembly":
+        return pipeline_state
+    try:
+        from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _update_pipeline_state_from_info
+    except Exception:
+        return pipeline_state
+    cfg = _pipeline_recurrent_assist_config(env, RecurrentConfig)
+    updated = _update_pipeline_state_from_info(
+        cfg,
+        pipeline_state,
+        dict(info or {}),
+        env.num_agents,
+    )
+    return dict(updated)
+
+
+def _pipeline_recurrent_assist_config(env: SyncOrSinkEnv, recurrent_config_cls):
+    cfg = env.config
+    return recurrent_config_cls(
+        scenario="pipeline_assembly",
+        map_size=int(getattr(cfg, "map_size", env.map_size)),
+        agents=int(env.num_agents),
+        fov_preset=str(getattr(cfg, "fov_preset", "easy")),
+        max_steps=int(getattr(cfg, "max_steps", 300)),
+        comm=bool(getattr(cfg, "comm_token_limit", 0) > 0),
+        comm_token_limit=int(getattr(cfg, "comm_token_limit", 8)),
+        comm_vocab_size=int(getattr(cfg, "token_vocab_size", 32)),
+        comm_max_messages=int(getattr(cfg, "max_messages", 8)),
+        pipeline_stage_count=getattr(cfg, "pipeline_stage_count", None),
+        pipeline_required_per_stage_min=int(getattr(cfg, "pipeline_required_per_stage_min", 1)),
+        pipeline_required_per_stage_max=int(getattr(cfg, "pipeline_required_per_stage_max", 2)),
+        pipeline_sync_probability=float(getattr(cfg, "pipeline_sync_probability", 0.5)),
+        pipeline_dependency_probability=float(getattr(cfg, "pipeline_dependency_probability", 0.7)),
+        pipeline_wrong_delivery_penalty=float(getattr(cfg, "pipeline_wrong_delivery_penalty", 0.25)),
+        eval_pipeline_navigation_assist=True,
+        eval_pipeline_navigation_assist_trust_messages=True,
+        eval_pipeline_station_interact_guard=True,
+    )
+
+
+def _record_pipeline_assist_corrections(
+    env: SyncOrSinkEnv,
+    obs: Mapping[int, Any],
+    actions: Mapping[int, Any],
+    pipeline: dict[str, Any],
+    pipeline_state: Mapping[str, Any] | None,
+) -> None:
+    if not pipeline.get("active"):
+        return
+    try:
+        import torch
+        from syncorsink.train.recurrent_bc_rl import (
+            RecurrentConfig,
+            _apply_pipeline_navigation_assist,
+            _apply_pipeline_station_interact_guard,
+        )
+    except Exception:
+        return
+
+    cfg = _pipeline_recurrent_assist_config(env, RecurrentConfig)
+    action_ids = [
+        _action_id(actions.get(aid, actions.get(str(aid), {"action": env.ACTION_STAY})))
+        for aid in range(env.num_agents)
+    ]
+    acts = torch.tensor(action_ids, dtype=torch.long)
+    corrected = _apply_pipeline_station_interact_guard(
+        cfg,
+        dict(obs),
+        acts,
+        pipeline_state=pipeline_state,
+    )
+    corrected = _apply_pipeline_navigation_assist(
+        cfg,
+        dict(obs),
+        corrected,
+        pipeline_state=pipeline_state,
+    )
+    corrected_ids = [int(value) for value in corrected.detach().cpu().tolist()]
+    pipeline["assist_opportunities"] += int(env.num_agents)
+    changed_agents = [
+        aid
+        for aid, (before, after) in enumerate(zip(action_ids, corrected_ids))
+        if int(before) != int(after)
+    ]
+    if not changed_agents:
+        return
+    pipeline["assist_correction_steps"] += 1
+    pipeline["assist_correction_agents"] += len(changed_agents)
+    counts = pipeline.setdefault("assist_correction_action_counts", Counter())
+    samples = pipeline.setdefault("assist_first_corrections", [])
+    for aid in changed_agents:
+        before = int(action_ids[aid])
+        after = int(corrected_ids[aid])
+        kind = _pipeline_assist_correction_kind(env, before, after)
+        key = f"{_action_name(env, before)}->{_action_name(env, after)}"
+        counts[key] += 1
+        if bool(pipeline.get("include_assist_trace", False)) and len(samples) < 16:
+            samples.append(_pipeline_assist_correction_sample(env, aid, before, after, kind))
+
+
+def _pipeline_assist_correction_kind(env: SyncOrSinkEnv, before: int, after: int) -> str:
+    if int(after) == int(env.ACTION_PICKUP):
+        return "missed_pickup"
+    if int(before) == int(env.ACTION_PICKUP):
+        return "bad_pickup"
+    if int(after) == int(env.ACTION_INTERACT):
+        return "missed_interact"
+    if int(before) == int(env.ACTION_INTERACT):
+        return "bad_interact"
+    if int(after) == int(env.ACTION_DROP):
+        return "inventory_recovery"
+    move_actions = {
+        int(env.ACTION_UP),
+        int(env.ACTION_DOWN),
+        int(env.ACTION_LEFT),
+        int(env.ACTION_RIGHT),
+    }
+    if int(after) in move_actions:
+        return "navigation"
+    return "other"
+
+
+def _pipeline_assist_correction_sample(
+    env: SyncOrSinkEnv,
+    agent_id: int,
+    before: int,
+    after: int,
+    kind: str,
+) -> dict[str, Any]:
+    stage = _pipeline_target_stage(env)
+    station = _coerce_pos(stage.get("station")) if isinstance(stage, Mapping) else None
+    required = _pipeline_stage_needs(stage) if isinstance(stage, Mapping) else []
+    pos = tuple(env.agent_positions[int(agent_id)])
+    resource_type = int((env.scenario_state.data.get("resource_types") or {}).get(pos, 0))
+    return {
+        "step": int(getattr(env, "steps", 0)),
+        "agent": int(agent_id),
+        "kind": kind,
+        "from_action": int(before),
+        "from_name": _action_name(env, before),
+        "to_action": int(after),
+        "to_name": _action_name(env, after),
+        "position": [int(pos[0]), int(pos[1])],
+        "inventory": int(env.inventories[int(agent_id)]),
+        "resource_type": resource_type,
+        "stage": int(stage.get("stage", -1)) if isinstance(stage, Mapping) else None,
+        "station": list(station) if station is not None else None,
+        "remaining_required": [int(value) for value in required],
     }
 
 
@@ -704,6 +916,15 @@ def _finalize_pipeline_episode_state(env: SyncOrSinkEnv, pipeline: Mapping[str, 
         "stall_near_station_steps": int(pipeline.get("stall_near_station_steps", 0)),
         "event_counts": dict(sorted((pipeline.get("event_counts") or {}).items())),
         "stage_summaries": _pipeline_stage_summaries(env),
+        "stage_details": _pipeline_stage_details(env),
+        "final_agent_positions": [
+            [int(pos[0]), int(pos[1])]
+            for pos in getattr(env, "agent_positions", [])
+        ],
+        "final_agent_inventories": [
+            int(inv) for inv in getattr(env, "inventories", [])
+        ],
+        "final_resource_positions": _pipeline_resource_positions(env),
         "pickup_status_counts": dict(sorted((pipeline.get("pickup_status_counts") or {}).items())),
         "delivery_decision_counts": dict(sorted((pipeline.get("delivery_decision_counts") or {}).items())),
         "wrong_delivery_provenance_counts": dict(sorted(
@@ -752,7 +973,19 @@ def _finalize_pipeline_episode_state(env: SyncOrSinkEnv, pipeline: Mapping[str, 
         "avg_wrong_delivery_ready_station_distance": _safe_avg(
             pipeline.get("wrong_delivery_ready_station_distances", [])
         ),
+        "assist_opportunities": int(pipeline.get("assist_opportunities", 0)),
+        "assist_correction_steps": int(pipeline.get("assist_correction_steps", 0)),
+        "assist_correction_agents": int(pipeline.get("assist_correction_agents", 0)),
+        "assist_correction_rate": (
+            float(pipeline.get("assist_correction_agents", 0))
+            / float(max(1, int(pipeline.get("assist_opportunities", 0))))
+        ),
+        "assist_correction_action_counts": dict(sorted(
+            (pipeline.get("assist_correction_action_counts") or {}).items()
+        )),
     }
+    if bool(pipeline.get("include_assist_trace", False)):
+        result["assist_first_corrections"] = list(pipeline.get("assist_first_corrections", []))
     return result
 
 
@@ -793,13 +1026,38 @@ def _record_pipeline_delivery_decision(
     pipeline: dict[str, Any],
 ) -> None:
     if inventory == 0:
-        if _pipeline_open_station_stages_at(env, pos):
+        stages = list(env.scenario_state.data.get("stages", []))
+        open_station_stages = _pipeline_open_station_stages_at(env, pos)
+        ready_sync_stage_ids = [
+            int(stage.get("stage", idx))
+            for idx, stage in enumerate(open_station_stages)
+            if bool(stage.get("sync", False))
+            and _pipeline_stage_deps_done(stages, stage)
+            and not _pipeline_stage_needs(stage)
+        ]
+        premature_sync_stage_ids = [
+            int(stage.get("stage", idx))
+            for idx, stage in enumerate(open_station_stages)
+            if bool(stage.get("sync", False))
+            and int(stage.get("stage", idx)) not in set(ready_sync_stage_ids)
+        ]
+        if ready_sync_stage_ids:
+            label = "ready_sync_station"
+        elif premature_sync_stage_ids:
+            label = "premature_sync_station"
+        elif open_station_stages:
             label = "empty_inventory_station"
         else:
             return
         context = {
             "label": label,
             "nearest_ready_station_distance": None,
+            "open_station_stage_ids": [
+                int(stage.get("stage", idx))
+                for idx, stage in enumerate(open_station_stages)
+            ],
+            "ready_sync_stage_ids": ready_sync_stage_ids,
+            "premature_sync_stage_ids": premature_sync_stage_ids,
         }
     else:
         context = _pipeline_delivery_decision_context(env, pos, inventory)
@@ -820,6 +1078,8 @@ def _record_pipeline_delivery_decision(
         "open_station_stage_ids": context.get("open_station_stage_ids", []),
         "ready_match_stage_ids": context.get("ready_match_stage_ids", []),
         "blocked_match_stage_ids": context.get("blocked_match_stage_ids", []),
+        "ready_sync_stage_ids": context.get("ready_sync_stage_ids", []),
+        "premature_sync_stage_ids": context.get("premature_sync_stage_ids", []),
     }
 
 
@@ -1049,6 +1309,36 @@ def _pipeline_stage_summaries(env: SyncOrSinkEnv) -> list[dict[str, Any]]:
             "sync": bool(stage.get("sync")),
         })
     return rows
+
+
+def _pipeline_stage_details(env: SyncOrSinkEnv) -> list[dict[str, Any]]:
+    rows = []
+    for stage in env.scenario_state.data.get("stages", []):
+        station = _coerce_pos(stage.get("station"))
+        rows.append({
+            "stage": int(stage.get("stage", len(rows))),
+            "station": [int(station[0]), int(station[1])] if station is not None else None,
+            "required": [int(value) for value in stage.get("required", [])],
+            "delivered": [int(value) for value in stage.get("delivered", [])],
+            "deps": [int(value) for value in stage.get("deps", [])],
+            "done": bool(stage.get("done")),
+            "sync": bool(stage.get("sync")),
+        })
+    return rows
+
+
+def _pipeline_resource_positions(env: SyncOrSinkEnv) -> list[dict[str, Any]]:
+    resources = env.scenario_state.data.get("resource_types", {}) or {}
+    rows = []
+    for raw_pos, raw_type in resources.items():
+        pos = _coerce_pos(raw_pos)
+        if pos is None:
+            continue
+        rows.append({
+            "position": [int(pos[0]), int(pos[1])],
+            "resource_type": int(raw_type),
+        })
+    return sorted(rows, key=lambda row: (row["position"][1], row["position"][0], row["resource_type"]))
 
 
 def _signal_trace_pre_step(
@@ -1416,6 +1706,9 @@ def _compact_pipeline_summary(pipeline: Mapping[str, Any]) -> dict[str, Any]:
         "episodes_with_wrong_delivery_events",
         "wrong_delivery_after_unneeded_pickup",
         "avg_wrong_delivery_ready_station_distance",
+        "assist_correction_rate",
+        "assist_correction_agents",
+        "assist_correction_action_counts",
     )
     return {key: pipeline.get(key) for key in keys if key in pipeline}
 
@@ -1524,15 +1817,19 @@ def _summarize_episode_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         delivery_decision_counts = Counter()
         wrong_delivery_provenance_counts = Counter()
         wrong_delivery_decision_counts = Counter()
+        assist_correction_action_counts = Counter()
         for row in pipeline_rows:
             pickup_status_counts.update(row.get("pickup_status_counts", {}))
             delivery_decision_counts.update(row.get("delivery_decision_counts", {}))
             wrong_delivery_provenance_counts.update(row.get("wrong_delivery_provenance_counts", {}))
             wrong_delivery_decision_counts.update(row.get("wrong_delivery_decision_counts", {}))
+            assist_correction_action_counts.update(row.get("assist_correction_action_counts", {}))
         pickup_attempts = sum(pickup_status_counts.values())
         delivery_interacts = sum(delivery_decision_counts.values())
         delivery_matches = int(delivery_decision_counts.get("ready_station_resource_match", 0))
         wrong_delivery_events = sum(int(row.get("wrong_delivery_events", 0)) for row in pipeline_rows)
+        assist_opportunities = sum(int(row.get("assist_opportunities", 0)) for row in pipeline_rows)
+        assist_correction_agents = sum(int(row.get("assist_correction_agents", 0)) for row in pipeline_rows)
         diagnostics["pipeline"] = {
             "avg_stages_completed": _avg_key(pipeline_rows, "stages_completed"),
             "avg_completion_ratio": _avg_key(pipeline_rows, "completion_ratio"),
@@ -1595,6 +1892,20 @@ def _summarize_episode_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "wrong_delivery_without_pickup_trace": sum(
                 int(row.get("wrong_delivery_without_pickup_trace", 0)) for row in pipeline_rows
             ),
+            "assist_opportunities": int(assist_opportunities),
+            "assist_correction_agents": int(assist_correction_agents),
+            "assist_correction_steps": sum(
+                int(row.get("assist_correction_steps", 0)) for row in pipeline_rows
+            ),
+            "assist_correction_rate": (
+                float(assist_correction_agents) / float(assist_opportunities)
+                if assist_opportunities else 0.0
+            ),
+            "avg_assist_correction_agents": _avg_key(pipeline_rows, "assist_correction_agents"),
+            "episodes_with_assist_corrections": sum(
+                1 for row in pipeline_rows if int(row.get("assist_correction_agents", 0)) > 0
+            ),
+            "assist_correction_action_counts": dict(sorted(assist_correction_action_counts.items())),
             "episodes_with_all_stages_completed": sum(
                 1
                 for row in pipeline_rows

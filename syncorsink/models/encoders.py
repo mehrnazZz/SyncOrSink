@@ -21,6 +21,95 @@ class MLPEncoder(nn.Module):
         return self.net(x)
 
 
+class _ResidualMLPBlock(nn.Module):
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.relu(x + self.net(x))
+
+
+class ResidualMLPEncoder(nn.Module):
+    """Flat-observation encoder with residual blocks and normalization."""
+
+    def __init__(self, input_dim: int, hidden_dim: int = 128, depth: int = 3):
+        super().__init__()
+        self.input = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+        )
+        self.blocks = nn.Sequential(
+            *[_ResidualMLPBlock(hidden_dim) for _ in range(max(0, depth))]
+        )
+        self.output_norm = nn.LayerNorm(hidden_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.input(x)
+        h = self.blocks(h)
+        return self.output_norm(h)
+
+
+class LocalCNNFlatEncoder(nn.Module):
+    """Encoder for flattened observations with local FOV planes at the front."""
+
+    def __init__(self, input_dim: int, fov_radius: int, hidden_dim: int = 128):
+        super().__init__()
+        self.fov_radius = int(fov_radius)
+        self.window = self.fov_radius * 2 + 1
+        self.area = self.window * self.window
+        spatial_width = self.area * 4 + 3
+        if input_dim <= spatial_width:
+            raise ValueError(
+                "local_cnn backbone needs flat obs with local grid/resource/node/energy "
+                f"planes plus tail features; got input_dim={input_dim}, fov_radius={fov_radius}"
+            )
+        self.tail_dim = int(input_dim) - (self.area * 4)
+        self.spatial = nn.Sequential(
+            nn.Conv2d(4, 16, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((3, 3)),
+            nn.Flatten(),
+            nn.Linear(32 * 3 * 3, hidden_dim),
+            nn.ReLU(),
+        )
+        self.tail = nn.Sequential(
+            nn.Linear(self.tail_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+        )
+        self.fuse = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        n = self.area
+        grid = x[:, :n] / 12.0
+        inventory_and_pos = x[:, n : n + 3]
+        resources = x[:, n + 3 : n + 3 + n]
+        nodes = x[:, n + 3 + n : n + 3 + (2 * n)]
+        energy = x[:, n + 3 + (2 * n) : n + 3 + (3 * n)]
+        remaining = x[:, n + 3 + (3 * n) :]
+        spatial = torch.stack([grid, resources, nodes, energy], dim=1).reshape(
+            x.shape[0],
+            4,
+            self.window,
+            self.window,
+        )
+        tail = torch.cat([inventory_and_pos, remaining], dim=-1)
+        return self.fuse(torch.cat([self.spatial(spatial), self.tail(tail)], dim=-1))
+
+
 class CNNEncoder(nn.Module):
     def __init__(self, in_channels: int = 1, hidden_dim: int = 128):
         super().__init__()

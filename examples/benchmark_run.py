@@ -240,6 +240,7 @@ def main():
             pipeline_required_per_stage_max=int(spec.get("pipeline_required_per_stage_max", 2)),
             pipeline_sync_probability=float(spec.get("pipeline_sync_probability", 0.5)),
             pipeline_dependency_probability=float(spec.get("pipeline_dependency_probability", 0.7)),
+            pipeline_wrong_delivery_penalty=float(spec.get("pipeline_wrong_delivery_penalty", 0.25)),
             energy_preset=spec.get("energy_preset", "hard"),
             energy_private_monitor=bool(spec.get("energy_private_monitor", True)),
         )

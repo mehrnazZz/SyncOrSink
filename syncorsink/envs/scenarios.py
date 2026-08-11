@@ -254,11 +254,17 @@ class PipelineAssembly(ScenarioBase):
                         stage["delivered"].append(inventory)
                         env.inventories[agent_id] = 0
                         rewards[agent_id] += env.reward_stage
-                        events[agent_id].append({"event": "delivered", "stage": stage["stage"]})
+                        events[agent_id].append({
+                            "event": "delivered",
+                            "stage": stage["stage"],
+                            "resource_type": int(inventory),
+                            "station": [int(stage["station"][0]), int(stage["station"][1])],
+                        })
                         delivery_agents_by_stage.setdefault(int(stage["stage"]), set()).add(int(agent_id))
                         delivered = True
                         break
             if touched_station and inventory != 0 and not delivered:
+                rewards[agent_id] -= float(getattr(env.config, "pipeline_wrong_delivery_penalty", 0.0))
                 events[agent_id].append({
                     "event": "pipeline_wrong_delivery",
                     "resource_type": inventory,
@@ -286,17 +292,29 @@ class PipelineAssembly(ScenarioBase):
                 interactors = station_interactors.get(stage["station"], [])
                 if len(interactors) < 2:
                     for agent_id in interactors:
-                        events[agent_id].append({"event": "pipeline_sync_wait", "stage": stage["stage"]})
+                        events[agent_id].append({
+                            "event": "pipeline_sync_wait",
+                            "stage": stage["stage"],
+                            "station": [int(stage["station"][0]), int(stage["station"][1])],
+                        })
                     continue
                 for agent_id in interactors:
                     rewards[agent_id] += env.reward_stage * 0.5
-                    events[agent_id].append({"event": "sync_complete", "stage": stage["stage"]})
+                    events[agent_id].append({
+                        "event": "sync_complete",
+                        "stage": stage["stage"],
+                        "station": [int(stage["station"][0]), int(stage["station"][1])],
+                    })
                 completion_agents.update(int(agent_id) for agent_id in interactors)
             elif not completion_agents:
                 completion_agents.update(int(agent_id) for agent_id in station_interactors.get(stage["station"], []))
             stage["done"] = True
             for agent_id in sorted(completion_agents):
-                events[agent_id].append({"event": "stage_completed", "stage": stage["stage"]})
+                events[agent_id].append({
+                    "event": "stage_completed",
+                    "stage": stage["stage"],
+                    "station": [int(stage["station"][0]), int(stage["station"][1])],
+                })
 
         if env.config.pipeline_shaping:
             shaping = env.scenario_state.data.setdefault("shaping", {"last_target": {}, "last_dist": {}})

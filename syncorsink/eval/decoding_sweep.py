@@ -40,6 +40,7 @@ class MAPPODecodingSweepConfig:
 
     pipeline_shaping: bool = False
     pipeline_shaping_scale: float = 0.01
+    pipeline_wrong_delivery_penalty: float = 0.25
     energy_shaping: bool = False
     energy_shaping_scale: float = 0.01
     signal_shaping: bool = True
@@ -203,6 +204,7 @@ def _env_config(cfg: MAPPODecodingSweepConfig) -> SyncOrSinkConfig:
         comm_len_cost=cfg.comm_len_cost,
         pipeline_shaping=cfg.pipeline_shaping,
         pipeline_shaping_scale=cfg.pipeline_shaping_scale,
+        pipeline_wrong_delivery_penalty=cfg.pipeline_wrong_delivery_penalty,
         energy_shaping=cfg.energy_shaping,
         energy_shaping_scale=cfg.energy_shaping_scale,
         signal_shaping=cfg.signal_shaping,

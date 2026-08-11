@@ -250,6 +250,25 @@ def test_mappo_action_mask_all_invalid_fallback():
     assert torch.equal(masked_logits, logits)
 
 
+def test_recurrent_bad_action_margin_loss_requires_alternative_winner():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.train.recurrent_bc_rl import _signal_bad_action_margin_loss
+
+    bad_action = int(SyncOrSinkEnv.ACTION_INTERACT)
+    bad_ids = torch.tensor([bad_action, bad_action, bad_action])
+    mask = torch.tensor([1.0, 1.0, 0.0])
+    logits = torch.zeros((3, 8), dtype=torch.float32)
+    logits[0, bad_action] = 2.0
+    logits[0, int(SyncOrSinkEnv.ACTION_UP)] = 0.0
+    logits[1, bad_action] = 0.0
+    logits[1, int(SyncOrSinkEnv.ACTION_UP)] = 2.0
+    logits[2, bad_action] = 5.0
+
+    loss = _signal_bad_action_margin_loss(logits, bad_ids, mask, margin=1.0)
+
+    assert loss.item() == pytest.approx(1.5)
+
+
 def test_set_global_seeds_reproducible():
     import random
 
@@ -489,11 +508,14 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         train_map_sampling_weights="8:1,16:3",
         promotion_success_threshold=0.75,
         obs_exploration_age=True,
+        obs_pipeline_shared_feedback=True,
+        obs_pipeline_progress_features=True,
         obs_signal_negative_memory=True,
         obs_signal_negative_memory_window=12,
         obs_signal_inferred_target_features=True,
         bc_signal_redundant_target_interact_weight=1.5,
         hidden_dim=96,
+        recurrent_backbone="residual_mlp",
         bc_eval_every_epochs=2,
         bc_eval_episodes=3,
         bc_eval_seed_count=2,
@@ -502,6 +524,11 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         bc_action_class_balance_max_weight=7.0,
         bc_event_action_weight=2.5,
         bc_event_action_events="picked_resource,delivered",
+        bc_comm_send_loss_weight=1.7,
+        bc_comm_length_loss_weight=0.8,
+        bc_comm_token_loss_weight=1.9,
+        bc_comm_send_rate_penalty_weight=0.35,
+        bc_comm_send_rate_target=0.12,
         bc_signal_target_pursuit_weight=2.0,
         bc_signal_target_pursuit_action_weight=0.9,
         bc_signal_sync_response_weight=2.5,
@@ -518,14 +545,33 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         bc_signal_target_decision_neg_weight=1.75,
         bc_signal_frontier_exploration_action_weight=0.65,
         bc_signal_frontier_exploration_min_map_size=12,
+        bc_pipeline_delivery_progress_action_loss_weight=0.8,
+        bc_pipeline_navigation_action_loss_weight=1.2,
+        bc_pipeline_frontier_exploration_action_loss_weight=0.55,
+        bc_pipeline_frontier_exploration_min_map_size=8,
+        bc_pipeline_sync_action_loss_weight=1.3,
+        bc_pipeline_ready_interact_action_loss_weight=1.15,
+        bc_pipeline_station_guard_action_loss_weight=1.05,
+        bc_pipeline_pickup_gate_loss_weight=0.9,
+        bc_pipeline_pickup_gate_pos_weight=2.2,
+        bc_pipeline_pickup_gate_neg_weight=1.3,
         bc_pipeline_plan_action_loss_weight=1.1,
         bc_pipeline_message_loss_weight=1.3,
+        bc_pipeline_send_gate_loss_weight=0.9,
+        bc_pipeline_send_gate_pos_weight=2.0,
+        bc_pipeline_send_gate_neg_weight=1.25,
+        bc_pipeline_interact_gate_loss_weight=0.7,
+        bc_pipeline_interact_gate_pos_weight=2.5,
+        bc_pipeline_interact_gate_neg_weight=1.1,
+        bc_calibrate_pipeline_interact_gate_threshold=True,
+        bc_pipeline_interact_gate_threshold_target_rate=0.33,
         bc_pipeline_proactive_bad_action_labels=True,
         pipeline_stage_count=2,
         pipeline_required_per_stage_min=1,
         pipeline_required_per_stage_max=1,
         pipeline_sync_probability=0.0,
         pipeline_dependency_probability=0.25,
+        pipeline_wrong_delivery_penalty=0.75,
         eval_signal_target_validity_threshold=0.55,
         eval_signal_target_decision_threshold=0.6,
         eval_signal_target_decision_suppress=False,
@@ -537,6 +583,10 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         eval_signal_scan_refresh_threshold=0.5,
         eval_pipeline_navigation_assist=True,
         eval_pipeline_navigation_assist_trust_messages=True,
+        eval_pipeline_interact_gate_threshold=0.42,
+        eval_pipeline_event_head_threshold=0.41,
+        eval_pipeline_navigation_head_threshold=0.43,
+        dagger_focus_events="pipeline_pickup_miss,pipeline_delivery_miss",
         dagger_focus_error_weight=4.0,
         dagger_focus_recovery_weight=2.5,
         dagger_focus_window=3,
@@ -551,6 +601,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         dagger_movement_stall_focus_weight=5.5,
         dagger_solo_target_team_weight=2.25,
         dagger_solo_target_team_success_only=True,
+        dagger_restore_best=False,
         dagger_positive_target_pursuit_min_map_size=8,
         dagger_replay_priority_events="movement_stall_miss",
         dagger_replay_balance_positive_events="first_target_scan,joint_target_scan",
@@ -559,9 +610,39 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         dagger_max_failed_parent_replay_snippets_per_episode=2,
         dagger_failed_parent_replay_weight_scale=0.25,
         dagger_expert_max_replay_snippets_per_episode=3,
+        pipeline_assisted_rollout_episodes=4,
+        pipeline_assisted_rollout_seed_base=5100,
+        pipeline_assisted_rollout_seed_list="8:5100,5101",
+        pipeline_assisted_rollout_max_steps_per_episode=14,
+        pipeline_assisted_rollout_weight=2.75,
+        pipeline_assisted_rollout_success_only=True,
+        pipeline_assisted_rollout_navigation_assist=False,
+        pipeline_assisted_rollout_navigation_assist_trust_messages=False,
+        pipeline_assisted_rollout_station_interact_guard=True,
+        pipeline_assisted_rollout_bc_epochs=2,
         rl_updates=3,
         rl_updates_schedule="3,5",
         rl_early_stop_eval_patience=2,
+        rl_eval_decoding_action_loss_weight=0.35,
+        rl_pipeline_assisted_action_loss_weight=0.88,
+        rl_pipeline_interact_gate_loss_weight=0.55,
+        rl_pipeline_interact_gate_pos_weight=2.0,
+        rl_pipeline_interact_gate_neg_weight=3.0,
+        rl_pipeline_pickup_gate_loss_weight=0.75,
+        rl_pipeline_pickup_gate_pos_weight=2.5,
+        rl_pipeline_pickup_gate_neg_weight=3.5,
+        rl_pipeline_delivery_progress_action_loss_weight=0.6,
+        rl_pipeline_navigation_action_loss_weight=0.7,
+        rl_pipeline_sync_action_loss_weight=0.7,
+        rl_pipeline_ready_interact_action_loss_weight=0.95,
+        rl_pipeline_station_guard_action_loss_weight=0.45,
+        rl_pipeline_wrong_station_recovery_action_loss_weight=0.85,
+        rl_pipeline_plan_action_loss_weight=0.65,
+        rl_pipeline_plan_head_loss_weight=0.72,
+        rl_pipeline_option_loss_weight=0.82,
+        rl_pipeline_bad_pickup_penalty=0.2,
+        rl_pipeline_bad_interact_penalty=0.15,
+        rl_pipeline_unneeded_drop_bonus=0.075,
         rollout_steps=40,
         rl_epochs=1,
         minibatch_seqs=4,
@@ -592,14 +673,33 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["bc_signal_target_decision_loss_weight"] == pytest.approx(0.4)
     assert result["config"]["bc_signal_frontier_exploration_action_weight"] == pytest.approx(0.65)
     assert result["config"]["bc_signal_frontier_exploration_min_map_size"] == 12
+    assert result["config"]["bc_pipeline_delivery_progress_action_loss_weight"] == pytest.approx(0.8)
+    assert result["config"]["bc_pipeline_navigation_action_loss_weight"] == pytest.approx(1.2)
+    assert result["config"]["bc_pipeline_frontier_exploration_action_loss_weight"] == pytest.approx(0.55)
+    assert result["config"]["bc_pipeline_frontier_exploration_min_map_size"] == 8
+    assert result["config"]["bc_pipeline_sync_action_loss_weight"] == pytest.approx(1.3)
+    assert result["config"]["bc_pipeline_ready_interact_action_loss_weight"] == pytest.approx(1.15)
+    assert result["config"]["bc_pipeline_station_guard_action_loss_weight"] == pytest.approx(1.05)
+    assert result["config"]["bc_pipeline_pickup_gate_loss_weight"] == pytest.approx(0.9)
+    assert result["config"]["bc_pipeline_pickup_gate_pos_weight"] == pytest.approx(2.2)
+    assert result["config"]["bc_pipeline_pickup_gate_neg_weight"] == pytest.approx(1.3)
     assert result["config"]["bc_pipeline_plan_action_loss_weight"] == pytest.approx(1.1)
     assert result["config"]["bc_pipeline_message_loss_weight"] == pytest.approx(1.3)
+    assert result["config"]["bc_pipeline_send_gate_loss_weight"] == pytest.approx(0.9)
+    assert result["config"]["bc_pipeline_send_gate_pos_weight"] == pytest.approx(2.0)
+    assert result["config"]["bc_pipeline_send_gate_neg_weight"] == pytest.approx(1.25)
+    assert result["config"]["bc_pipeline_interact_gate_loss_weight"] == pytest.approx(0.7)
+    assert result["config"]["bc_pipeline_interact_gate_pos_weight"] == pytest.approx(2.5)
+    assert result["config"]["bc_pipeline_interact_gate_neg_weight"] == pytest.approx(1.1)
+    assert result["config"]["bc_calibrate_pipeline_interact_gate_threshold"] is True
+    assert result["config"]["bc_pipeline_interact_gate_threshold_target_rate"] == pytest.approx(0.33)
     assert result["config"]["bc_pipeline_proactive_bad_action_labels"] is True
     assert result["config"]["pipeline_stage_count"] == 2
     assert result["config"]["pipeline_required_per_stage_min"] == 1
     assert result["config"]["pipeline_required_per_stage_max"] == 1
     assert result["config"]["pipeline_sync_probability"] == pytest.approx(0.0)
     assert result["config"]["pipeline_dependency_probability"] == pytest.approx(0.25)
+    assert result["config"]["pipeline_wrong_delivery_penalty"] == pytest.approx(0.75)
     assert result["config"]["eval_signal_target_validity_threshold"] == pytest.approx(0.55)
     assert result["config"]["eval_signal_target_decision_threshold"] == pytest.approx(0.6)
     assert result["config"]["eval_signal_target_decision_suppress"] is False
@@ -611,8 +711,12 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["eval_signal_scan_refresh_threshold"] == pytest.approx(0.5)
     assert result["config"]["eval_pipeline_navigation_assist"] is True
     assert result["config"]["eval_pipeline_navigation_assist_trust_messages"] is True
+    assert result["config"]["eval_pipeline_interact_gate_threshold"] == pytest.approx(0.42)
+    assert result["config"]["eval_pipeline_event_head_threshold"] == pytest.approx(0.41)
+    assert result["config"]["eval_pipeline_navigation_head_threshold"] == pytest.approx(0.43)
     assert result["config"]["initial_recurrent_checkpoint"] == "logs/recurrent_curriculum/example.pt"
     assert result["config"]["hidden_dim"] == 96
+    assert result["config"]["recurrent_backbone"] == "residual_mlp"
     assert result["config"]["bc_eval_every_epochs"] == 2
     assert result["config"]["bc_eval_episodes"] == 3
     assert result["config"]["bc_eval_seed_count"] == 2
@@ -621,10 +725,20 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["bc_action_class_balance_max_weight"] == pytest.approx(7.0)
     assert result["config"]["bc_event_action_weight"] == pytest.approx(2.5)
     assert result["config"]["bc_event_action_events"] == "picked_resource,delivered"
+    assert result["config"]["bc_comm_send_loss_weight"] == pytest.approx(1.7)
+    assert result["config"]["bc_comm_length_loss_weight"] == pytest.approx(0.8)
+    assert result["config"]["bc_comm_token_loss_weight"] == pytest.approx(1.9)
+    assert result["config"]["bc_comm_send_rate_penalty_weight"] == pytest.approx(0.35)
+    assert result["config"]["bc_comm_send_rate_target"] == pytest.approx(0.12)
     assert result["config"]["train_map_sampling_weights"] == "8:1,16:3"
     assert result["config"]["obs_exploration_age"] is True
+    assert result["config"]["obs_pipeline_shared_feedback"] is True
+    assert result["config"]["obs_pipeline_progress_features"] is True
     assert result["config"]["obs_signal_negative_memory"] is True
     assert result["config"]["dagger_solo_target_team_weight"] == pytest.approx(2.25)
+    assert result["config"]["dagger_focus_events"] == (
+        "pipeline_pickup_miss,pipeline_delivery_miss"
+    )
     assert result["config"]["dagger_focus_error_weight"] == pytest.approx(4.0)
     assert result["config"]["dagger_focus_recovery_weight"] == pytest.approx(2.5)
     assert result["config"]["dagger_focus_window"] == 3
@@ -635,6 +749,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["dagger_movement_stall_min_map_size"] == 8
     assert result["config"]["dagger_movement_stall_window"] == 4
     assert result["config"]["dagger_movement_stall_focus_weight"] == pytest.approx(5.5)
+    assert result["config"]["dagger_restore_best"] is False
     assert result["config"]["dagger_positive_target_pursuit_min_map_size"] == 8
     assert result["config"]["dagger_replay_priority_events"] == "movement_stall_miss"
     assert result["config"]["dagger_replay_balance_positive_events"] == (
@@ -647,9 +762,39 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["dagger_max_failed_parent_replay_snippets_per_episode"] == 2
     assert result["config"]["dagger_failed_parent_replay_weight_scale"] == pytest.approx(0.25)
     assert result["config"]["dagger_expert_max_replay_snippets_per_episode"] == 3
+    assert result["config"]["pipeline_assisted_rollout_episodes"] == 4
+    assert result["config"]["pipeline_assisted_rollout_seed_base"] == 5100
+    assert result["config"]["pipeline_assisted_rollout_seed_list"] == "8:5100,5101"
+    assert result["config"]["pipeline_assisted_rollout_max_steps_per_episode"] == 14
+    assert result["config"]["pipeline_assisted_rollout_weight"] == pytest.approx(2.75)
+    assert result["config"]["pipeline_assisted_rollout_success_only"] is True
+    assert result["config"]["pipeline_assisted_rollout_navigation_assist"] is False
+    assert result["config"]["pipeline_assisted_rollout_navigation_assist_trust_messages"] is False
+    assert result["config"]["pipeline_assisted_rollout_station_interact_guard"] is True
+    assert result["config"]["pipeline_assisted_rollout_bc_epochs"] == 2
     assert result["config"]["rl_updates"] == 3
     assert result["config"]["rl_updates_schedule"] == "3,5"
     assert result["config"]["rl_early_stop_eval_patience"] == 2
+    assert result["config"]["rl_eval_decoding_action_loss_weight"] == pytest.approx(0.35)
+    assert result["config"]["rl_pipeline_assisted_action_loss_weight"] == pytest.approx(0.88)
+    assert result["config"]["rl_pipeline_interact_gate_loss_weight"] == pytest.approx(0.55)
+    assert result["config"]["rl_pipeline_interact_gate_pos_weight"] == pytest.approx(2.0)
+    assert result["config"]["rl_pipeline_interact_gate_neg_weight"] == pytest.approx(3.0)
+    assert result["config"]["rl_pipeline_pickup_gate_loss_weight"] == pytest.approx(0.75)
+    assert result["config"]["rl_pipeline_pickup_gate_pos_weight"] == pytest.approx(2.5)
+    assert result["config"]["rl_pipeline_pickup_gate_neg_weight"] == pytest.approx(3.5)
+    assert result["config"]["rl_pipeline_delivery_progress_action_loss_weight"] == pytest.approx(0.6)
+    assert result["config"]["rl_pipeline_navigation_action_loss_weight"] == pytest.approx(0.7)
+    assert result["config"]["rl_pipeline_sync_action_loss_weight"] == pytest.approx(0.7)
+    assert result["config"]["rl_pipeline_ready_interact_action_loss_weight"] == pytest.approx(0.95)
+    assert result["config"]["rl_pipeline_station_guard_action_loss_weight"] == pytest.approx(0.45)
+    assert result["config"]["rl_pipeline_wrong_station_recovery_action_loss_weight"] == pytest.approx(0.85)
+    assert result["config"]["rl_pipeline_plan_action_loss_weight"] == pytest.approx(0.65)
+    assert result["config"]["rl_pipeline_plan_head_loss_weight"] == pytest.approx(0.72)
+    assert result["config"]["rl_pipeline_option_loss_weight"] == pytest.approx(0.82)
+    assert result["config"]["rl_pipeline_bad_pickup_penalty"] == pytest.approx(0.2)
+    assert result["config"]["rl_pipeline_bad_interact_penalty"] == pytest.approx(0.15)
+    assert result["config"]["rl_pipeline_unneeded_drop_bonus"] == pytest.approx(0.075)
     assert result["config"]["rollout_steps"] == 40
     assert result["config"]["rl_epochs"] == 1
     assert result["config"]["minibatch_seqs"] == 4
@@ -682,11 +827,24 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     )
     assert stage_cfg.obs_signal_negative_memory is True
     assert stage_cfg.dagger_oracle_action_rollin_rate == pytest.approx(0.35)
-    assert stage_cfg.train_map_sampling_weights == "8:1,16:3"
+    assert stage_cfg.train_map_sampling_weights == "8:1"
+    mixed_stage_cfg = _stage_recurrent_config(
+        cfg,
+        stage_idx=1,
+        suite=(8, 16),
+        max_steps={8: 60, 16: 120},
+        checkpoint_path=tmp_path / "stage1_maps_8_16.pt",
+        eval_send_threshold=0.25,
+        has_initial_model=True,
+    )
+    assert mixed_stage_cfg.train_map_sampling_weights == "8:1,16:3"
     assert stage_cfg.obs_exploration_age is True
+    assert stage_cfg.obs_pipeline_shared_feedback is True
+    assert stage_cfg.obs_pipeline_progress_features is True
     assert stage_cfg.obs_signal_negative_memory_window == 12
     assert stage_cfg.obs_signal_inferred_target_features is True
     assert stage_cfg.hidden_dim == 96
+    assert stage_cfg.recurrent_backbone == "residual_mlp"
     assert stage_cfg.bc_eval_every_epochs == 2
     assert stage_cfg.bc_eval_episodes == 3
     assert stage_cfg.bc_eval_seed_count == 2
@@ -695,6 +853,11 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.bc_action_class_balance_max_weight == pytest.approx(7.0)
     assert stage_cfg.bc_event_action_weight == pytest.approx(2.5)
     assert stage_cfg.bc_event_action_events == "picked_resource,delivered"
+    assert stage_cfg.bc_comm_send_loss_weight == pytest.approx(1.7)
+    assert stage_cfg.bc_comm_length_loss_weight == pytest.approx(0.8)
+    assert stage_cfg.bc_comm_token_loss_weight == pytest.approx(1.9)
+    assert stage_cfg.bc_comm_send_rate_penalty_weight == pytest.approx(0.35)
+    assert stage_cfg.bc_comm_send_rate_target == pytest.approx(0.12)
     assert stage_cfg.bc_signal_redundant_target_interact_weight == pytest.approx(1.5)
     assert stage_cfg.bc_signal_target_pursuit_weight == pytest.approx(2.0)
     assert stage_cfg.bc_signal_target_pursuit_action_weight == pytest.approx(0.9)
@@ -712,14 +875,26 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.bc_signal_target_decision_neg_weight == pytest.approx(1.75)
     assert stage_cfg.bc_signal_frontier_exploration_action_weight == pytest.approx(0.65)
     assert stage_cfg.bc_signal_frontier_exploration_min_map_size == 12
+    assert stage_cfg.bc_pipeline_frontier_exploration_action_loss_weight == pytest.approx(0.55)
+    assert stage_cfg.bc_pipeline_frontier_exploration_min_map_size == 8
+    assert stage_cfg.bc_pipeline_ready_interact_action_loss_weight == pytest.approx(1.15)
     assert stage_cfg.bc_pipeline_plan_action_loss_weight == pytest.approx(1.1)
     assert stage_cfg.bc_pipeline_message_loss_weight == pytest.approx(1.3)
+    assert stage_cfg.bc_pipeline_send_gate_loss_weight == pytest.approx(0.9)
+    assert stage_cfg.bc_pipeline_send_gate_pos_weight == pytest.approx(2.0)
+    assert stage_cfg.bc_pipeline_send_gate_neg_weight == pytest.approx(1.25)
+    assert stage_cfg.bc_pipeline_interact_gate_loss_weight == pytest.approx(0.7)
+    assert stage_cfg.bc_pipeline_interact_gate_pos_weight == pytest.approx(2.5)
+    assert stage_cfg.bc_pipeline_interact_gate_neg_weight == pytest.approx(1.1)
+    assert stage_cfg.bc_calibrate_pipeline_interact_gate_threshold is True
+    assert stage_cfg.bc_pipeline_interact_gate_threshold_target_rate == pytest.approx(0.33)
     assert stage_cfg.bc_pipeline_proactive_bad_action_labels is True
     assert stage_cfg.pipeline_stage_count == 2
     assert stage_cfg.pipeline_required_per_stage_min == 1
     assert stage_cfg.pipeline_required_per_stage_max == 1
     assert stage_cfg.pipeline_sync_probability == pytest.approx(0.0)
     assert stage_cfg.pipeline_dependency_probability == pytest.approx(0.25)
+    assert stage_cfg.pipeline_wrong_delivery_penalty == pytest.approx(0.75)
     assert stage_cfg.eval_signal_target_validity_threshold == pytest.approx(0.55)
     assert stage_cfg.eval_signal_target_decision_threshold == pytest.approx(0.6)
     assert stage_cfg.eval_signal_target_decision_suppress is False
@@ -731,8 +906,33 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.eval_signal_scan_refresh_threshold == pytest.approx(0.5)
     assert stage_cfg.eval_pipeline_navigation_assist is True
     assert stage_cfg.eval_pipeline_navigation_assist_trust_messages is True
+    assert stage_cfg.eval_pipeline_interact_gate_threshold == pytest.approx(0.42)
+    assert stage_cfg.eval_pipeline_event_head_threshold == pytest.approx(0.41)
+    assert stage_cfg.eval_pipeline_navigation_head_threshold == pytest.approx(0.43)
     assert stage_cfg.rl_rollout_pipeline_navigation_assist is False
     assert stage_cfg.rl_rollout_pipeline_navigation_assist_trust_messages is False
+    assert stage_cfg.rl_rollout_pipeline_station_interact_guard is False
+    assert stage_cfg.rl_eval_decoding_action_loss_weight == pytest.approx(0.35)
+    assert stage_cfg.rl_pipeline_assisted_action_loss_weight == pytest.approx(0.88)
+    assert stage_cfg.rl_pipeline_interact_gate_loss_weight == pytest.approx(0.55)
+    assert stage_cfg.rl_pipeline_interact_gate_pos_weight == pytest.approx(2.0)
+    assert stage_cfg.rl_pipeline_interact_gate_neg_weight == pytest.approx(3.0)
+    assert stage_cfg.rl_pipeline_pickup_gate_loss_weight == pytest.approx(0.75)
+    assert stage_cfg.rl_pipeline_pickup_gate_pos_weight == pytest.approx(2.5)
+    assert stage_cfg.rl_pipeline_pickup_gate_neg_weight == pytest.approx(3.5)
+    assert stage_cfg.rl_pipeline_delivery_progress_action_loss_weight == pytest.approx(0.6)
+    assert stage_cfg.rl_pipeline_navigation_action_loss_weight == pytest.approx(0.7)
+    assert stage_cfg.rl_pipeline_sync_action_loss_weight == pytest.approx(0.7)
+    assert stage_cfg.rl_pipeline_ready_interact_action_loss_weight == pytest.approx(0.95)
+    assert stage_cfg.rl_pipeline_station_guard_action_loss_weight == pytest.approx(0.45)
+    assert stage_cfg.rl_pipeline_wrong_station_recovery_action_loss_weight == pytest.approx(0.85)
+    assert stage_cfg.rl_pipeline_plan_action_loss_weight == pytest.approx(0.65)
+    assert stage_cfg.rl_pipeline_plan_head_loss_weight == pytest.approx(0.72)
+    assert stage_cfg.rl_pipeline_option_loss_weight == pytest.approx(0.82)
+    assert stage_cfg.rl_pipeline_bad_pickup_penalty == pytest.approx(0.2)
+    assert stage_cfg.rl_pipeline_bad_interact_penalty == pytest.approx(0.15)
+    assert stage_cfg.rl_pipeline_unneeded_drop_bonus == pytest.approx(0.075)
+    assert stage_cfg.dagger_focus_events == "pipeline_pickup_miss,pipeline_delivery_miss"
     assert stage_cfg.dagger_focus_error_weight == pytest.approx(4.0)
     assert stage_cfg.dagger_focus_recovery_weight == pytest.approx(2.5)
     assert stage_cfg.dagger_focus_window == 3
@@ -746,6 +946,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.dagger_movement_stall_focus_weight == pytest.approx(5.5)
     assert stage_cfg.dagger_solo_target_team_weight == pytest.approx(2.25)
     assert stage_cfg.dagger_solo_target_team_success_only is True
+    assert stage_cfg.dagger_restore_best is False
     assert stage_cfg.dagger_positive_target_pursuit_min_map_size == 8
     assert stage_cfg.dagger_replay_priority_events == "movement_stall_miss"
     assert stage_cfg.dagger_replay_balance_positive_events == "first_target_scan,joint_target_scan"
@@ -754,6 +955,16 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.dagger_max_failed_parent_replay_snippets_per_episode == 2
     assert stage_cfg.dagger_failed_parent_replay_weight_scale == pytest.approx(0.25)
     assert stage_cfg.dagger_expert_max_replay_snippets_per_episode == 3
+    assert stage_cfg.pipeline_assisted_rollout_episodes == 4
+    assert stage_cfg.pipeline_assisted_rollout_seed_base == 5100
+    assert stage_cfg.pipeline_assisted_rollout_seed_list == "8:5100,5101"
+    assert stage_cfg.pipeline_assisted_rollout_max_steps_per_episode == 14
+    assert stage_cfg.pipeline_assisted_rollout_weight == pytest.approx(2.75)
+    assert stage_cfg.pipeline_assisted_rollout_success_only is True
+    assert stage_cfg.pipeline_assisted_rollout_navigation_assist is False
+    assert stage_cfg.pipeline_assisted_rollout_navigation_assist_trust_messages is False
+    assert stage_cfg.pipeline_assisted_rollout_station_interact_guard is True
+    assert stage_cfg.pipeline_assisted_rollout_bc_epochs == 2
     assert stage_cfg.rl_updates == 3
     assert stage_cfg.rl_early_stop_eval_patience == 2
     assert stage_cfg.rollout_steps == 40
@@ -779,6 +990,56 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         eval_send_threshold=0.41,
     )
     assert _resolve_initial_eval_send_threshold(override_cfg) == pytest.approx(0.41)
+
+    bad_weight_cfg = RecurrentCurriculumConfig(
+        stage_map_suites="8;8,16",
+        train_map_sampling_weights="64:2",
+        output_dir=str(tmp_path / "bad_weights"),
+        dry_run=True,
+    )
+    with pytest.raises(ValueError, match="not present in any curriculum stage"):
+        run_recurrent_curriculum(bad_weight_cfg)
+
+
+def test_recurrent_curriculum_defaults_use_pipeline_feasible_map_budgets():
+    from syncorsink.train.recurrent_curriculum import (
+        RecurrentCurriculumConfig,
+        _parse_max_steps_by_map,
+        _stage_max_steps,
+    )
+
+    cfg = RecurrentCurriculumConfig()
+    max_steps = _parse_max_steps_by_map(cfg.max_steps_by_map)
+
+    assert max_steps == {8: 80, 16: 160, 32: 500}
+    assert _stage_max_steps((8,), max_steps) == 80
+    assert _stage_max_steps((16,), max_steps) == 160
+    assert _stage_max_steps((32,), max_steps) == 500
+
+
+def test_recurrent_curriculum_passes_initial_obs_dim_expansion_flag(tmp_path):
+    from syncorsink.train.recurrent_curriculum import (
+        RecurrentCurriculumConfig,
+        _stage_recurrent_config,
+    )
+
+    cfg = RecurrentCurriculumConfig(
+        recurrent_init_allow_obs_dim_mismatch=True,
+        output_dir=str(tmp_path),
+        run_name="expand_init",
+    )
+
+    stage_cfg = _stage_recurrent_config(
+        cfg,
+        stage_idx=0,
+        suite=(8, 16),
+        max_steps={8: 80, 16: 160},
+        checkpoint_path=tmp_path / "stage0_maps_8_16.pt",
+        eval_send_threshold=0.25,
+        has_initial_model=True,
+    )
+
+    assert stage_cfg.recurrent_init_allow_obs_dim_mismatch is True
 
 
 def test_recurrent_init_inherits_eval_send_threshold(tmp_path):
@@ -871,10 +1132,45 @@ def test_recurrent_curriculum_cli_accepts_pipeline_core_args(tmp_path, monkeypat
             "6",
             "--comm-vocab-size",
             "48",
+            "--bc-pipeline-delivery-progress-action-loss-weight",
+            "0.8",
+            "--bc-pipeline-navigation-action-loss-weight",
+            "1.2",
+            "--bc-pipeline-frontier-exploration-action-loss-weight",
+            "0.55",
+            "--bc-pipeline-frontier-exploration-min-map-size",
+            "8",
+            "--bc-pipeline-sync-action-loss-weight",
+            "1.3",
+            "--bc-pipeline-station-guard-action-loss-weight",
+            "1.05",
+            "--bc-pipeline-pickup-gate-loss-weight",
+            "0.9",
+            "--bc-pipeline-pickup-gate-pos-weight",
+            "2.2",
+            "--bc-pipeline-pickup-gate-neg-weight",
+            "1.3",
             "--bc-pipeline-plan-action-loss-weight",
             "1.4",
             "--bc-pipeline-message-loss-weight",
             "1.6",
+            "--bc-pipeline-send-gate-loss-weight",
+            "0.8",
+            "--bc-pipeline-send-gate-pos-weight",
+            "1.7",
+            "--bc-pipeline-send-gate-neg-weight",
+            "1.2",
+            "--bc-pipeline-interact-gate-loss-weight",
+            "0.7",
+            "--bc-pipeline-interact-gate-pos-weight",
+            "2.4",
+            "--bc-pipeline-interact-gate-neg-weight",
+            "1.1",
+            "--bc-pipeline-ready-interact-action-loss-weight",
+            "1.15",
+            "--bc-calibrate-pipeline-interact-gate-threshold",
+            "--bc-pipeline-interact-gate-threshold-target-rate",
+            "0.33",
             "--bc-pipeline-proactive-bad-action-labels",
             "--pipeline-stage-count",
             "1",
@@ -901,6 +1197,64 @@ def test_recurrent_curriculum_cli_accepts_pipeline_core_args(tmp_path, monkeypat
             "--rl-rollout-eval-decoding",
             "--rl-rollout-pipeline-navigation-assist",
             "--rl-rollout-pipeline-navigation-assist-trust-messages",
+            "--rl-rollout-pipeline-station-interact-guard",
+            "--pipeline-assisted-rollout-episodes",
+            "4",
+            "--pipeline-assisted-rollout-seed-base",
+            "5100",
+            "--pipeline-assisted-rollout-seed-list",
+            "8:5100,5101",
+            "--pipeline-assisted-rollout-max-steps-per-episode",
+            "14",
+            "--pipeline-assisted-rollout-weight",
+            "2.75",
+            "--pipeline-assisted-rollout-success-only",
+            "--no-pipeline-assisted-rollout-navigation-assist",
+            "--no-pipeline-assisted-rollout-navigation-assist-trust-messages",
+            "--pipeline-assisted-rollout-station-interact-guard",
+            "--pipeline-assisted-rollout-bc-epochs",
+            "2",
+            "--no-dagger-restore-best",
+            "--rl-eval-decoding-action-loss-weight",
+            "0.45",
+            "--rl-pipeline-assisted-action-loss-weight",
+            "0.66",
+            "--rl-pipeline-interact-gate-loss-weight",
+            "0.55",
+            "--rl-pipeline-interact-gate-pos-weight",
+            "2.0",
+            "--rl-pipeline-interact-gate-neg-weight",
+            "3.0",
+            "--rl-pipeline-pickup-gate-loss-weight",
+            "0.75",
+            "--rl-pipeline-pickup-gate-pos-weight",
+            "2.5",
+            "--rl-pipeline-pickup-gate-neg-weight",
+            "3.5",
+            "--rl-pipeline-delivery-progress-action-loss-weight",
+            "0.6",
+            "--rl-pipeline-navigation-action-loss-weight",
+            "0.7",
+            "--rl-pipeline-sync-action-loss-weight",
+            "0.7",
+            "--rl-pipeline-ready-interact-action-loss-weight",
+            "0.95",
+            "--rl-pipeline-station-guard-action-loss-weight",
+            "0.55",
+            "--rl-pipeline-wrong-station-recovery-action-loss-weight",
+            "0.85",
+            "--rl-pipeline-plan-action-loss-weight",
+            "0.65",
+            "--rl-pipeline-plan-head-loss-weight",
+            "0.72",
+            "--rl-pipeline-option-loss-weight",
+            "0.82",
+            "--rl-pipeline-bad-pickup-penalty",
+            "0.2",
+            "--rl-pipeline-bad-interact-penalty",
+            "0.15",
+            "--rl-pipeline-unneeded-drop-bonus",
+            "0.075",
             "--rl-eval-every",
             "1",
             "--rl-eval-episodes",
@@ -916,6 +1270,12 @@ def test_recurrent_curriculum_cli_accepts_pipeline_core_args(tmp_path, monkeypat
             "1",
             "--eval-pipeline-navigation-assist",
             "--eval-pipeline-navigation-assist-trust-messages",
+            "--eval-pipeline-interact-gate-threshold",
+            "0.42",
+            "--eval-pipeline-event-head-threshold",
+            "0.41",
+            "--eval-pipeline-navigation-head-threshold",
+            "0.43",
             "--output-dir",
             str(tmp_path),
             "--run-name",
@@ -940,14 +1300,67 @@ def test_recurrent_curriculum_cli_accepts_pipeline_core_args(tmp_path, monkeypat
     assert result["config"]["comm_token_limit"] == 6
     assert result["config"]["comm_vocab_size"] == 48
     assert result["config"]["obs_pipeline_features"] is True
+    assert result["config"]["bc_pipeline_delivery_progress_action_loss_weight"] == pytest.approx(0.8)
+    assert result["config"]["bc_pipeline_navigation_action_loss_weight"] == pytest.approx(1.2)
+    assert result["config"]["bc_pipeline_frontier_exploration_action_loss_weight"] == pytest.approx(0.55)
+    assert result["config"]["bc_pipeline_frontier_exploration_min_map_size"] == 8
+    assert result["config"]["bc_pipeline_sync_action_loss_weight"] == pytest.approx(1.3)
+    assert result["config"]["bc_pipeline_ready_interact_action_loss_weight"] == pytest.approx(1.15)
+    assert result["config"]["bc_pipeline_station_guard_action_loss_weight"] == pytest.approx(1.05)
+    assert result["config"]["bc_pipeline_pickup_gate_loss_weight"] == pytest.approx(0.9)
+    assert result["config"]["bc_pipeline_pickup_gate_pos_weight"] == pytest.approx(2.2)
+    assert result["config"]["bc_pipeline_pickup_gate_neg_weight"] == pytest.approx(1.3)
     assert result["config"]["bc_pipeline_plan_action_loss_weight"] == pytest.approx(1.4)
     assert result["config"]["bc_pipeline_message_loss_weight"] == pytest.approx(1.6)
+    assert result["config"]["bc_pipeline_send_gate_loss_weight"] == pytest.approx(0.8)
+    assert result["config"]["bc_pipeline_send_gate_pos_weight"] == pytest.approx(1.7)
+    assert result["config"]["bc_pipeline_send_gate_neg_weight"] == pytest.approx(1.2)
+    assert result["config"]["bc_pipeline_interact_gate_loss_weight"] == pytest.approx(0.7)
+    assert result["config"]["bc_pipeline_interact_gate_pos_weight"] == pytest.approx(2.4)
+    assert result["config"]["bc_pipeline_interact_gate_neg_weight"] == pytest.approx(1.1)
+    assert result["config"]["bc_calibrate_pipeline_interact_gate_threshold"] is True
+    assert result["config"]["bc_pipeline_interact_gate_threshold_target_rate"] == pytest.approx(0.33)
     assert result["config"]["bc_pipeline_proactive_bad_action_labels"] is True
     assert result["config"]["eval_pipeline_navigation_assist"] is True
     assert result["config"]["eval_pipeline_navigation_assist_trust_messages"] is True
+    assert result["config"]["eval_pipeline_interact_gate_threshold"] == pytest.approx(0.42)
+    assert result["config"]["eval_pipeline_event_head_threshold"] == pytest.approx(0.41)
+    assert result["config"]["eval_pipeline_navigation_head_threshold"] == pytest.approx(0.43)
     assert result["config"]["rl_rollout_eval_decoding"] is True
     assert result["config"]["rl_rollout_pipeline_navigation_assist"] is True
     assert result["config"]["rl_rollout_pipeline_navigation_assist_trust_messages"] is True
+    assert result["config"]["rl_rollout_pipeline_station_interact_guard"] is True
+    assert result["config"]["pipeline_assisted_rollout_episodes"] == 4
+    assert result["config"]["pipeline_assisted_rollout_seed_base"] == 5100
+    assert result["config"]["pipeline_assisted_rollout_seed_list"] == "8:5100,5101"
+    assert result["config"]["pipeline_assisted_rollout_max_steps_per_episode"] == 14
+    assert result["config"]["pipeline_assisted_rollout_weight"] == pytest.approx(2.75)
+    assert result["config"]["pipeline_assisted_rollout_success_only"] is True
+    assert result["config"]["pipeline_assisted_rollout_navigation_assist"] is False
+    assert result["config"]["pipeline_assisted_rollout_navigation_assist_trust_messages"] is False
+    assert result["config"]["pipeline_assisted_rollout_station_interact_guard"] is True
+    assert result["config"]["pipeline_assisted_rollout_bc_epochs"] == 2
+    assert result["config"]["rl_eval_decoding_action_loss_weight"] == pytest.approx(0.45)
+    assert result["config"]["rl_pipeline_assisted_action_loss_weight"] == pytest.approx(0.66)
+    assert result["config"]["rl_pipeline_interact_gate_loss_weight"] == pytest.approx(0.55)
+    assert result["config"]["rl_pipeline_interact_gate_pos_weight"] == pytest.approx(2.0)
+    assert result["config"]["rl_pipeline_interact_gate_neg_weight"] == pytest.approx(3.0)
+    assert result["config"]["rl_pipeline_pickup_gate_loss_weight"] == pytest.approx(0.75)
+    assert result["config"]["rl_pipeline_pickup_gate_pos_weight"] == pytest.approx(2.5)
+    assert result["config"]["rl_pipeline_pickup_gate_neg_weight"] == pytest.approx(3.5)
+    assert result["config"]["rl_pipeline_delivery_progress_action_loss_weight"] == pytest.approx(0.6)
+    assert result["config"]["rl_pipeline_navigation_action_loss_weight"] == pytest.approx(0.7)
+    assert result["config"]["rl_pipeline_sync_action_loss_weight"] == pytest.approx(0.7)
+    assert result["config"]["rl_pipeline_ready_interact_action_loss_weight"] == pytest.approx(0.95)
+    assert result["config"]["rl_pipeline_station_guard_action_loss_weight"] == pytest.approx(0.55)
+    assert result["config"]["rl_pipeline_wrong_station_recovery_action_loss_weight"] == pytest.approx(0.85)
+    assert result["config"]["rl_pipeline_plan_action_loss_weight"] == pytest.approx(0.65)
+    assert result["config"]["rl_pipeline_plan_head_loss_weight"] == pytest.approx(0.72)
+    assert result["config"]["rl_pipeline_option_loss_weight"] == pytest.approx(0.82)
+    assert result["config"]["dagger_restore_best"] is False
+    assert result["config"]["rl_pipeline_bad_pickup_penalty"] == pytest.approx(0.2)
+    assert result["config"]["rl_pipeline_bad_interact_penalty"] == pytest.approx(0.15)
+    assert result["config"]["rl_pipeline_unneeded_drop_bonus"] == pytest.approx(0.075)
     assert result["config"]["pipeline_stage_count"] == 1
     assert result["config"]["pipeline_required_per_stage_max"] == 1
     assert result["config"]["pipeline_sync_probability"] == pytest.approx(0.0)
@@ -1000,13 +1413,53 @@ def test_recurrent_curriculum_pipeline_schedules_override_stage_defaults(tmp_pat
         rl_eval_use_eval_seeds=True,
         rl_eval_seed=5000,
         rl_eval_seed_stage_stride=100,
+        rl_eval_decoding_action_loss_weight=0.35,
+        rl_pipeline_interact_gate_loss_weight=0.55,
+        rl_pipeline_interact_gate_pos_weight=2.0,
+        rl_pipeline_interact_gate_neg_weight=3.0,
+        rl_pipeline_pickup_gate_loss_weight=0.75,
+        rl_pipeline_pickup_gate_pos_weight=2.5,
+        rl_pipeline_pickup_gate_neg_weight=3.5,
+        rl_pipeline_delivery_progress_action_loss_weight=0.6,
+        rl_pipeline_navigation_action_loss_weight=0.7,
+        rl_pipeline_sync_action_loss_weight=0.7,
+        rl_pipeline_ready_interact_action_loss_weight=0.95,
+        rl_pipeline_station_guard_action_loss_weight=0.45,
+        rl_pipeline_wrong_station_recovery_action_loss_weight=0.85,
+        rl_pipeline_plan_action_loss_weight=0.65,
+        rl_pipeline_plan_head_loss_weight=0.72,
+        rl_pipeline_option_loss_weight=0.82,
+        rl_pipeline_bad_pickup_penalty=0.2,
+        rl_pipeline_bad_interact_penalty=0.15,
+        rl_pipeline_unneeded_drop_bonus=0.075,
         bc_pipeline_pickup_action_loss_weight=0.25,
         bc_pipeline_delivery_action_loss_weight=0.5,
+        bc_pipeline_delivery_progress_action_loss_weight=0.8,
+        bc_pipeline_navigation_action_loss_weight=1.2,
+        bc_pipeline_frontier_exploration_action_loss_weight=0.55,
+        bc_pipeline_frontier_exploration_min_map_size=8,
+        bc_pipeline_sync_action_loss_weight=1.3,
+        bc_pipeline_ready_interact_action_loss_weight=1.15,
+        bc_pipeline_station_guard_action_loss_weight=1.05,
+        bc_pipeline_pickup_gate_loss_weight=0.9,
+        bc_pipeline_pickup_gate_pos_weight=2.2,
+        bc_pipeline_pickup_gate_neg_weight=1.3,
         bc_pipeline_plan_action_loss_weight=1.75,
         bc_pipeline_message_loss_weight=2.25,
+        bc_pipeline_send_gate_loss_weight=1.5,
+        bc_pipeline_send_gate_pos_weight=2.25,
+        bc_pipeline_send_gate_neg_weight=1.5,
+        bc_pipeline_interact_gate_loss_weight=1.25,
+        bc_pipeline_interact_gate_pos_weight=2.75,
+        bc_pipeline_interact_gate_neg_weight=1.25,
+        bc_calibrate_pipeline_interact_gate_threshold=True,
+        bc_pipeline_interact_gate_threshold_target_rate=0.4,
         bc_pipeline_bad_pickup_action_loss_weight=0.6,
         bc_pipeline_bad_drop_action_loss_weight=0.75,
         bc_pipeline_bad_interact_action_loss_weight=1.25,
+        eval_pipeline_interact_gate_threshold=0.37,
+        eval_pipeline_event_head_threshold=0.36,
+        eval_pipeline_navigation_head_threshold=0.38,
         dagger_pipeline_wrong_delivery_provenance_labels=True,
         dagger_pipeline_wrong_delivery_provenance_weight=1.5,
         output_dir=str(tmp_path),
@@ -1053,14 +1506,54 @@ def test_recurrent_curriculum_pipeline_schedules_override_stage_defaults(tmp_pat
     assert stage_cfg.rl_early_stop_eval_patience == 1
     assert stage_cfg.rl_eval_use_eval_seeds is True
     assert stage_cfg.rl_eval_seed == 5100
+    assert stage_cfg.rl_eval_decoding_action_loss_weight == pytest.approx(0.35)
+    assert stage_cfg.rl_pipeline_interact_gate_loss_weight == pytest.approx(0.55)
+    assert stage_cfg.rl_pipeline_interact_gate_pos_weight == pytest.approx(2.0)
+    assert stage_cfg.rl_pipeline_interact_gate_neg_weight == pytest.approx(3.0)
+    assert stage_cfg.rl_pipeline_pickup_gate_loss_weight == pytest.approx(0.75)
+    assert stage_cfg.rl_pipeline_pickup_gate_pos_weight == pytest.approx(2.5)
+    assert stage_cfg.rl_pipeline_pickup_gate_neg_weight == pytest.approx(3.5)
+    assert stage_cfg.rl_pipeline_delivery_progress_action_loss_weight == pytest.approx(0.6)
+    assert stage_cfg.rl_pipeline_navigation_action_loss_weight == pytest.approx(0.7)
+    assert stage_cfg.rl_pipeline_sync_action_loss_weight == pytest.approx(0.7)
+    assert stage_cfg.rl_pipeline_ready_interact_action_loss_weight == pytest.approx(0.95)
+    assert stage_cfg.rl_pipeline_station_guard_action_loss_weight == pytest.approx(0.45)
+    assert stage_cfg.rl_pipeline_wrong_station_recovery_action_loss_weight == pytest.approx(0.85)
+    assert stage_cfg.rl_pipeline_plan_action_loss_weight == pytest.approx(0.65)
+    assert stage_cfg.rl_pipeline_plan_head_loss_weight == pytest.approx(0.72)
+    assert stage_cfg.rl_pipeline_option_loss_weight == pytest.approx(0.82)
+    assert stage_cfg.rl_pipeline_bad_pickup_penalty == pytest.approx(0.2)
+    assert stage_cfg.rl_pipeline_bad_interact_penalty == pytest.approx(0.15)
+    assert stage_cfg.rl_pipeline_unneeded_drop_bonus == pytest.approx(0.075)
     assert stage_cfg.obs_pipeline_features is True
     assert stage_cfg.bc_pipeline_pickup_action_loss_weight == pytest.approx(0.25)
     assert stage_cfg.bc_pipeline_delivery_action_loss_weight == pytest.approx(0.5)
+    assert stage_cfg.bc_pipeline_delivery_progress_action_loss_weight == pytest.approx(0.8)
+    assert stage_cfg.bc_pipeline_navigation_action_loss_weight == pytest.approx(1.2)
+    assert stage_cfg.bc_pipeline_frontier_exploration_action_loss_weight == pytest.approx(0.55)
+    assert stage_cfg.bc_pipeline_frontier_exploration_min_map_size == 8
+    assert stage_cfg.bc_pipeline_sync_action_loss_weight == pytest.approx(1.3)
+    assert stage_cfg.bc_pipeline_ready_interact_action_loss_weight == pytest.approx(1.15)
+    assert stage_cfg.bc_pipeline_station_guard_action_loss_weight == pytest.approx(1.05)
+    assert stage_cfg.bc_pipeline_pickup_gate_loss_weight == pytest.approx(0.9)
+    assert stage_cfg.bc_pipeline_pickup_gate_pos_weight == pytest.approx(2.2)
+    assert stage_cfg.bc_pipeline_pickup_gate_neg_weight == pytest.approx(1.3)
     assert stage_cfg.bc_pipeline_plan_action_loss_weight == pytest.approx(1.75)
     assert stage_cfg.bc_pipeline_message_loss_weight == pytest.approx(2.25)
+    assert stage_cfg.bc_pipeline_send_gate_loss_weight == pytest.approx(1.5)
+    assert stage_cfg.bc_pipeline_send_gate_pos_weight == pytest.approx(2.25)
+    assert stage_cfg.bc_pipeline_send_gate_neg_weight == pytest.approx(1.5)
+    assert stage_cfg.bc_pipeline_interact_gate_loss_weight == pytest.approx(1.25)
+    assert stage_cfg.bc_pipeline_interact_gate_pos_weight == pytest.approx(2.75)
+    assert stage_cfg.bc_pipeline_interact_gate_neg_weight == pytest.approx(1.25)
+    assert stage_cfg.bc_calibrate_pipeline_interact_gate_threshold is True
+    assert stage_cfg.bc_pipeline_interact_gate_threshold_target_rate == pytest.approx(0.4)
     assert stage_cfg.bc_pipeline_bad_pickup_action_loss_weight == pytest.approx(0.6)
     assert stage_cfg.bc_pipeline_bad_drop_action_loss_weight == pytest.approx(0.75)
     assert stage_cfg.bc_pipeline_bad_interact_action_loss_weight == pytest.approx(1.25)
+    assert stage_cfg.eval_pipeline_interact_gate_threshold == pytest.approx(0.37)
+    assert stage_cfg.eval_pipeline_event_head_threshold == pytest.approx(0.36)
+    assert stage_cfg.eval_pipeline_navigation_head_threshold == pytest.approx(0.38)
     assert stage_cfg.dagger_pipeline_wrong_delivery_provenance_labels is True
     assert stage_cfg.dagger_pipeline_wrong_delivery_provenance_weight == pytest.approx(1.5)
 
@@ -1071,6 +1564,7 @@ def test_recurrent_dagger_collection_seed_schedule():
         RecurrentConfig,
         _dagger_collection_map_ordinal,
         _dagger_collection_seed,
+        _pipeline_assisted_rollout_collection_seed,
     )
 
     default_cfg = RecurrentConfig(dagger_episodes=3)
@@ -1139,6 +1633,75 @@ def test_recurrent_dagger_collection_seed_schedule():
     )
     with pytest.raises(ValueError, match="map_size=32"):
         _dagger_collection_seed(missing_map_cfg, 0, 1)
+
+    assisted_cfg = RecurrentConfig(
+        map_size=16,
+        train_map_sizes="16,32",
+        pipeline_assisted_rollout_seed_base=7000,
+        pipeline_assisted_rollout_seed_list="16:1600+32:3200,3201",
+    )
+    assert [
+        _pipeline_assisted_rollout_collection_seed(assisted_cfg, ep)
+        for ep in range(4)
+    ] == [1600, 3200, 1600, 3201]
+
+
+def test_pipeline_assisted_rollout_collection_smoke():
+    from syncorsink.policies.mappo_models import MAPPORecurrentActor
+    from syncorsink.train.mappo import resolve_device
+    from syncorsink.train.recurrent_bc_rl import (
+        PIPELINE_OPTION_COUNT,
+        RecurrentConfig,
+        _recurrent_fov_radius,
+        _recurrent_training_obs_shape,
+        collect_pipeline_assisted_rollout_episodes,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=3,
+        fov_preset="easy",
+        max_steps=20,
+        oracle_type="planner_comm",
+        obs_pipeline_features=True,
+        obs_feedback=True,
+        obs_pipeline_feedback=True,
+        comm=True,
+        comm_token_limit=4,
+        comm_vocab_size=32,
+        hidden_dim=16,
+        pipeline_assisted_rollout_episodes=1,
+        pipeline_assisted_rollout_max_steps_per_episode=6,
+        pipeline_assisted_rollout_weight=1.5,
+        pipeline_assisted_rollout_seed_base=123,
+    )
+    device = resolve_device("cpu")
+    model = MAPPORecurrentActor(
+        obs_dim=_recurrent_training_obs_shape(cfg)[0],
+        action_dim=8,
+        hidden_dim=cfg.hidden_dim,
+        backbone=cfg.recurrent_backbone,
+        fov_radius=_recurrent_fov_radius(cfg),
+        comm_enabled=cfg.comm,
+        comm_token_limit=cfg.comm_token_limit,
+        comm_vocab_size=cfg.comm_vocab_size,
+        pipeline_option_dim=PIPELINE_OPTION_COUNT,
+    ).to(device)
+
+    episodes, summary = collect_pipeline_assisted_rollout_episodes(cfg, model, device)
+
+    assert summary["attempted_episodes"] == 1
+    assert summary["episodes"] == 1
+    assert summary["transitions"] > 0
+    assert summary["navigation_assist"] is True
+    assert summary["station_interact_guard"] is True
+    episode = episodes[0]
+    assert episode["source"] == "pipeline_assisted_rollout"
+    assert episode["seed"] == 123
+    assert episode["weight"] == pytest.approx(1.5)
+    assert episode["obs"].shape[1] == cfg.agents
+    assert episode["actions"].shape[:2] == episode["msg_lens"].shape
 
 
 def test_recurrent_skip_bc_stage_requires_checkpoint_and_no_dagger():
@@ -3934,6 +4497,75 @@ def test_recurrent_dagger_best_round_uses_eval_score(monkeypatch):
     assert float(next(model.parameters()).item()) == pytest.approx(1.0)
 
 
+def test_recurrent_dagger_restore_best_can_keep_latest_model(monkeypatch):
+    import syncorsink.train.recurrent_bc_rl as recurrent
+    from syncorsink.train.recurrent_bc_rl import RecurrentConfig
+
+    def fake_train_recurrent_bc(cfg, episodes, device, model=None):
+        del device, model
+        round_model = torch.nn.Linear(1, 1, bias=False)
+        weight = float(len(episodes) - 1)
+        cfg.eval_send_threshold = 0.25 + weight
+        with torch.no_grad():
+            round_model.weight.fill_(weight)
+        return round_model
+
+    def fake_evaluate_recurrent_policy_multi_seed(
+        cfg,
+        model,
+        device,
+        *,
+        seed_count,
+        seed_list="",
+        seed_list_field_name="rl_eval_seed_list",
+    ):
+        del cfg, device, seed_count, seed_list, seed_list_field_name
+        weight = float(next(model.parameters()).item())
+        return {
+            "episodes": 1,
+            "success_rate": 1.0 if weight == 0.0 else 0.0,
+            "avg_return": 10.0 if weight == 0.0 else -10.0,
+            "avg_steps": 10.0,
+        }
+
+    def fake_collect_recurrent_dagger_episodes(cfg, model, device, round_idx):
+        del cfg, model, device, round_idx
+        episode = {
+            "obs": np.zeros((1, 1, 1), dtype=np.float32),
+            "source": "dagger",
+        }
+        return [episode], {"episodes": 1}
+
+    monkeypatch.setattr(recurrent, "train_recurrent_bc", fake_train_recurrent_bc)
+    monkeypatch.setattr(recurrent, "evaluate_recurrent_policy_multi_seed", fake_evaluate_recurrent_policy_multi_seed)
+    monkeypatch.setattr(recurrent, "collect_recurrent_dagger_episodes", fake_collect_recurrent_dagger_episodes)
+
+    initial_episode = {
+        "obs": np.zeros((1, 1, 1), dtype=np.float32),
+        "source": "expert",
+    }
+
+    restore_cfg = RecurrentConfig(dagger_rounds=1, dagger_restore_best=True)
+    model, _history, _all_episodes, best_round = recurrent.train_recurrent_bc_dagger(
+        restore_cfg,
+        [initial_episode],
+        torch.device("cpu"),
+    )
+    assert best_round["round"] == 0
+    assert float(next(model.parameters()).item()) == pytest.approx(0.0)
+    assert restore_cfg.eval_send_threshold == pytest.approx(0.25)
+
+    latest_cfg = RecurrentConfig(dagger_rounds=1, dagger_restore_best=False)
+    model, _history, _all_episodes, best_round = recurrent.train_recurrent_bc_dagger(
+        latest_cfg,
+        [initial_episode],
+        torch.device("cpu"),
+    )
+    assert best_round["round"] == 0
+    assert float(next(model.parameters()).item()) == pytest.approx(1.0)
+    assert latest_cfg.eval_send_threshold == pytest.approx(1.25)
+
+
 def test_recurrent_dagger_can_start_from_initial_model(monkeypatch):
     import syncorsink.train.recurrent_bc_rl as recurrent
     from syncorsink.train.recurrent_bc_rl import RecurrentConfig
@@ -4352,7 +4984,7 @@ def test_recurrent_pipeline_features_decode_message_and_keep_mask_safe():
     features = _pipeline_coordination_features(obs_agent, cfg, observed_map_size=8)
     flat = _flatten_recurrent_obs(obs_agent, cfg)
 
-    assert features.shape == (31,)
+    assert features.shape == (38,)
     assert features[0] == 1.0  # decoded a plan
     assert features[1] == 1.0  # from message
     assert features[12:16].tolist() == [0.0, 1.0, 0.0, 0.0]
@@ -4362,8 +4994,505 @@ def test_recurrent_pipeline_features_decode_message_and_keep_mask_safe():
     assert features[25] == 1.0  # at active station
     assert features[28] == 1.0  # should deliver now
     assert features[29] == 0.0  # not an unsafe station interact
+    assert features[31:35].tolist() == [1.0, 0.0, 0.0, 0.0]  # held target is here
+    assert features[35] == 0.0  # held needed, but not at the wrong station
+    assert features[36] == 0.0  # held resource belongs to the decoded plan
+    assert features[37] == 0.0  # center resource is not an unneeded pickup target
     expected_mask = torch.tensor(obs_agent["action_mask"], dtype=torch.float32)
     assert torch.equal(action_mask_from_flat_obs(torch.tensor(flat).unsqueeze(0))[0], expected_mask)
+
+
+def test_recurrent_pipeline_progress_features_track_stage_state():
+    from syncorsink.envs.maps import TILE_STATION
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _PIPELINE_PROGRESS_FEATURE_SIZE,
+        _pipeline_coordination_features,
+    )
+
+    local_grid = np.zeros((5, 5), dtype=np.int16)
+    local_grid[2, 2] = TILE_STATION
+    hint = np.full((64,), -1, dtype=np.int16)
+    hint[:9] = np.array([0, 1, 1, 1, 2, -1, 0, -1, 0], dtype=np.int16)
+    hint[9:18] = np.array([1, 5, 6, 2, 2, 3, 1, 0, 1], dtype=np.int16)
+    obs_agent = {
+        "local_grid": local_grid,
+        "inventory": np.array([0], dtype=np.int16),
+        "self_pos": np.array([5, 6], dtype=np.int16),
+        "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "goal_hint": hint,
+    }
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=3,
+        obs_pipeline_progress_features=True,
+    )
+
+    features = _pipeline_coordination_features(
+        obs_agent,
+        cfg,
+        observed_map_size=8,
+        pipeline_state={
+            "completed_stages": {0},
+            "delivered_counts": {1: 1},
+            "delivered_resources": {1: [2]},
+            "sync_wait_stages": {1},
+            "sync_wait_stations": {1: (5, 6)},
+        },
+    )
+
+    assert features.shape == (_PIPELINE_PROGRESS_FEATURE_SIZE,)
+    assert features[:18].tolist() == pytest.approx([
+        1.0,
+        1.0,
+        0.5,
+        1.0 / 7.0,
+        1.0 / 7.0,
+        1.0,
+        0.0,
+        1.0,
+        0.0,
+        0.5,
+        0.5,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+    ])
+    assert features[18:22].tolist() == [0.0, 0.0, 1.0, 0.0]
+    assert features[22:26].tolist() == [0.0, 1.0, 0.0, 0.0]
+
+
+def test_pipeline_goal_hint_keeps_multiple_stage_chunks():
+    from syncorsink.envs.base import SyncOrSinkConfig, SyncOrSinkEnv
+
+    env = SyncOrSinkEnv(
+        SyncOrSinkConfig(
+            scenario="pipeline_assembly",
+            map_size=16,
+            num_agents=3,
+            fov_preset="easy",
+            pipeline_stage_count=6,
+            pipeline_required_per_stage_min=1,
+            pipeline_required_per_stage_max=1,
+            pipeline_sync_probability=0.0,
+            pipeline_dependency_probability=0.0,
+            goal_hint_size=64,
+        )
+    )
+    obs, _ = env.reset(seed=0)
+
+    assert env.observation_space.spaces["goal_hint"].shape == (64,)
+    assert obs[0]["goal_hint"].shape == (64,)
+    first_chunk = obs[0]["goal_hint"][:9].tolist()
+    second_chunk = obs[0]["goal_hint"][9:18].tolist()
+    assert first_chunk[0] == 0
+    assert second_chunk[0] == 3
+    assert second_chunk[1] >= 0
+    assert second_chunk[2] >= 0
+    assert second_chunk[4] > 0
+
+
+def test_pipeline_trusted_plan_for_label_matches_later_hint_chunk():
+    from syncorsink.train.recurrent_bc_rl import (
+        _pipeline_plans_from_goal_hint,
+        _pipeline_trusted_plan_for_label,
+    )
+
+    hint = np.full((64,), -1, dtype=np.int16)
+    hint[:9] = np.array([0, 1, 1, 1, 2, -1, 0, -1, 0], dtype=np.int16)
+    hint[9:18] = np.array([3, 5, 6, 1, 4, -1, 1, 0, 0], dtype=np.int16)
+    obs_agent = {
+        "goal_hint": hint,
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+    }
+    active_stage = {
+        "stage": 3,
+        "station": (5, 6),
+        "required": [4],
+        "delivered": [],
+        "deps": [0],
+        "done": False,
+    }
+
+    plans = _pipeline_plans_from_goal_hint(hint, observed_map_size=8)
+    matched = _pipeline_trusted_plan_for_label(obs_agent, observed_map_size=8, stage=active_stage)
+
+    assert [plan["stage"] for plan in plans] == [0, 3]
+    assert matched is not None
+    assert matched["stage"] == 3
+    assert matched["station"] == (5, 6)
+    assert matched["required"] == [4]
+    assert matched["deps"] == [0]
+
+
+def test_pipeline_goal_hint_plan_selection_skips_completed_stage():
+    from syncorsink.train.recurrent_bc_rl import _pipeline_plan_from_goal_hint
+
+    hint = np.full((64,), -1, dtype=np.int16)
+    hint[:9] = np.array([0, 1, 1, 1, 2, -1, 0, -1, 0], dtype=np.int16)
+    hint[9:18] = np.array([3, 5, 6, 1, 4, -1, 1, 0, 0], dtype=np.int16)
+
+    first = _pipeline_plan_from_goal_hint(hint, observed_map_size=8)
+    active = _pipeline_plan_from_goal_hint(
+        hint,
+        observed_map_size=8,
+        completed_stages={0},
+    )
+    blocked_preferred = _pipeline_plan_from_goal_hint(
+        hint,
+        observed_map_size=8,
+        completed_stages=set(),
+        preferred_resource=4,
+    )
+    completed_preferred = _pipeline_plan_from_goal_hint(
+        hint,
+        observed_map_size=8,
+        completed_stages={0},
+        preferred_resource=4,
+    )
+
+    assert first is not None and first["stage"] == 0
+    assert active is not None and active["stage"] == 3
+    assert blocked_preferred is not None and blocked_preferred["stage"] == 0
+    assert completed_preferred is not None and completed_preferred["stage"] == 3
+
+
+def test_pipeline_navigation_assist_sync_interact_uses_progress_state():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_STATION
+    from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _pipeline_local_assist_action
+
+    local_grid = np.zeros((5, 5), dtype=np.int16)
+    local_grid[2, 2] = TILE_STATION
+    hint = np.full((64,), -1, dtype=np.int16)
+    hint[:9] = np.array([0, 2, 2, 1, 3, -1, 0, -1, 1], dtype=np.int16)
+    obs_agent = {
+        "local_grid": local_grid,
+        "inventory": np.array([0], dtype=np.int16),
+        "self_pos": np.array([2, 2], dtype=np.int16),
+        "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "goal_hint": hint,
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    cfg = RecurrentConfig(scenario="pipeline_assembly", map_size=8, agents=3)
+
+    without_progress = _pipeline_local_assist_action(cfg, obs_agent)
+    with_progress = _pipeline_local_assist_action(
+        cfg,
+        obs_agent,
+        pipeline_state={
+            "completed_stages": set(),
+            "delivered_counts": {0: 1},
+            "sync_wait_stages": {0},
+        },
+    )
+    with_stage = _pipeline_local_assist_action(
+        cfg,
+        obs_agent,
+        stage={
+            "stage": 0,
+            "station": (2, 2),
+            "required": [3],
+            "delivered": [3],
+            "deps": [],
+            "sync": True,
+            "done": False,
+        },
+    )
+    off_station_obs = {
+        **obs_agent,
+        "self_pos": np.array([1, 2], dtype=np.int16),
+        "local_grid": np.zeros((5, 5), dtype=np.int16),
+    }
+    sync_rendezvous = _pipeline_local_assist_action(
+        cfg,
+        off_station_obs,
+        pipeline_state={
+            "completed_stages": set(),
+            "delivered_counts": {0: 1},
+            "delivered_resources": {0: [3]},
+            "sync_wait_stages": set(),
+        },
+    )
+    no_hint_sync = _pipeline_local_assist_action(
+        cfg,
+        {
+            **off_station_obs,
+            "goal_hint": np.full((64,), -1, dtype=np.int16),
+        },
+        pipeline_state={
+            "completed_stages": set(),
+            "delivered_counts": {},
+            "delivered_resources": {},
+            "sync_wait_stages": {7},
+            "sync_wait_stations": {7: (2, 2)},
+        },
+    )
+
+    assert without_progress is None
+    assert with_progress == SyncOrSinkEnv.ACTION_INTERACT
+    assert with_stage == SyncOrSinkEnv.ACTION_INTERACT
+    assert sync_rendezvous == SyncOrSinkEnv.ACTION_RIGHT
+    assert no_hint_sync == SyncOrSinkEnv.ACTION_RIGHT
+
+
+def test_pipeline_state_tracks_delivered_resource_types():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _initial_pipeline_state,
+        _pipeline_completed_stages,
+        _pipeline_carry_target_plan,
+        _pipeline_local_assist_action,
+        _pipeline_sync_wait_plan,
+        _pipeline_sync_wait_station,
+        _pipeline_stage_delivered_count,
+        _pipeline_stage_delivered_resources,
+        _update_pipeline_state_from_info,
+    )
+
+    cfg = RecurrentConfig(scenario="pipeline_assembly", map_size=8, agents=2)
+    state = _initial_pipeline_state(cfg)
+    updated = _update_pipeline_state_from_info(
+        cfg,
+        state,
+        {
+            "events": {
+                0: [{"event": "delivered", "stage": 2, "resource_type": 4}],
+                1: [{"event": "stage_completed", "stage": 2}],
+            }
+        },
+        num_agents=2,
+    )
+
+    assert _pipeline_stage_delivered_count(updated, 2) == 1
+    assert _pipeline_stage_delivered_resources(updated, 2) == [4]
+    assert 2 in _pipeline_completed_stages(updated)
+
+    duplicate_carry = _update_pipeline_state_from_info(
+        cfg,
+        _initial_pipeline_state(cfg),
+        {
+            "events": {
+                0: [{"event": "delivered", "stage": 1, "resource_type": 1}],
+                1: [{
+                    "event": "picked_resource",
+                    "stage": 1,
+                    "station": [3, 3],
+                    "resource_type": 1,
+                    "required": [1, 1],
+                }],
+            }
+        },
+        num_agents=2,
+    )
+    carry_plan = _pipeline_carry_target_plan(duplicate_carry, agent_id=1, held_type=1)
+    assert carry_plan is not None
+    assert carry_plan["required"] == [1, 1]
+    compact_carry = _initial_pipeline_state(cfg)
+    compact_carry["observed_map_size"] = 8
+    compact_carry = _update_pipeline_state_from_info(
+        cfg,
+        compact_carry,
+        {
+            "events": {
+                1: [{
+                    "event": "picked_resource",
+                    "stage": 1,
+                    "station": [3, 3],
+                    "resource_type": 1,
+                    "required": [1],
+                }],
+            }
+        },
+        num_agents=2,
+    )
+    compact_carry = _update_pipeline_state_from_info(
+        cfg,
+        compact_carry,
+        {"events": {0: [{"event": "stage_completed", "stage": 1}]}},
+        num_agents=2,
+    )
+    assert _pipeline_carry_target_plan(compact_carry, agent_id=1, held_type=1) is None
+    large_carry = _initial_pipeline_state(cfg)
+    large_carry["observed_map_size"] = 16
+    large_carry = _update_pipeline_state_from_info(
+        cfg,
+        large_carry,
+        {
+            "events": {
+                1: [{
+                    "event": "picked_resource",
+                    "stage": 1,
+                    "station": [3, 3],
+                    "resource_type": 1,
+                    "required": [1],
+                }],
+            }
+        },
+        num_agents=2,
+    )
+    large_carry = _update_pipeline_state_from_info(
+        cfg,
+        large_carry,
+        {"events": {0: [{"event": "stage_completed", "stage": 1}]}},
+        num_agents=2,
+    )
+    assert _pipeline_carry_target_plan(large_carry, agent_id=1, held_type=1) is not None
+    carry_obs = {
+        "local_grid": np.zeros((5, 5), dtype=np.int16),
+        "inventory": np.array([1], dtype=np.int16),
+        "self_pos": np.array([3, 4], dtype=np.int16),
+        "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "goal_hint": np.full((16,), -1, dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    assist_action = _pipeline_local_assist_action(
+        cfg,
+        carry_obs,
+        agent_id=1,
+        current_action_id=SyncOrSinkEnv.ACTION_DROP,
+        pipeline_state=duplicate_carry,
+    )
+    assert assist_action in {
+        SyncOrSinkEnv.ACTION_UP,
+        SyncOrSinkEnv.ACTION_DOWN,
+        SyncOrSinkEnv.ACTION_LEFT,
+        SyncOrSinkEnv.ACTION_RIGHT,
+        SyncOrSinkEnv.ACTION_INTERACT,
+        SyncOrSinkEnv.ACTION_STAY,
+    }
+    assert assist_action != SyncOrSinkEnv.ACTION_DROP
+
+    waiting = _update_pipeline_state_from_info(
+        cfg,
+        _initial_pipeline_state(cfg),
+        {
+            "events": {
+                0: [{"event": "pipeline_sync_wait", "stage": 3, "station": [5, 6]}],
+            }
+        },
+        num_agents=2,
+    )
+    assert _pipeline_sync_wait_station(waiting, 3) == (5, 6)
+    assert _pipeline_sync_wait_plan(waiting) == {
+        "source": "state_sync_wait",
+        "stage": 3,
+        "station": (5, 6),
+        "required": [],
+        "sync": True,
+    }
+    cleared = _update_pipeline_state_from_info(
+        cfg,
+        waiting,
+        {"events": {0: [{"event": "sync_complete", "stage": 3, "station": [5, 6]}]}},
+        num_agents=2,
+    )
+    assert _pipeline_sync_wait_station(cleared, 3) is None
+    assert _pipeline_sync_wait_plan(cleared) is None
+
+
+def test_recurrent_pipeline_retargets_held_resource_after_stage_completed():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY, TILE_STATION
+    from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _pipeline_local_assist_action
+
+    local_grid = np.full((5, 5), TILE_EMPTY, dtype=np.int16)
+    local_grid[2, 2] = TILE_STATION
+    obs_agent = {
+        "local_grid": local_grid,
+        "inventory": np.array([1], dtype=np.int16),
+        "self_pos": np.array([2, 3], dtype=np.int16),
+        "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "goal_hint": np.array(
+            [
+                0, 2, 3, 1, 1, -1, 0, -1, 1,
+                1, 2, 4, 1, 1, -1, 1, 0, 0,
+                -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            ],
+            dtype=np.int16,
+        ),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    pipeline_state = {
+        "completed_stages": {0},
+        "delivered_counts": {0: 1},
+        "delivered_resources": {0: [1]},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+        "carry_targets": {
+            1: {
+                "source": "state_carry_target",
+                "stage": 0,
+                "station": (2, 3),
+                "resource_type": 1,
+                "required": [1],
+            }
+        },
+    }
+
+    action_id = _pipeline_local_assist_action(
+        RecurrentConfig(scenario="pipeline_assembly", map_size=8, agents=3),
+        obs_agent,
+        agent_id=1,
+        current_action_id=SyncOrSinkEnv.ACTION_INTERACT,
+        pipeline_state=pipeline_state,
+    )
+
+    assert action_id == SyncOrSinkEnv.ACTION_DOWN
+
+
+def test_pipeline_navigation_assist_avoids_already_satisfied_resource():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_STATION
+    from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _pipeline_local_assist_action
+
+    local_grid = np.zeros((5, 5), dtype=np.int16)
+    local_grid[2, 2] = TILE_STATION
+    action_mask = np.ones((8,), dtype=np.float32)
+    action_mask[SyncOrSinkEnv.ACTION_DROP] = 0.0
+    obs_agent = {
+        "local_grid": local_grid,
+        "inventory": np.array([2], dtype=np.int16),
+        "self_pos": np.array([4, 3], dtype=np.int16),
+        "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "goal_hint": np.array(
+            [0, 4, 3, 2, 2, 3, -1, -1, 0, -1, -1, -1, -1, -1, -1, -1],
+            dtype=np.int16,
+        ),
+        "action_mask": action_mask,
+    }
+    cfg = RecurrentConfig(scenario="pipeline_assembly", map_size=8, agents=2)
+
+    action_id = _pipeline_local_assist_action(
+        cfg,
+        obs_agent,
+        current_action_id=SyncOrSinkEnv.ACTION_STAY,
+        pipeline_state={
+            "completed_stages": set(),
+            "delivered_counts": {0: 1},
+            "delivered_resources": {0: [2]},
+            "sync_wait_stages": set(),
+        },
+    )
+
+    assert action_id != SyncOrSinkEnv.ACTION_INTERACT
+    assert action_id in {
+        SyncOrSinkEnv.ACTION_UP,
+        SyncOrSinkEnv.ACTION_DOWN,
+        SyncOrSinkEnv.ACTION_LEFT,
+        SyncOrSinkEnv.ACTION_RIGHT,
+    }
 
 
 def test_recurrent_pipeline_features_fallback_to_hint_marks_wrong_station():
@@ -4398,6 +5527,10 @@ def test_recurrent_pipeline_features_fallback_to_hint_marks_wrong_station():
     assert features[25] == 0.0  # not the active station
     assert features[26] == 1.0  # wrong-station context
     assert features[29] == 1.0  # unsafe station interact if the policy presses interact
+    assert features[31] == 0.0  # held item has no target in this decoded plan
+    assert features[35] == 0.0  # it is wrong inventory, not needed-at-wrong-station
+    assert features[36] == 1.0  # carried resource does not belong to the decoded plan
+    assert features[37] == 0.0
 
 
 def test_recurrent_pipeline_navigation_assist_corrects_delivery_and_wrong_station():
@@ -4464,6 +5597,63 @@ def test_recurrent_pipeline_navigation_assist_corrects_delivery_and_wrong_statio
     assert int(decoded_acts[0].item()) == SyncOrSinkEnv.ACTION_INTERACT
     assert decoded_actions[0]["action"] == SyncOrSinkEnv.ACTION_INTERACT
 
+    wrong_resource_obs = {
+        0: {
+            **deliver_obs[0],
+            "inventory": np.array([3], dtype=np.int16),
+        }
+    }
+    rollout_guard_cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        rl_rollout_eval_decoding=True,
+        rl_rollout_pipeline_station_interact_guard=True,
+        eval_pipeline_station_interact_guard=False,
+    )
+    guarded_acts, guarded_actions = _apply_recurrent_rollout_eval_decoding(
+        rollout_guard_cfg,
+        object(),
+        wrong_resource_obs,
+        torch.zeros((1, 8), dtype=torch.float32),
+        torch.tensor([SyncOrSinkEnv.ACTION_INTERACT], dtype=torch.long),
+        {0: {"action": SyncOrSinkEnv.ACTION_INTERACT, "message_tokens": []}},
+        (torch.zeros((1, 4), dtype=torch.float32), torch.zeros((1, 4), dtype=torch.float32)),
+        None,
+        None,
+    )
+
+    assert rollout_guard_cfg.eval_pipeline_station_interact_guard is False
+    assert int(guarded_acts[0].item()) == SyncOrSinkEnv.ACTION_DROP
+    assert guarded_actions[0]["action"] == SyncOrSinkEnv.ACTION_DROP
+
+    class LowPipelineInteractGate:
+        def pipeline_interact_gate(self, hidden_state):
+            return hidden_state.new_full((hidden_state.shape[0], 1), -10.0)
+
+    gated_rollout_cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        rl_rollout_eval_decoding=True,
+        rl_rollout_pipeline_navigation_assist=True,
+        eval_pipeline_interact_gate_threshold=0.5,
+    )
+    gated_acts, gated_actions = _apply_recurrent_rollout_eval_decoding(
+        gated_rollout_cfg,
+        LowPipelineInteractGate(),
+        deliver_obs,
+        torch.zeros((1, 8), dtype=torch.float32),
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        {0: {"action": SyncOrSinkEnv.ACTION_STAY, "message_tokens": []}},
+        (torch.zeros((1, 4), dtype=torch.float32), torch.zeros((1, 4), dtype=torch.float32)),
+        None,
+        None,
+    )
+
+    assert int(gated_acts[0].item()) == SyncOrSinkEnv.ACTION_INTERACT
+    assert gated_actions[0]["action"] == SyncOrSinkEnv.ACTION_INTERACT
+
     wrong_station_obs = {
         0: {
             **deliver_obs[0],
@@ -4481,6 +5671,1149 @@ def test_recurrent_pipeline_navigation_assist_corrects_delivery_and_wrong_statio
     )
 
     assert int(corrected[0].item()) == SyncOrSinkEnv.ACTION_LEFT
+
+
+def test_recurrent_pipeline_navigation_assist_coordinates_sync_rendezvous():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY, TILE_STATION
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_pipeline_navigation_assist,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=2,
+        eval_pipeline_navigation_assist=True,
+    )
+    station = (4, 3)
+    hint = np.array(
+        [0, station[0], station[1], 1, 2, -1, 0, -1, 1, -1, -1, -1, -1, -1, -1, -1],
+        dtype=np.int16,
+    )
+    empty_messages = np.full((1, 8), -1, dtype=np.int16)
+    action_mask = np.ones((8,), dtype=np.float32)
+    station_grid = np.full((3, 3), TILE_EMPTY, dtype=np.int16)
+    station_grid[1, 1] = TILE_STATION
+    open_grid = np.full((3, 3), TILE_EMPTY, dtype=np.int16)
+    pipeline_state = {
+        "completed_stages": set(),
+        "delivered_counts": {0: 1},
+        "delivered_resources": {0: [2]},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+    }
+    one_ready_obs = {
+        0: {
+            "self_pos": np.array(station, dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "local_grid": station_grid,
+            "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+            "goal_hint": hint,
+            "messages_tokens": empty_messages,
+            "action_mask": action_mask,
+        },
+        1: {
+            "self_pos": np.array([3, 3], dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "local_grid": open_grid,
+            "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+            "goal_hint": hint,
+            "messages_tokens": empty_messages,
+            "action_mask": action_mask,
+        },
+    }
+
+    waiting = _apply_pipeline_navigation_assist(
+        cfg,
+        one_ready_obs,
+        torch.tensor(
+            [SyncOrSinkEnv.ACTION_INTERACT, SyncOrSinkEnv.ACTION_STAY],
+            dtype=torch.long,
+        ),
+        pipeline_state=pipeline_state,
+    )
+
+    assert waiting.tolist() == [SyncOrSinkEnv.ACTION_INTERACT, SyncOrSinkEnv.ACTION_RIGHT]
+
+    both_ready_obs = {
+        **one_ready_obs,
+        1: {
+            **one_ready_obs[1],
+            "self_pos": np.array(station, dtype=np.int16),
+            "local_grid": station_grid,
+        },
+    }
+    synced = _apply_pipeline_navigation_assist(
+        cfg,
+        both_ready_obs,
+        torch.tensor(
+            [SyncOrSinkEnv.ACTION_STAY, SyncOrSinkEnv.ACTION_STAY],
+            dtype=torch.long,
+        ),
+        pipeline_state=pipeline_state,
+    )
+
+    assert synced.tolist() == [SyncOrSinkEnv.ACTION_INTERACT, SyncOrSinkEnv.ACTION_INTERACT]
+
+    completed_state = {
+        **pipeline_state,
+        "completed_stages": {0},
+    }
+    completed = _apply_pipeline_navigation_assist(
+        cfg,
+        both_ready_obs,
+        torch.tensor(
+            [SyncOrSinkEnv.ACTION_STAY, SyncOrSinkEnv.ACTION_STAY],
+            dtype=torch.long,
+        ),
+        pipeline_state=completed_state,
+    )
+
+    assert completed.tolist() == [SyncOrSinkEnv.ACTION_STAY, SyncOrSinkEnv.ACTION_STAY]
+
+
+def test_recurrent_pipeline_sync_rendezvous_uses_navigation_memory_to_break_loop():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY, TILE_STATION
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_pipeline_sync_rendezvous_assist,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=32,
+        agents=2,
+        eval_pipeline_navigation_assist=True,
+    )
+    station = (29, 8)
+    station_grid = np.full((3, 3), TILE_EMPTY, dtype=np.int16)
+    station_grid[1, 1] = TILE_STATION
+    open_grid = np.full((3, 3), TILE_EMPTY, dtype=np.int16)
+    obs = {
+        0: {
+            "self_pos": np.array(station, dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "local_grid": station_grid,
+            "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+            "goal_hint": np.full((16,), -1, dtype=np.int16),
+            "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+            "action_mask": np.ones((8,), dtype=np.float32),
+        },
+        1: {
+            "self_pos": np.array([20, 8], dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "local_grid": open_grid,
+            "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+            "goal_hint": np.full((16,), -1, dtype=np.int16),
+            "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+            "action_mask": np.array([0, 1, 1, 0, 1, 1, 0, 0], dtype=np.float32),
+        },
+    }
+    pipeline_state = {
+        "sync_wait_stages": {1},
+        "sync_wait_stations": {1: station},
+        "navigation_memory": {
+            1: {
+                "target": [station[0], station[1]],
+                "pos": [20, 9],
+                "action": SyncOrSinkEnv.ACTION_UP,
+            }
+        },
+    }
+
+    corrected = _apply_pipeline_sync_rendezvous_assist(
+        cfg,
+        obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY, SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        pipeline_state=pipeline_state,
+    )
+
+    assert corrected.tolist() == [SyncOrSinkEnv.ACTION_INTERACT, SyncOrSinkEnv.ACTION_LEFT]
+    assert pipeline_state["navigation_memory"][1]["action"] == SyncOrSinkEnv.ACTION_LEFT
+
+
+def test_recurrent_pipeline_sync_message_routes_rendezvous_without_hint():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY, TILE_STATION
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_pipeline_navigation_assist,
+        _pipeline_plan_from_message_tokens,
+        _pipeline_plan_message_tokens,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=2,
+        comm=True,
+        comm_token_limit=8,
+        comm_vocab_size=32,
+        eval_pipeline_navigation_assist=True,
+        eval_pipeline_navigation_assist_trust_messages=True,
+        eval_pipeline_plan_broadcast_assist=True,
+    )
+    station = (4, 3)
+    plan = {
+        "stage": 0,
+        "station": station,
+        "required": [2],
+        "deps": [],
+        "sync": True,
+    }
+    tokens = _pipeline_plan_message_tokens(cfg, plan, observed_map_size=8)
+    assert tokens == [12, 0, station[0], station[1], 5, 2]
+    parsed = _pipeline_plan_from_message_tokens(np.array([tokens], dtype=np.int16), 8)
+    assert parsed["sync"] is True
+    assert parsed["required"] == [2]
+
+    station_grid = np.full((3, 3), TILE_EMPTY, dtype=np.int16)
+    station_grid[1, 1] = TILE_STATION
+    open_grid = np.full((3, 3), TILE_EMPTY, dtype=np.int16)
+    action_mask = np.ones((8,), dtype=np.float32)
+    messages = np.full((1, 8), -1, dtype=np.int16)
+    messages[0, : len(tokens)] = tokens
+    no_hint = np.full((16,), -1, dtype=np.int16)
+    pipeline_state = {
+        "completed_stages": set(),
+        "delivered_counts": {0: 1},
+        "delivered_resources": {0: [2]},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+    }
+    obs = {
+        0: {
+            "self_pos": np.array(station, dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "local_grid": station_grid,
+            "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+            "goal_hint": no_hint,
+            "messages_tokens": messages,
+            "action_mask": action_mask,
+        },
+        1: {
+            "self_pos": np.array([3, 3], dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "local_grid": open_grid,
+            "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+            "goal_hint": no_hint,
+            "messages_tokens": messages,
+            "action_mask": action_mask,
+        },
+    }
+
+    corrected = _apply_pipeline_navigation_assist(
+        cfg,
+        obs,
+        torch.tensor(
+            [SyncOrSinkEnv.ACTION_STAY, SyncOrSinkEnv.ACTION_STAY],
+            dtype=torch.long,
+        ),
+        pipeline_state=pipeline_state,
+    )
+
+    assert corrected.tolist() == [SyncOrSinkEnv.ACTION_INTERACT, SyncOrSinkEnv.ACTION_RIGHT]
+
+
+def test_recurrent_pipeline_pickup_gate_decoding_suppresses_unneeded_resource():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY, TILE_RESOURCE
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_pipeline_pickup_gate_decoding,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        eval_pipeline_pickup_gate_suppress=True,
+    )
+    hint = np.array(
+        [0, 4, 3, 1, 2, -1, 0, -1, 0, -1, -1, -1, -1, -1, -1, -1],
+        dtype=np.int16,
+    )
+    local_grid = np.full((3, 3), TILE_EMPTY, dtype=np.int16)
+    local_grid[1, 1] = TILE_RESOURCE
+    local_resource = np.zeros((3, 3), dtype=np.int16)
+    action_mask = np.ones((8,), dtype=np.float32)
+    base_obs = {
+        "self_pos": np.array([1, 1], dtype=np.int16),
+        "inventory": np.array([0], dtype=np.int16),
+        "local_grid": local_grid,
+        "local_resource_types": local_resource,
+        "goal_hint": hint,
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "action_mask": action_mask,
+    }
+
+    unneeded_obs = {0: {**base_obs, "local_resource_types": local_resource.copy()}}
+    unneeded_obs[0]["local_resource_types"][1, 1] = 3
+    suppressed = _apply_pipeline_pickup_gate_decoding(
+        cfg,
+        unneeded_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_PICKUP], dtype=torch.long),
+    )
+    assert suppressed.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    needed_obs = {0: {**base_obs, "local_resource_types": local_resource.copy()}}
+    needed_obs[0]["local_resource_types"][1, 1] = 2
+    allowed = _apply_pipeline_pickup_gate_decoding(
+        cfg,
+        needed_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_PICKUP], dtype=torch.long),
+    )
+    assert allowed.tolist() == [SyncOrSinkEnv.ACTION_PICKUP]
+
+    structured_cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        eval_pipeline_navigation_assist=True,
+        eval_pipeline_navigation_assist_trust_messages=True,
+        eval_pipeline_plan_broadcast_assist=True,
+        eval_pipeline_pickup_gate_suppress=True,
+    )
+    later_message_obs = {0: {**base_obs, "local_resource_types": local_resource.copy()}}
+    later_message_obs[0]["local_resource_types"][1, 1] = 2
+    later_message_obs[0]["messages_tokens"] = np.array(
+        [[12, 1, 5, 5, 1, 3, -1, -1]],
+        dtype=np.int16,
+    )
+    lower_hint_allowed = _apply_pipeline_pickup_gate_decoding(
+        structured_cfg,
+        later_message_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_PICKUP], dtype=torch.long),
+    )
+    assert lower_hint_allowed.tolist() == [SyncOrSinkEnv.ACTION_PICKUP]
+
+    no_plan_obs = {
+        0: {
+            **unneeded_obs[0],
+            "goal_hint": np.full((16,), -1, dtype=np.int16),
+        }
+    }
+    no_plan = _apply_pipeline_pickup_gate_decoding(
+        cfg,
+        no_plan_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_PICKUP], dtype=torch.long),
+    )
+    assert no_plan.tolist() == [SyncOrSinkEnv.ACTION_PICKUP]
+
+
+def test_recurrent_pipeline_interact_gate_decoding_suppresses_low_confidence_station_interact():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_STATION
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_pipeline_interact_gate_decoding,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=2,
+        eval_pipeline_interact_gate_threshold=0.5,
+    )
+    station_grid = np.zeros((5, 5), dtype=np.int16)
+    station_grid[2, 2] = TILE_STATION
+    empty_grid = np.zeros((5, 5), dtype=np.int16)
+    obs = {
+        0: {
+            "local_grid": station_grid,
+            "action_mask": np.ones((8,), dtype=np.float32),
+        },
+        1: {
+            "local_grid": empty_grid,
+            "action_mask": np.ones((8,), dtype=np.float32),
+        },
+    }
+    acts = torch.tensor(
+        [SyncOrSinkEnv.ACTION_INTERACT, SyncOrSinkEnv.ACTION_INTERACT],
+        dtype=torch.long,
+    )
+
+    suppressed = _apply_pipeline_interact_gate_decoding(
+        cfg,
+        obs,
+        acts,
+        torch.tensor([[-3.0], [-3.0]], dtype=torch.float32),
+    )
+    assert suppressed.tolist() == [SyncOrSinkEnv.ACTION_STAY, SyncOrSinkEnv.ACTION_INTERACT]
+
+    allowed = _apply_pipeline_interact_gate_decoding(
+        cfg,
+        obs,
+        acts,
+        torch.tensor([[3.0], [-3.0]], dtype=torch.float32),
+    )
+    assert allowed.tolist() == [SyncOrSinkEnv.ACTION_INTERACT, SyncOrSinkEnv.ACTION_INTERACT]
+
+    promote_cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=2,
+        eval_pipeline_interact_gate_threshold=0.5,
+        eval_pipeline_interact_gate_promote=True,
+    )
+    promoted = _apply_pipeline_interact_gate_decoding(
+        promote_cfg,
+        obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY, SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        torch.tensor([[3.0], [3.0]], dtype=torch.float32),
+    )
+    assert promoted.tolist() == [SyncOrSinkEnv.ACTION_INTERACT, SyncOrSinkEnv.ACTION_STAY]
+
+
+def test_recurrent_pipeline_plan_head_decoding_uses_visible_plan_threshold():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_pipeline_plan_head_decoding,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        eval_pipeline_plan_head_threshold=0.5,
+    )
+    obs = {
+        0: {
+            "goal_hint": np.array(
+                [0, 4, 3, 1, 2, -1, 0, -1, 0, -1, -1, -1, -1, -1, -1, -1],
+                dtype=np.int16,
+            ),
+            "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+            "action_mask": np.ones((8,), dtype=np.float32),
+        }
+    }
+    logits = torch.full((1, 8), -4.0, dtype=torch.float32)
+    logits[0, SyncOrSinkEnv.ACTION_RIGHT] = 4.0
+
+    corrected = _apply_pipeline_plan_head_decoding(
+        cfg,
+        obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        logits,
+    )
+
+    assert corrected.tolist() == [SyncOrSinkEnv.ACTION_RIGHT]
+
+    no_plan_obs = {
+        0: {
+            **obs[0],
+            "goal_hint": np.full((16,), -1, dtype=np.int16),
+        }
+    }
+    unchanged = _apply_pipeline_plan_head_decoding(
+        cfg,
+        no_plan_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        logits,
+    )
+    assert unchanged.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    masked_obs = {
+        0: {
+            **obs[0],
+            "action_mask": np.ones((8,), dtype=np.float32),
+        }
+    }
+    masked_obs[0]["action_mask"][SyncOrSinkEnv.ACTION_RIGHT] = 0.0
+    masked = _apply_pipeline_plan_head_decoding(
+        cfg,
+        masked_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        logits,
+    )
+    assert masked.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+
+def test_recurrent_pipeline_navigation_head_decoding_requires_visible_plan_and_movement():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_pipeline_navigation_head_decoding,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        eval_pipeline_navigation_head_threshold=0.5,
+    )
+    obs = {
+        0: {
+            "goal_hint": np.array(
+                [0, 4, 3, 1, 2, -1, 0, -1, 0, -1, -1, -1, -1, -1, -1, -1],
+                dtype=np.int16,
+            ),
+            "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+            "action_mask": np.ones((8,), dtype=np.float32),
+        }
+    }
+    logits = torch.full((1, 8), -4.0, dtype=torch.float32)
+    logits[0, SyncOrSinkEnv.ACTION_RIGHT] = 4.0
+
+    corrected = _apply_pipeline_navigation_head_decoding(
+        cfg,
+        obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        logits,
+    )
+
+    assert corrected.tolist() == [SyncOrSinkEnv.ACTION_RIGHT]
+
+    no_plan_obs = {
+        0: {
+            **obs[0],
+            "goal_hint": np.full((16,), -1, dtype=np.int16),
+        }
+    }
+    unchanged = _apply_pipeline_navigation_head_decoding(
+        cfg,
+        no_plan_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        logits,
+    )
+    assert unchanged.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    masked_obs = {
+        0: {
+            **obs[0],
+            "action_mask": np.ones((8,), dtype=np.float32),
+        }
+    }
+    masked_obs[0]["action_mask"][SyncOrSinkEnv.ACTION_RIGHT] = 0.0
+    masked = _apply_pipeline_navigation_head_decoding(
+        cfg,
+        masked_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        logits,
+    )
+    assert masked.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    non_movement_logits = torch.full((1, 8), -4.0, dtype=torch.float32)
+    non_movement_logits[0, SyncOrSinkEnv.ACTION_INTERACT] = 4.0
+    non_movement = _apply_pipeline_navigation_head_decoding(
+        cfg,
+        obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        non_movement_logits,
+    )
+    assert non_movement.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+
+def test_recurrent_pipeline_event_head_decoding_guards_pickup_and_interact():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY, TILE_RESOURCE, TILE_STATION
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_pipeline_event_head_decoding,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        eval_pipeline_event_head_threshold=0.5,
+    )
+    hint = np.array(
+        [0, 4, 3, 1, 2, -1, 0, -1, 0],
+        dtype=np.int16,
+    )
+    empty_messages = np.full((1, 8), -1, dtype=np.int16)
+    action_mask = np.ones((8,), dtype=np.float32)
+    resource_grid = np.zeros((3, 3), dtype=np.int16)
+    resource_grid[1, 1] = 2
+    pickup_grid = np.full((3, 3), TILE_EMPTY, dtype=np.int16)
+    pickup_grid[1, 1] = TILE_RESOURCE
+    pickup_obs = {
+        0: {
+            "self_pos": np.array([1, 1], dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "local_grid": pickup_grid,
+            "local_resource_types": resource_grid,
+            "goal_hint": hint,
+            "messages_tokens": empty_messages,
+            "action_mask": action_mask,
+        }
+    }
+    pickup_logits = torch.full((1, 8), -4.0, dtype=torch.float32)
+    pickup_logits[0, SyncOrSinkEnv.ACTION_PICKUP] = 4.0
+    corrected = _apply_pipeline_event_head_decoding(
+        cfg,
+        pickup_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        pickup_logits,
+    )
+    assert corrected.tolist() == [SyncOrSinkEnv.ACTION_PICKUP]
+
+    no_plan_obs = {0: {**pickup_obs[0], "goal_hint": np.full((9,), -1, dtype=np.int16)}}
+    unchanged = _apply_pipeline_event_head_decoding(
+        cfg,
+        no_plan_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        pickup_logits,
+    )
+    assert unchanged.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    wrong_resource = resource_grid.copy()
+    wrong_resource[1, 1] = 3
+    wrong_resource_obs = {0: {**pickup_obs[0], "local_resource_types": wrong_resource}}
+    unchanged = _apply_pipeline_event_head_decoding(
+        cfg,
+        wrong_resource_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        pickup_logits,
+    )
+    assert unchanged.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    masked_pickup_obs = {0: {**pickup_obs[0], "action_mask": action_mask.copy()}}
+    masked_pickup_obs[0]["action_mask"][SyncOrSinkEnv.ACTION_PICKUP] = 0.0
+    unchanged = _apply_pipeline_event_head_decoding(
+        cfg,
+        masked_pickup_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        pickup_logits,
+    )
+    assert unchanged.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    station_grid = np.full((3, 3), TILE_EMPTY, dtype=np.int16)
+    station_grid[1, 1] = TILE_STATION
+    station_obs = {
+        0: {
+            **pickup_obs[0],
+            "self_pos": np.array([4, 3], dtype=np.int16),
+            "inventory": np.array([2], dtype=np.int16),
+            "local_grid": station_grid,
+            "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+            "action_mask": action_mask.copy(),
+        }
+    }
+    interact_logits = torch.full((1, 8), -4.0, dtype=torch.float32)
+    interact_logits[0, SyncOrSinkEnv.ACTION_INTERACT] = 4.0
+    corrected = _apply_pipeline_event_head_decoding(
+        cfg,
+        station_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        interact_logits,
+    )
+    assert corrected.tolist() == [SyncOrSinkEnv.ACTION_INTERACT]
+
+    pickup_biased_event_logits = torch.full((1, 8), -6.0, dtype=torch.float32)
+    pickup_biased_event_logits[0, SyncOrSinkEnv.ACTION_PICKUP] = 5.0
+    pickup_biased_event_logits[0, SyncOrSinkEnv.ACTION_INTERACT] = 4.0
+    corrected = _apply_pipeline_event_head_decoding(
+        cfg,
+        station_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        pickup_biased_event_logits,
+    )
+    assert corrected.tolist() == [SyncOrSinkEnv.ACTION_INTERACT]
+
+    wrong_station_obs = {
+        0: {
+            **station_obs[0],
+            "self_pos": np.array([5, 3], dtype=np.int16),
+        }
+    }
+    unchanged = _apply_pipeline_event_head_decoding(
+        cfg,
+        wrong_station_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        interact_logits,
+    )
+    assert unchanged.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    carry_target_state = {
+        "completed_stages": set(),
+        "delivered_counts": {},
+        "delivered_resources": {},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+        "carry_targets": {
+            0: {"stage": 1, "station": (5, 3), "resource_type": 2},
+        },
+    }
+    carry_target_suppressed = _apply_pipeline_event_head_decoding(
+        cfg,
+        station_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        interact_logits,
+        pipeline_state=carry_target_state,
+    )
+    assert carry_target_suppressed.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+    carry_target_obs = {
+        0: {
+            **station_obs[0],
+            "self_pos": np.array([5, 3], dtype=np.int16),
+        }
+    }
+    carry_target_promoted = _apply_pipeline_event_head_decoding(
+        cfg,
+        carry_target_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        interact_logits,
+        pipeline_state=carry_target_state,
+    )
+    assert carry_target_promoted.tolist() == [SyncOrSinkEnv.ACTION_INTERACT]
+
+    wrong_held_obs = {0: {**station_obs[0], "inventory": np.array([3], dtype=np.int16)}}
+    unchanged = _apply_pipeline_event_head_decoding(
+        cfg,
+        wrong_held_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        interact_logits,
+    )
+    assert unchanged.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    sync_hint = np.array(
+        [0, 4, 3, 1, 2, -1, 0, -1, 1],
+        dtype=np.int16,
+    )
+    sync_obs = {
+        0: {
+            **station_obs[0],
+            "inventory": np.array([0], dtype=np.int16),
+            "goal_hint": sync_hint,
+        }
+    }
+    sync_state = {
+        "completed_stages": set(),
+        "sync_wait_stages": {0},
+        "sync_wait_stations": {0: (4, 3)},
+        "delivered_resources": {0: [2]},
+    }
+    premature_sync = _apply_pipeline_event_head_decoding(
+        cfg,
+        sync_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        interact_logits,
+        pipeline_state={
+            "completed_stages": set(),
+            "sync_wait_stages": set(),
+            "sync_wait_stations": {},
+            "delivered_resources": {},
+        },
+    )
+    corrected = _apply_pipeline_event_head_decoding(
+        cfg,
+        sync_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        interact_logits,
+        pipeline_state=sync_state,
+    )
+    assert premature_sync.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+    assert corrected.tolist() == [SyncOrSinkEnv.ACTION_INTERACT]
+
+
+def test_recurrent_pipeline_option_decoding_uses_visible_plan_threshold():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY, TILE_STATION
+    from syncorsink.train.recurrent_bc_rl import (
+        PIPELINE_OPTION_DELIVER,
+        PIPELINE_OPTION_NAV_STATION,
+        PIPELINE_OPTION_PICKUP,
+        PIPELINE_OPTION_SYNC,
+        RecurrentConfig,
+        _apply_pipeline_option_decoding,
+        _apply_pipeline_station_interact_guard,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        eval_pipeline_option_threshold=0.5,
+    )
+    local_grid = np.full((3, 3), TILE_EMPTY, dtype=np.int16)
+    local_resource = np.zeros((3, 3), dtype=np.int16)
+    local_resource[1, 1] = 2
+    obs = {
+        0: {
+            "self_pos": np.array([1, 1], dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "local_grid": local_grid,
+            "local_resource_types": local_resource,
+            "goal_hint": np.array(
+                [0, 4, 3, 1, 2, -1, 0, -1, 0, -1, -1, -1, -1, -1, -1, -1],
+                dtype=np.int16,
+            ),
+            "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+            "action_mask": np.ones((8,), dtype=np.float32),
+        }
+    }
+    option_logits = torch.full((1, 8), -4.0, dtype=torch.float32)
+    option_logits[0, PIPELINE_OPTION_PICKUP] = 4.0
+
+    corrected = _apply_pipeline_option_decoding(
+        cfg,
+        obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        option_logits,
+    )
+    assert corrected.tolist() == [SyncOrSinkEnv.ACTION_PICKUP]
+
+    no_plan_obs = {
+        0: {
+            **obs[0],
+            "goal_hint": np.full((16,), -1, dtype=np.int16),
+        }
+    }
+    unchanged = _apply_pipeline_option_decoding(
+        cfg,
+        no_plan_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        option_logits,
+    )
+    assert unchanged.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    masked_obs = {0: {**obs[0], "action_mask": np.ones((8,), dtype=np.float32)}}
+    masked_obs[0]["action_mask"][SyncOrSinkEnv.ACTION_PICKUP] = 0.0
+    masked = _apply_pipeline_option_decoding(
+        cfg,
+        masked_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        option_logits,
+    )
+    assert masked.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    nav_station_logits = torch.full((1, 8), -4.0, dtype=torch.float32)
+    nav_station_logits[0, PIPELINE_OPTION_NAV_STATION] = 4.0
+    already_at_station_obs = {
+        0: {
+            **obs[0],
+            "self_pos": np.array([4, 3], dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+        }
+    }
+    nav_station = _apply_pipeline_option_decoding(
+        cfg,
+        already_at_station_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        nav_station_logits,
+    )
+    assert nav_station.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    station_grid = np.full((3, 3), TILE_EMPTY, dtype=np.int16)
+    station_grid[1, 1] = TILE_STATION
+    deliver_logits = torch.full((1, 8), -4.0, dtype=torch.float32)
+    deliver_logits[0, PIPELINE_OPTION_DELIVER] = 4.0
+    completed_stage_obs = {
+        0: {
+            **obs[0],
+            "self_pos": np.array([4, 3], dtype=np.int16),
+            "inventory": np.array([2], dtype=np.int16),
+            "local_grid": station_grid,
+        }
+    }
+    completed_stage = _apply_pipeline_option_decoding(
+        cfg,
+        completed_stage_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        deliver_logits,
+        pipeline_state={"completed_stages": {0}},
+    )
+    assert completed_stage.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    guard_cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        eval_pipeline_station_interact_guard=True,
+    )
+    guarded_wrong_resource = _apply_pipeline_station_interact_guard(
+        guard_cfg,
+        {
+            0: {
+                **completed_stage_obs[0],
+                "inventory": np.array([3], dtype=np.int16),
+            }
+        },
+        torch.tensor([SyncOrSinkEnv.ACTION_INTERACT], dtype=torch.long),
+        pipeline_state={"completed_stages": set()},
+    )
+    guarded_valid_delivery = _apply_pipeline_station_interact_guard(
+        guard_cfg,
+        completed_stage_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_INTERACT], dtype=torch.long),
+        pipeline_state={"completed_stages": set()},
+    )
+    assert guarded_wrong_resource.tolist() == [SyncOrSinkEnv.ACTION_DROP]
+    assert guarded_valid_delivery.tolist() == [SyncOrSinkEnv.ACTION_INTERACT]
+
+    carry_target_state = {
+        "completed_stages": set(),
+        "delivered_counts": {},
+        "delivered_resources": {},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+        "carry_targets": {
+            0: {"stage": 1, "station": (5, 3), "resource_type": 2},
+        },
+    }
+    guarded_carry_target_elsewhere = _apply_pipeline_station_interact_guard(
+        guard_cfg,
+        completed_stage_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_INTERACT], dtype=torch.long),
+        pipeline_state=carry_target_state,
+    )
+    carry_target_station_obs = {
+        0: {
+            **completed_stage_obs[0],
+            "self_pos": np.array([5, 3], dtype=np.int16),
+        }
+    }
+    guarded_carry_target_station = _apply_pipeline_station_interact_guard(
+        guard_cfg,
+        carry_target_station_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_INTERACT], dtype=torch.long),
+        pipeline_state=carry_target_state,
+    )
+    assert guarded_carry_target_elsewhere.tolist() != [SyncOrSinkEnv.ACTION_INTERACT]
+    assert guarded_carry_target_station.tolist() == [SyncOrSinkEnv.ACTION_INTERACT]
+
+    blocked_stage_obs = {
+        0: {
+            **completed_stage_obs[0],
+            "goal_hint": np.array(
+                [3, 4, 3, 1, 2, -1, 1, 0, 0, -1, -1, -1, -1, -1, -1, -1],
+                dtype=np.int16,
+            ),
+        }
+    }
+    dependency_blocked_stage = _apply_pipeline_option_decoding(
+        cfg,
+        blocked_stage_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        deliver_logits,
+        pipeline_state={"completed_stages": set()},
+    )
+    dependency_ready_stage = _apply_pipeline_option_decoding(
+        cfg,
+        blocked_stage_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        deliver_logits,
+        pipeline_state={"completed_stages": {0}},
+    )
+    guarded_blocked_delivery = _apply_pipeline_station_interact_guard(
+        guard_cfg,
+        blocked_stage_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_INTERACT], dtype=torch.long),
+        pipeline_state={"completed_stages": set()},
+    )
+    assert dependency_blocked_stage.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+    assert dependency_ready_stage.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+    assert guarded_blocked_delivery.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+
+    interact_cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        eval_pipeline_option_threshold=0.5,
+        eval_pipeline_option_allow_interact=True,
+    )
+    dependency_ready_stage_interact = _apply_pipeline_option_decoding(
+        interact_cfg,
+        blocked_stage_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        deliver_logits,
+        pipeline_state={"completed_stages": {0}},
+    )
+    assert dependency_ready_stage_interact.tolist() == [SyncOrSinkEnv.ACTION_INTERACT]
+
+    sync_logits = torch.full((1, 8), -4.0, dtype=torch.float32)
+    sync_logits[0, PIPELINE_OPTION_SYNC] = 4.0
+    sync_stage_obs = {
+        0: {
+            **completed_stage_obs[0],
+            "inventory": np.array([0], dtype=np.int16),
+            "goal_hint": np.array(
+                [0, 4, 3, 1, 2, -1, 0, -1, 1, -1, -1, -1, -1, -1, -1, -1],
+                dtype=np.int16,
+            ),
+        }
+    }
+    premature_sync_state = {
+        "completed_stages": set(),
+        "delivered_counts": {},
+        "delivered_resources": {},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+    }
+    ready_sync_state = {
+        "completed_stages": set(),
+        "delivered_counts": {0: 1},
+        "delivered_resources": {0: [2]},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+    }
+    premature_option_sync = _apply_pipeline_option_decoding(
+        interact_cfg,
+        sync_stage_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        sync_logits,
+        pipeline_state=premature_sync_state,
+    )
+    ready_option_sync = _apply_pipeline_option_decoding(
+        interact_cfg,
+        sync_stage_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        sync_logits,
+        pipeline_state=ready_sync_state,
+    )
+    guarded_premature_sync = _apply_pipeline_station_interact_guard(
+        guard_cfg,
+        sync_stage_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_INTERACT], dtype=torch.long),
+        pipeline_state=premature_sync_state,
+    )
+    guarded_ready_sync = _apply_pipeline_station_interact_guard(
+        guard_cfg,
+        sync_stage_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_INTERACT], dtype=torch.long),
+        pipeline_state=ready_sync_state,
+    )
+    assert premature_option_sync.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+    assert ready_option_sync.tolist() == [SyncOrSinkEnv.ACTION_INTERACT]
+    assert guarded_premature_sync.tolist() != [SyncOrSinkEnv.ACTION_INTERACT]
+    assert guarded_ready_sync.tolist() == [SyncOrSinkEnv.ACTION_INTERACT]
+
+    unknown_station_sync_obs = {
+        0: {
+            **sync_stage_obs[0],
+            "goal_hint": np.full((16,), -1, dtype=np.int16),
+        }
+    }
+    guarded_unknown_empty_station = _apply_pipeline_station_interact_guard(
+        guard_cfg,
+        unknown_station_sync_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_INTERACT], dtype=torch.long),
+        pipeline_state=premature_sync_state,
+    )
+    guarded_sync_wait_station = _apply_pipeline_station_interact_guard(
+        guard_cfg,
+        unknown_station_sync_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_INTERACT], dtype=torch.long),
+        pipeline_state={
+            "completed_stages": set(),
+            "delivered_counts": {},
+            "delivered_resources": {},
+            "sync_wait_stages": {0},
+            "sync_wait_stations": {0: (4, 3)},
+        },
+    )
+    assert guarded_unknown_empty_station.tolist() != [SyncOrSinkEnv.ACTION_INTERACT]
+    assert guarded_sync_wait_station.tolist() == [SyncOrSinkEnv.ACTION_INTERACT]
+
+    gated_cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        eval_pipeline_option_threshold=0.5,
+        eval_pipeline_option_allow_interact=True,
+        eval_pipeline_interact_gate_threshold=0.5,
+    )
+    ready_delivery_obs = {
+        0: {
+            **obs[0],
+            "self_pos": np.array([4, 3], dtype=np.int16),
+            "inventory": np.array([2], dtype=np.int16),
+            "local_grid": station_grid,
+        }
+    }
+    low_gate_delivery = _apply_pipeline_option_decoding(
+        gated_cfg,
+        ready_delivery_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        deliver_logits,
+        torch.tensor([[-3.0]], dtype=torch.float32),
+    )
+    assert low_gate_delivery.tolist() == [SyncOrSinkEnv.ACTION_STAY]
+    high_gate_delivery = _apply_pipeline_option_decoding(
+        gated_cfg,
+        ready_delivery_obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+        deliver_logits,
+        torch.tensor([[3.0]], dtype=torch.float32),
+    )
+    assert high_gate_delivery.tolist() == [SyncOrSinkEnv.ACTION_INTERACT]
+
+
+def test_recurrent_pipeline_feedback_flags_are_self_local():
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _ensure_feedback_parent_enabled,
+        _feedback_dim,
+        _feedback_matrix,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        obs_feedback=True,
+        obs_pipeline_feedback=True,
+    )
+    info = {
+        "events": {
+            0: [
+                {"event": "picked_resource", "resource_type": 2},
+                {"event": "delivered", "stage": 1, "resource_type": 2, "station": [4, 5]},
+                {"event": "pipeline_sync_wait", "stage": 1, "station": [4, 5]},
+            ],
+            1: [
+                {"event": "stage_completed"},
+                {"event": "sync_complete"},
+                {"event": "pipeline_wrong_delivery"},
+            ],
+        }
+    }
+    obs = {
+        0: {"self_pos": np.array([3, 5], dtype=np.int16)},
+        1: {"self_pos": np.array([5, 5], dtype=np.int16)},
+    }
+
+    feedback = _feedback_matrix(cfg, 2, info=info, obs=obs)
+
+    assert _feedback_dim(cfg) == 26
+    assert feedback.shape == (2, 26)
+    assert feedback[0, 12:20].tolist() == [1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+    assert feedback[1, 12:20].tolist() == [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0]
+    assert feedback[0, 20] == pytest.approx(2.0 / 8.0)
+    assert feedback[0, 21] == pytest.approx(2.0 / 4.0)
+    assert feedback[0, 22:26].tolist() == pytest.approx([1.0, 1.0 / 7.0, 0.0, 1.0 / 7.0])
+    assert feedback[1, 20:26].tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+
+    shared_cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        obs_feedback=True,
+        obs_pipeline_feedback=True,
+        obs_pipeline_shared_feedback=True,
+    )
+    shared_feedback = _feedback_matrix(shared_cfg, 2, info=info, obs=obs)
+
+    assert _feedback_dim(shared_cfg) == 26
+    assert shared_feedback.shape == (2, 26)
+    assert shared_feedback[0, 12:20].tolist() == [1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0]
+    assert shared_feedback[1, 12:20].tolist() == [1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0]
+    assert shared_feedback[0, 20] == pytest.approx(2.0 / 8.0)
+    assert shared_feedback[0, 21] == pytest.approx(2.0 / 4.0)
+    assert shared_feedback[0, 22:26].tolist() == pytest.approx([1.0, 1.0 / 7.0, 0.0, 1.0 / 7.0])
+    assert shared_feedback[1, 20] == pytest.approx(2.0 / 8.0)
+    assert shared_feedback[1, 21] == pytest.approx(2.0 / 4.0)
+    assert shared_feedback[1, 22:26].tolist() == pytest.approx([1.0, -1.0 / 7.0, 0.0, 1.0 / 7.0])
+
+    implied_cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        obs_pipeline_shared_feedback=True,
+    )
+    assert _ensure_feedback_parent_enabled(implied_cfg) is True
+    assert implied_cfg.obs_pipeline_feedback is True
+    assert implied_cfg.obs_feedback is True
 
 
 def test_recurrent_pipeline_navigation_assist_pickup_resource_and_latest_message():
@@ -4551,16 +6884,732 @@ def test_recurrent_pipeline_navigation_assist_pickup_resource_and_latest_message
     assert int(corrected[0].item()) == SyncOrSinkEnv.ACTION_RIGHT
 
 
+def test_recurrent_pipeline_structured_broadcast_assist_prefers_lower_message_stage():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_RESOURCE
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_pipeline_navigation_assist,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        eval_pipeline_navigation_assist=True,
+        eval_pipeline_navigation_assist_trust_messages=True,
+        eval_pipeline_plan_broadcast_assist=True,
+    )
+    messages = np.array(
+        [
+            [12, 0, 1, 1, 1, 1, -1, -1],
+            [12, 1, 5, 4, 1, 3, -1, -1],
+        ],
+        dtype=np.int16,
+    )
+    local_grid = np.zeros((5, 5), dtype=np.int16)
+    local_grid[2, 2] = TILE_RESOURCE
+    local_resource_types = np.zeros((5, 5), dtype=np.int16)
+    local_resource_types[2, 2] = 1
+    obs = {
+        0: {
+            "local_grid": local_grid,
+            "inventory": np.array([0], dtype=np.int16),
+            "self_pos": np.array([4, 4], dtype=np.int16),
+            "local_resource_types": local_resource_types,
+            "messages_tokens": messages,
+            "goal_hint": np.full((16,), -1, dtype=np.int16),
+            "action_mask": np.ones((8,), dtype=np.float32),
+        }
+    }
+
+    corrected = _apply_pipeline_navigation_assist(
+        cfg,
+        obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+    )
+
+    assert int(corrected[0].item()) == SyncOrSinkEnv.ACTION_PICKUP
+
+
+def test_recurrent_pipeline_navigation_memory_breaks_two_cell_loop():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _pipeline_local_assist_action,
+        _update_pipeline_resource_memory_from_obs,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        eval_pipeline_navigation_assist=True,
+    )
+    obs_agent = {
+        "self_pos": np.array([9, 5], dtype=np.int16),
+        "inventory": np.array([1], dtype=np.int16),
+        "local_grid": np.array(
+            [
+                [10, 10, 10, 1, 0, 0, 3, 10, 10],
+                [10, 10, 10, 10, 0, 0, 10, 10, 10],
+                [10, 10, 10, 1, 2, 0, 10, 10, 10],
+                [10, 10, 10, 1, 0, 1, 10, 10, 10],
+                [10, 10, 10, 1, 0, 1, 10, 10, 10],
+                [10, 10, 10, 0, 0, 0, 10, 10, 10],
+                [10, 0, 0, 0, 0, 0, 1, 10, 10],
+                [0, 1, 0, 3, 0, 0, 1, 10, 10],
+                [10, 1, 9, 1, 0, 1, 1, 10, 10],
+            ],
+            dtype=np.int16,
+        ),
+        "local_resource_types": np.zeros((9, 9), dtype=np.int16),
+        "goal_hint": np.full((16,), -1, dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "action_mask": np.array([1, 1, 0, 0, 1, 0, 0, 1], dtype=np.float32),
+    }
+    pipeline_state = {
+        "completed_stages": {0, 1, 2},
+        "delivered_counts": {},
+        "delivered_resources": {},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+        "carry_targets": {
+            0: {
+                "source": "state_carry_target",
+                "stage": 3,
+                "station": (11, 1),
+                "resource_type": 1,
+                "required": [1],
+            }
+        },
+        "navigation_memory": {
+            0: {
+                "target": [11, 1],
+                "pos": [9, 4],
+                "action": SyncOrSinkEnv.ACTION_DOWN,
+            }
+        },
+    }
+
+    action = _pipeline_local_assist_action(
+        cfg,
+        obs_agent,
+        agent_id=0,
+        current_action_id=SyncOrSinkEnv.ACTION_UP,
+        pipeline_state=pipeline_state,
+    )
+
+    assert action == SyncOrSinkEnv.ACTION_DOWN
+
+
+def test_recurrent_pipeline_navigation_memory_breaks_repeated_cell_cycle():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY
+    from syncorsink.train.recurrent_bc_rl import _pipeline_memory_adjusted_navigation_action
+
+    obs_agent = {
+        "self_pos": np.array([12, 7], dtype=np.int16),
+        "inventory": np.array([3], dtype=np.int16),
+        "local_grid": np.full((3, 3), TILE_EMPTY, dtype=np.int16),
+        "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+        "goal_hint": np.full((16,), -1, dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    pipeline_state = {
+        "navigation_memory": {
+            0: {
+                "target": [22, 6],
+                "pos": [13, 8],
+                "action": SyncOrSinkEnv.ACTION_LEFT,
+                "recent": [
+                    {
+                        "target": [22, 6],
+                        "pos": [12, 7],
+                        "action": SyncOrSinkEnv.ACTION_RIGHT,
+                    }
+                ],
+            }
+        }
+    }
+
+    action = _pipeline_memory_adjusted_navigation_action(
+        obs_agent,
+        (22, 6),
+        SyncOrSinkEnv.ACTION_RIGHT,
+        pipeline_state,
+        0,
+    )
+
+    assert action != SyncOrSinkEnv.ACTION_RIGHT
+    assert action in {
+        SyncOrSinkEnv.ACTION_UP,
+        SyncOrSinkEnv.ACTION_DOWN,
+        SyncOrSinkEnv.ACTION_LEFT,
+    }
+    assert pipeline_state["navigation_memory"][0]["recent"][-1]["action"] == action
+
+
+def test_recurrent_pipeline_navigation_routes_to_door_frontier_when_target_path_unknown():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_DOOR, TILE_EMPTY
+    from syncorsink.train.recurrent_bc_rl import _pipeline_navigation_action_from_obs
+
+    target = (22, 6)
+    loop_positions = {
+        (12, 5),
+        (13, 5),
+        (12, 6),
+        (13, 6),
+        (12, 7),
+        (13, 7),
+        (12, 8),
+        (13, 8),
+    }
+    pipeline_state = {
+        "terrain_memory": {
+            "passable": {
+                *loop_positions,
+                (13, 9),
+                (13, 10),
+                (13, 11),
+            },
+            "blocked": {(13, 12)},
+            "doors": {(13, 12)},
+            "map_size": 32,
+        }
+    }
+    obs_agent = {
+        "self_pos": np.array([13, 8], dtype=np.int16),
+        "inventory": np.array([3], dtype=np.int16),
+        "local_grid": np.full((3, 3), TILE_EMPTY, dtype=np.int16),
+        "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+        "goal_hint": np.full((16,), -1, dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+
+    detour = _pipeline_navigation_action_from_obs(
+        obs_agent,
+        target,
+        pipeline_state,
+        avoid_positions=loop_positions,
+    )
+
+    assert detour == SyncOrSinkEnv.ACTION_DOWN
+
+    door_obs = {
+        **obs_agent,
+        "self_pos": np.array([13, 11], dtype=np.int16),
+        "local_grid": np.array(
+            [
+                [TILE_EMPTY, TILE_EMPTY, TILE_EMPTY],
+                [TILE_EMPTY, TILE_EMPTY, TILE_EMPTY],
+                [TILE_EMPTY, TILE_DOOR, TILE_EMPTY],
+            ],
+            dtype=np.int16,
+        ),
+    }
+
+    door_action = _pipeline_navigation_action_from_obs(
+        door_obs,
+        target,
+        pipeline_state,
+    )
+
+    assert door_action == SyncOrSinkEnv.ACTION_INTERACT
+
+
+def test_recurrent_pipeline_navigation_uses_terrain_memory_to_route_to_station():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY
+    from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _pipeline_local_assist_action
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        eval_pipeline_navigation_assist=True,
+    )
+    obs_agent = {
+        "self_pos": np.array([1, 1], dtype=np.int16),
+        "inventory": np.array([2], dtype=np.int16),
+        "local_grid": np.full((3, 3), TILE_EMPTY, dtype=np.int16),
+        "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+        "goal_hint": np.array(
+            [0, 3, 3, 1, 2, -1, 0, -1, 0, -1, -1, -1, -1, -1, -1, -1],
+            dtype=np.int16,
+        ),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    pipeline_state = {
+        "completed_stages": set(),
+        "delivered_counts": {},
+        "delivered_resources": {},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+        "carry_targets": {},
+        "terrain_memory": {
+            "passable": {(1, 1), (1, 2), (1, 3), (2, 3), (3, 3)},
+            "blocked": {(2, 1), (2, 2)},
+            "map_size": 8,
+        },
+    }
+
+    action = _pipeline_local_assist_action(
+        cfg,
+        obs_agent,
+        agent_id=0,
+        current_action_id=SyncOrSinkEnv.ACTION_STAY,
+        pipeline_state=pipeline_state,
+    )
+
+    assert action == SyncOrSinkEnv.ACTION_DOWN
+
+
+def test_recurrent_pipeline_terrain_memory_skips_unknown_cells():
+    from syncorsink.envs.maps import TILE_EMPTY, TILE_UNKNOWN, TILE_WALL
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _update_pipeline_resource_memory_from_obs,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+    )
+    obs = {
+        0: {
+            "self_pos": np.array([2, 2], dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "local_grid": np.array(
+                [
+                    [TILE_UNKNOWN, TILE_UNKNOWN, TILE_UNKNOWN],
+                    [TILE_UNKNOWN, TILE_EMPTY, TILE_WALL],
+                    [TILE_UNKNOWN, TILE_EMPTY, TILE_UNKNOWN],
+                ],
+                dtype=np.int16,
+            ),
+            "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+            "goal_hint": np.full((16,), -1, dtype=np.int16),
+            "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+            "action_mask": np.ones((8,), dtype=np.float32),
+        }
+    }
+    pipeline_state = {}
+
+    _update_pipeline_resource_memory_from_obs(cfg, pipeline_state, obs)
+
+    terrain = pipeline_state["terrain_memory"]
+    assert (3, 2) in terrain["blocked"]
+    assert (2, 2) in terrain["passable"]
+    assert (2, 3) in terrain["passable"]
+    assert (1, 1) not in terrain["passable"]
+
+
+def test_recurrent_pipeline_frontier_exploration_assist_searches_for_missing_resource():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_pipeline_frontier_exploration_assist,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        obs_exploration_memory=True,
+        eval_pipeline_frontier_exploration_assist=True,
+    )
+    explored = np.ones((8, 8), dtype=np.int8)
+    explored[4, 5] = 0
+    obs = {
+        0: {
+            "self_pos": np.array([4, 4], dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "local_grid": np.full((3, 3), TILE_EMPTY, dtype=np.int16),
+            "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+            "goal_hint": np.array(
+                [0, 6, 6, 1, 2, -1, 0, -1, 0, -1, -1, -1, -1, -1, -1, -1],
+                dtype=np.int16,
+            ),
+            "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+            "explored_mask": explored,
+            "action_mask": np.ones((8,), dtype=np.float32),
+        }
+    }
+
+    corrected = _apply_pipeline_frontier_exploration_assist(
+        cfg,
+        obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY], dtype=torch.long),
+    )
+
+    assert int(corrected[0].item()) == SyncOrSinkEnv.ACTION_RIGHT
+
+
+def test_recurrent_pipeline_frontier_exploration_assist_spreads_agents():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_pipeline_frontier_exploration_assist,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=16,
+        agents=3,
+        obs_exploration_memory=True,
+        eval_pipeline_frontier_exploration_assist=True,
+    )
+    explored = np.ones((16, 16), dtype=np.int8)
+    explored[0, 1] = 0
+    explored[0, 14] = 0
+    explored[15, 7] = 0
+    base_obs = {
+        "self_pos": np.array([7, 7], dtype=np.int16),
+        "inventory": np.array([0], dtype=np.int16),
+        "local_grid": np.full((5, 5), TILE_EMPTY, dtype=np.int16),
+        "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+        "goal_hint": np.array(
+            [0, 6, 6, 1, 2, -1, 0, -1, 0, -1, -1, -1, -1, -1, -1, -1],
+            dtype=np.int16,
+        ),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "explored_mask": explored,
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    obs = {aid: {**base_obs, "explored_mask": explored.copy()} for aid in range(3)}
+
+    corrected = _apply_pipeline_frontier_exploration_assist(
+        cfg,
+        obs,
+        torch.tensor([SyncOrSinkEnv.ACTION_STAY] * 3, dtype=torch.long),
+    )
+
+    np.testing.assert_array_equal(
+        corrected.numpy(),
+        np.array(
+            [
+                SyncOrSinkEnv.ACTION_LEFT,
+                SyncOrSinkEnv.ACTION_RIGHT,
+                SyncOrSinkEnv.ACTION_DOWN,
+            ],
+            dtype=np.int64,
+        ),
+    )
+
+
+def test_recurrent_pipeline_navigation_uses_remembered_required_resource():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _pipeline_local_assist_action,
+        _update_pipeline_resource_memory_from_obs,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        eval_pipeline_navigation_assist=True,
+    )
+    obs_agent = {
+        "self_pos": np.array([6, 11], dtype=np.int16),
+        "inventory": np.array([0], dtype=np.int16),
+        "local_grid": np.full((5, 5), TILE_EMPTY, dtype=np.int16),
+        "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+        "goal_hint": np.array(
+            [1, 7, 11, 2, 1, 2, 0, -1, 1, -1, -1, -1, -1, -1, -1, -1],
+            dtype=np.int16,
+        ),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "explored_mask": np.ones((16, 16), dtype=np.int8),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    visible_resource_obs = {
+        0: {
+            **obs_agent,
+            "self_pos": np.array([3, 12], dtype=np.int16),
+            "local_resource_types": np.array(
+                [
+                    [0, 0, 0, 0, 0],
+                    [0, 0, 0, 0, 0],
+                    [0, 2, 0, 0, 0],
+                    [0, 2, 0, 0, 0],
+                    [0, 0, 0, 0, 0],
+                ],
+                dtype=np.int16,
+            ),
+        }
+    }
+    memory_state = {"resource_memory": {}}
+    _update_pipeline_resource_memory_from_obs(cfg, memory_state, visible_resource_obs)
+    assert (2, 13) in memory_state["resource_memory"][2]
+
+    pipeline_state = {
+        "completed_stages": {0},
+        "delivered_counts": {1: 1},
+        "delivered_resources": {1: [1]},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+        "carry_targets": {},
+        "resource_memory": {2: {(2, 13)}},
+    }
+
+    action = _pipeline_local_assist_action(
+        cfg,
+        obs_agent,
+        agent_id=0,
+        current_action_id=SyncOrSinkEnv.ACTION_STAY,
+        pipeline_state=pipeline_state,
+    )
+
+    assert action == SyncOrSinkEnv.ACTION_LEFT
+
+
+def test_recurrent_checkpoint_policy_updates_pipeline_resource_memory_from_obs():
+    from syncorsink.envs.maps import TILE_EMPTY
+    from syncorsink.policies.mappo_models import MAPPORecurrentActor
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentCheckpointPolicy,
+        RecurrentConfig,
+        _build_recurrent_obs_batch,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=16,
+        agents=1,
+        fov_preset="easy",
+        obs_exploration_memory=True,
+        obs_pipeline_features=True,
+        hidden_dim=16,
+        comm=False,
+        eval_pipeline_navigation_assist=True,
+    )
+    obs = {
+        0: {
+            "self_pos": np.array([8, 8], dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "local_grid": np.full((5, 5), TILE_EMPTY, dtype=np.int16),
+            "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+            "local_node_types": np.zeros((5, 5), dtype=np.int16),
+            "local_node_energy": np.zeros((5, 5), dtype=np.int16),
+            "goal_hint": np.array(
+                [0, 7, 7, 1, 2, -1, 0, -1, 0, -1, -1, -1, -1, -1, -1, -1],
+                dtype=np.int16,
+            ),
+            "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+            "message_from": np.full((1,), -1, dtype=np.int16),
+            "explored_mask": np.ones((16, 16), dtype=np.int8),
+            "action_mask": np.ones((8,), dtype=np.float32),
+        }
+    }
+    obs[0]["local_resource_types"][2, 3] = 2
+    obs_dim = _build_recurrent_obs_batch(obs, 1, cfg).shape[1]
+    model = MAPPORecurrentActor(
+        obs_dim=obs_dim,
+        action_dim=8,
+        hidden_dim=cfg.hidden_dim,
+        comm_enabled=cfg.comm,
+        comm_token_limit=cfg.comm_token_limit,
+        comm_vocab_size=cfg.comm_vocab_size,
+    )
+    policy = RecurrentCheckpointPolicy(model, cfg, torch.device("cpu"))
+
+    policy(obs, {}, {"step": 0})
+
+    assert (9, 8) in policy.pipeline_state["resource_memory"][2]
+
+
+def test_pipeline_frontier_exploration_labels_search_for_required_resource():
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _pipeline_frontier_exploration_action_label_mask,
+    )
+
+    env = SyncOrSinkEnv(
+        SyncOrSinkConfig(
+            scenario="pipeline_assembly",
+            map_size=8,
+            num_agents=1,
+            fov_preset="easy",
+            obs_exploration_memory=True,
+            pipeline_stage_count=1,
+            pipeline_required_per_stage_min=1,
+            pipeline_required_per_stage_max=1,
+            pipeline_sync_probability=0.0,
+            pipeline_dependency_probability=0.0,
+        )
+    )
+    env.reset(seed=3)
+    stage = env.scenario_state.data["stages"][0]
+    station = tuple(int(v) for v in stage["station"])
+    needed_type = int(stage["required"][0])
+    hint = np.full((64,), -1, dtype=np.int16)
+    hint[:9] = np.array(
+        [int(stage["stage"]), station[0], station[1], 1, needed_type, -1, 0, -1, 0],
+        dtype=np.int16,
+    )
+    explored_mask = np.ones((8, 8), dtype=np.int8)
+    explored_mask[2, 3] = 0
+    obs = {
+        0: {
+            "local_grid": np.zeros((5, 5), dtype=np.int16),
+            "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+            "inventory": np.array([0], dtype=np.int16),
+            "self_pos": np.array([3, 3], dtype=np.int16),
+            "goal_hint": hint,
+            "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+            "explored_mask": explored_mask,
+            "action_mask": np.ones((8,), dtype=np.float32),
+        }
+    }
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=1,
+        obs_exploration_memory=True,
+        bc_pipeline_frontier_exploration_action_loss_weight=0.5,
+    )
+
+    mask, action_id = _pipeline_frontier_exploration_action_label_mask(env, obs, cfg)
+
+    np.testing.assert_array_equal(mask, np.array([1.0], dtype=np.float32))
+    np.testing.assert_array_equal(action_id, np.array([env.ACTION_UP], dtype=np.int64))
+
+    visible_obs = {0: {**obs[0], "local_resource_types": obs[0]["local_resource_types"].copy()}}
+    visible_obs[0]["local_resource_types"][2, 2] = needed_type
+    mask, action_id = _pipeline_frontier_exploration_action_label_mask(env, visible_obs, cfg)
+
+    np.testing.assert_array_equal(mask, np.array([0.0], dtype=np.float32))
+    np.testing.assert_array_equal(action_id, np.array([-1], dtype=np.int64))
+
+
+def test_pipeline_frontier_exploration_labels_spread_agents():
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _pipeline_frontier_exploration_action_label_mask,
+    )
+
+    env = SyncOrSinkEnv(
+        SyncOrSinkConfig(
+            scenario="pipeline_assembly",
+            map_size=16,
+            num_agents=3,
+            fov_preset="easy",
+            obs_exploration_memory=True,
+            pipeline_stage_count=1,
+            pipeline_required_per_stage_min=1,
+            pipeline_required_per_stage_max=1,
+            pipeline_sync_probability=0.0,
+            pipeline_dependency_probability=0.0,
+        )
+    )
+    env.reset(seed=3)
+    stage = env.scenario_state.data["stages"][0]
+    station = tuple(int(v) for v in stage["station"])
+    needed_type = int(stage["required"][0])
+    hint = np.full((64,), -1, dtype=np.int16)
+    hint[:9] = np.array(
+        [int(stage["stage"]), station[0], station[1], 1, needed_type, -1, 0, -1, 0],
+        dtype=np.int16,
+    )
+    explored = np.ones((16, 16), dtype=np.int8)
+    explored[0, 1] = 0
+    explored[0, 14] = 0
+    explored[15, 7] = 0
+    base_obs = {
+        "local_grid": np.zeros((5, 5), dtype=np.int16),
+        "local_resource_types": np.zeros((5, 5), dtype=np.int16),
+        "inventory": np.array([0], dtype=np.int16),
+        "self_pos": np.array([7, 7], dtype=np.int16),
+        "goal_hint": hint,
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "explored_mask": explored,
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    obs = {aid: {**base_obs, "explored_mask": explored.copy()} for aid in range(3)}
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=16,
+        agents=3,
+        obs_exploration_memory=True,
+        bc_pipeline_frontier_exploration_action_loss_weight=0.5,
+    )
+
+    mask, action_id = _pipeline_frontier_exploration_action_label_mask(env, obs, cfg)
+
+    np.testing.assert_array_equal(mask, np.ones((3,), dtype=np.float32))
+    np.testing.assert_array_equal(
+        action_id,
+        np.array([env.ACTION_LEFT, env.ACTION_RIGHT, env.ACTION_DOWN], dtype=np.int64),
+    )
+
+
+def test_pipeline_assisted_action_label_mask_unions_corrections_and_trusted_labels():
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _pipeline_assisted_action_label_mask,
+    )
+
+    mask, action_id = _pipeline_assisted_action_label_mask(
+        RecurrentConfig(scenario="pipeline_assembly"),
+        np.array([1, 2, 3], dtype=np.int64),
+        np.array([False, True, False]),
+        np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        np.array([0.0, 0.0, 1.0], dtype=np.float32),
+    )
+
+    np.testing.assert_array_equal(mask, np.array([1.0, 1.0, 1.0], dtype=np.float32))
+    np.testing.assert_array_equal(action_id, np.array([1, 2, 3], dtype=np.int64))
+
+    non_pipeline_mask, non_pipeline_action_id = _pipeline_assisted_action_label_mask(
+        RecurrentConfig(scenario="signal_hunt"),
+        np.array([1, 2, 3], dtype=np.int64),
+        np.array([True, True, True]),
+    )
+
+    np.testing.assert_array_equal(
+        non_pipeline_mask,
+        np.zeros((3,), dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        non_pipeline_action_id,
+        np.array([-1, -1, -1], dtype=np.int64),
+    )
+
+
 def test_recurrent_pipeline_plan_action_and_message_labels_follow_trusted_plan():
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
     from syncorsink.envs.maps import TILE_EMPTY
     from syncorsink.train.recurrent_bc_rl import (
+        PIPELINE_OPTION_DELIVER,
         RecurrentConfig,
+        _apply_pipeline_plan_broadcast_assist,
+        _apply_pipeline_plan_broadcast_overrides,
         _append_labeled_step,
         _finalize_episode_sequence,
+        _initial_pipeline_state,
         _new_episode_sequence,
         _pipeline_bad_action_label_masks,
+        _pipeline_interact_gate_label_mask,
+        _pipeline_option_label_mask,
         _pipeline_plan_action_label_mask,
+        _pipeline_rollout_plan_action_label_mask,
+        _pipeline_rollout_station_guard_action_label_mask,
+        _pipeline_rollout_wrong_station_recovery_action_label_mask,
+        _pipeline_station_interact_guard_action,
+        _pipeline_station_guard_action_label_mask,
     )
 
     env = SyncOrSinkEnv(
@@ -4589,11 +7638,74 @@ def test_recurrent_pipeline_plan_action_and_message_labels_follow_trusted_plan()
         scenario="pipeline_assembly",
         map_size=8,
         agents=2,
+        comm=True,
         comm_token_limit=8,
         comm_vocab_size=32,
         obs_pipeline_features=True,
         bc_pipeline_proactive_bad_action_labels=True,
     )
+    silent_actions = {
+        0: {"action": env.ACTION_STAY, "message_tokens": []},
+        1: {"action": env.ACTION_STAY, "message_tokens": []},
+    }
+    pipeline_state = _initial_pipeline_state(cfg)
+    broadcasted_actions, broadcasters = _apply_pipeline_plan_broadcast_overrides(
+        cfg,
+        obs,
+        silent_actions,
+        pipeline_state=pipeline_state,
+        current_step=0,
+    )
+    assert broadcasters == [0]
+    assert broadcasted_actions[0]["message_tokens"] == [
+        12,
+        int(stage["stage"]),
+        station[0],
+        station[1],
+        1,
+        needed_type,
+    ]
+    assert broadcasted_actions[1]["message_tokens"] == []
+    rebroadcasted_actions, rebroadcasters = _apply_pipeline_plan_broadcast_overrides(
+        cfg,
+        obs,
+        silent_actions,
+        pipeline_state=pipeline_state,
+        current_step=1,
+    )
+    assert rebroadcasters == []
+    assert rebroadcasted_actions[0]["message_tokens"] == []
+
+    noisy_actions = {
+        0: {"action": env.ACTION_STAY, "message_tokens": [12, 0, 0, 0, 1, 2]},
+        1: {"action": env.ACTION_STAY, "message_tokens": [12, 0, 0, 0, 1, 2]},
+    }
+    assisted_cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=2,
+        comm=True,
+        comm_token_limit=8,
+        comm_vocab_size=32,
+        eval_pipeline_plan_broadcast_assist=True,
+    )
+    assisted_actions = _apply_pipeline_plan_broadcast_assist(
+        assisted_cfg,
+        obs,
+        noisy_actions,
+        pipeline_state=_initial_pipeline_state(assisted_cfg),
+        current_step=0,
+    )
+    assert assisted_actions[0]["message_tokens"] == [
+        12,
+        int(stage["stage"]),
+        station[0],
+        station[1],
+        1,
+        needed_type,
+    ]
+    assert assisted_actions[1]["message_tokens"] == []
+
     message_tokens = [12, int(stage["stage"]), station[0], station[1], 1, needed_type]
     actions = {
         0: {"action": env.ACTION_INTERACT, "message_tokens": message_tokens},
@@ -4604,6 +7716,31 @@ def test_recurrent_pipeline_plan_action_and_message_labels_follow_trusted_plan()
 
     np.testing.assert_array_equal(mask, np.array([1.0, 0.0], dtype=np.float32))
     np.testing.assert_array_equal(action_id, np.array([env.ACTION_INTERACT, -1], dtype=np.int64))
+    rollout_plan_mask, rollout_plan_action_id = _pipeline_rollout_plan_action_label_mask(
+        env,
+        obs,
+        cfg,
+        pipeline_state={
+            "completed_stages": set(),
+            "delivered_counts": {},
+            "delivered_resources": {},
+            "sync_wait_stages": set(),
+        },
+    )
+    np.testing.assert_array_equal(
+        rollout_plan_mask,
+        np.array([1.0, 0.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        rollout_plan_action_id,
+        np.array([env.ACTION_INTERACT, -1], dtype=np.int64),
+    )
+    option_mask, option_id = _pipeline_option_label_mask(env, obs, actions, cfg)
+    np.testing.assert_array_equal(option_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(
+        option_id,
+        np.array([PIPELINE_OPTION_DELIVER, 0], dtype=np.int64),
+    )
 
     message_obs = dict(obs[0])
     message_obs["goal_hint"] = np.full_like(message_obs["goal_hint"], -1)
@@ -4620,7 +7757,17 @@ def test_recurrent_pipeline_plan_action_and_message_labels_follow_trusted_plan()
     _append_labeled_step(ep_data, obs, actions, env, cfg)
     assert ep_data["pipeline_plan_action_mask"] == [1.0, 0.0]
     assert ep_data["pipeline_plan_action_id"] == [env.ACTION_INTERACT, -1]
+    assert ep_data["pipeline_option_mask"] == [1.0, 0.0]
+    assert ep_data["pipeline_option_id"] == [PIPELINE_OPTION_DELIVER, 0]
     assert ep_data["pipeline_message_mask"] == [1.0, 0.0]
+    assert ep_data["pipeline_send_gate_mask"] == [1.0, 1.0]
+    assert ep_data["pipeline_send_gate_label"] == [1.0, 0.0]
+    assert ep_data["pipeline_interact_gate_mask"] == [1.0, 0.0]
+    assert ep_data["pipeline_interact_gate_label"] == [1.0, 0.0]
+    assert ep_data["pipeline_sync_action_mask"] == [0.0, 0.0]
+    assert ep_data["pipeline_sync_action_id"] == [-1, -1]
+    assert ep_data["pipeline_station_guard_action_mask"] == [0.0, 0.0]
+    assert ep_data["pipeline_station_guard_action_id"] == [-1, -1]
 
     episode = _finalize_episode_sequence(ep_data, env, cfg)
     np.testing.assert_array_equal(
@@ -4632,8 +7779,48 @@ def test_recurrent_pipeline_plan_action_and_message_labels_follow_trusted_plan()
         np.array([[env.ACTION_INTERACT, -1]], dtype=np.int64),
     )
     np.testing.assert_array_equal(
+        episode["pipeline_option_mask"],
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        episode["pipeline_option_id"],
+        np.array([[PIPELINE_OPTION_DELIVER, 0]], dtype=np.int64),
+    )
+    np.testing.assert_array_equal(
         episode["pipeline_message_mask"],
         np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        episode["pipeline_send_gate_mask"],
+        np.array([[1.0, 1.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        episode["pipeline_send_gate_label"],
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        episode["pipeline_interact_gate_mask"],
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        episode["pipeline_interact_gate_label"],
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        episode["pipeline_sync_action_mask"],
+        np.array([[0.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        episode["pipeline_sync_action_id"],
+        np.array([[-1, -1]], dtype=np.int64),
+    )
+    np.testing.assert_array_equal(
+        episode["pipeline_station_guard_action_mask"],
+        np.array([[0.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        episode["pipeline_station_guard_action_id"],
+        np.array([[-1, -1]], dtype=np.int64),
     )
 
     wrong_station = next(pos for pos in env.meta["stations"] if tuple(pos) != station)
@@ -4664,6 +7851,38 @@ def test_recurrent_pipeline_plan_action_and_message_labels_follow_trusted_plan()
         bad_interact_id,
         np.array([env.ACTION_INTERACT, -1], dtype=np.int64),
     )
+    guard_action_id = _pipeline_station_interact_guard_action(
+        cfg,
+        wrong_station_obs[0],
+        pipeline_state=env.scenario_state.data,
+    )
+    assert guard_action_id is not None
+    assert int(guard_action_id) in {
+        env.ACTION_UP,
+        env.ACTION_DOWN,
+        env.ACTION_LEFT,
+        env.ACTION_RIGHT,
+    }
+    assert int(wrong_station_obs[0]["action_mask"][int(guard_action_id)]) == 1
+    (
+        rollout_wrong_station_mask,
+        rollout_wrong_station_action_id,
+    ) = _pipeline_rollout_wrong_station_recovery_action_label_mask(
+        cfg,
+        wrong_station_obs,
+        pipeline_state=env.scenario_state.data,
+    )
+    np.testing.assert_array_equal(
+        rollout_wrong_station_mask,
+        np.array([1.0, 0.0], dtype=np.float32),
+    )
+    assert int(rollout_wrong_station_action_id[0]) in {
+        env.ACTION_UP,
+        env.ACTION_DOWN,
+        env.ACTION_LEFT,
+        env.ACTION_RIGHT,
+    }
+    assert int(wrong_station_obs[0]["action_mask"][int(rollout_wrong_station_action_id[0])]) == 1
 
     unneeded_resource_pos, unneeded_type = next(
         (pos, int(resource_type))
@@ -4704,6 +7923,7 @@ def test_recurrent_pipeline_plan_action_and_message_labels_follow_trusted_plan()
     }
     assert int(station_recovery_obs[0]["action_mask"][int(action_id[0])]) == 1
     assert int(action_id[1]) == -1
+    recovery_action_id = int(action_id[0])
 
     conservative_cfg = RecurrentConfig(
         scenario="pipeline_assembly",
@@ -4731,6 +7951,72 @@ def test_recurrent_pipeline_plan_action_and_message_labels_follow_trusted_plan()
         bad_interact_mask,
         bad_interact_id,
     ) = _pipeline_bad_action_label_masks(env, station_recovery_obs, stay_actions, cfg)
+
+    np.testing.assert_array_equal(bad_pickup_mask, np.array([0.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(bad_pickup_id, np.array([-1, -1], dtype=np.int64))
+    np.testing.assert_array_equal(bad_drop_mask, np.array([0.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(bad_drop_id, np.array([-1, -1], dtype=np.int64))
+    np.testing.assert_array_equal(bad_interact_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(
+        bad_interact_id,
+        np.array([env.ACTION_INTERACT, -1], dtype=np.int64),
+    )
+    station_guard_mask, station_guard_action_id = _pipeline_station_guard_action_label_mask(
+        env,
+        station_recovery_obs,
+        cfg,
+    )
+    np.testing.assert_array_equal(station_guard_mask, np.array([1.0, 0.0], dtype=np.float32))
+    assert int(station_guard_action_id[0]) == recovery_action_id
+
+    env.agent_positions[0] = station
+    env.inventories[0] = 0
+    empty_station_obs = env._build_observations()
+    gate_mask, gate_label = _pipeline_interact_gate_label_mask(env, empty_station_obs)
+    np.testing.assert_array_equal(gate_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(gate_label, np.array([0.0, 0.0], dtype=np.float32))
+    station_guard_mask, station_guard_action_id = _pipeline_station_guard_action_label_mask(
+        env,
+        empty_station_obs,
+        cfg,
+    )
+    assert station_guard_mask[1] == 0.0
+    if float(station_guard_mask[0]) > 0.0:
+        assert int(station_guard_action_id[0]) not in {env.ACTION_INTERACT, env.ACTION_STAY}
+        assert int(empty_station_obs[0]["action_mask"][int(station_guard_action_id[0])]) == 1
+    rollout_guard_mask, rollout_guard_action_id = (
+        _pipeline_rollout_station_guard_action_label_mask(
+            cfg,
+            empty_station_obs,
+            pipeline_state={
+                "completed_stages": set(),
+                "delivered_counts": {},
+                "delivered_resources": {},
+                "sync_wait_stages": set(),
+            },
+        )
+    )
+    np.testing.assert_array_equal(
+        rollout_guard_mask,
+        np.array([1.0, 0.0], dtype=np.float32),
+    )
+    assert int(rollout_guard_action_id[0]) in {
+        env.ACTION_UP,
+        env.ACTION_DOWN,
+        env.ACTION_LEFT,
+        env.ACTION_RIGHT,
+        env.ACTION_DROP,
+        env.ACTION_STAY,
+    }
+    assert int(rollout_guard_action_id[0]) != env.ACTION_INTERACT
+    (
+        bad_pickup_mask,
+        bad_pickup_id,
+        bad_drop_mask,
+        bad_drop_id,
+        bad_interact_mask,
+        bad_interact_id,
+    ) = _pipeline_bad_action_label_masks(env, empty_station_obs, stay_actions, cfg)
 
     np.testing.assert_array_equal(bad_pickup_mask, np.array([0.0, 0.0], dtype=np.float32))
     np.testing.assert_array_equal(bad_pickup_id, np.array([-1, -1], dtype=np.int64))
@@ -4792,7 +8078,9 @@ def test_recurrent_pipeline_plan_action_and_message_labels_follow_trusted_plan()
 def test_recurrent_pipeline_ppo_bad_pickup_reward_shaping():
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
     from syncorsink.train.recurrent_bc_rl import (
+        _apply_pipeline_bad_interact_reward_shaping,
         _apply_pipeline_bad_pickup_reward_shaping,
+        _pipeline_bad_interact_agents,
         _pipeline_bad_pickup_agents,
         _pipeline_resource_need_status,
         _pipeline_unneeded_drop_agents,
@@ -4871,6 +8159,32 @@ def test_recurrent_pipeline_ppo_bad_pickup_reward_shaping():
     assert bonus_sum == pytest.approx(0.1)
     assert rewards[0] == pytest.approx(0.1)
     assert rewards[1] == pytest.approx(0.0)
+
+    station = tuple(stage["station"])
+    empty_interact_actions = {
+        0: {"action": env.ACTION_INTERACT, "message_tokens": []},
+        1: {"action": env.ACTION_STAY, "message_tokens": []},
+    }
+    env.agent_positions[0] = station
+    env.inventories[0] = 0
+    assert _pipeline_bad_interact_agents(env, empty_interact_actions) == [0]
+    rewards = {0: 0.0, 1: 0.0}
+    count, penalty_sum = _apply_pipeline_bad_interact_reward_shaping(
+        rewards,
+        bad_interact_candidates=[0],
+        bad_interact_penalty=0.15,
+    )
+    assert count == 1
+    assert penalty_sum == pytest.approx(0.15)
+    assert rewards[0] == pytest.approx(-0.15)
+
+    env.agent_positions[0] = station
+    env.inventories[0] = unneeded_type
+    assert _pipeline_bad_interact_agents(env, empty_interact_actions) == [0]
+
+    env.agent_positions[0] = station
+    env.inventories[0] = needed_type
+    assert _pipeline_bad_interact_agents(env, empty_interact_actions) == []
 
 
 def test_recurrent_signal_features_decode_targets_and_keep_mask_safe():
@@ -5042,6 +8356,7 @@ def test_recurrent_checkpoint_policy_egocentric_memory_cross_map_size(tmp_path):
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
     from syncorsink.policies.mappo_models import MAPPORecurrentActor
     from syncorsink.train.recurrent_bc_rl import (
+        PIPELINE_OPTION_NONE,
         RecurrentConfig,
         _build_env,
         _build_recurrent_obs_batch,
@@ -5103,6 +8418,60 @@ def test_recurrent_checkpoint_policy_egocentric_memory_cross_map_size(tmp_path):
 
     assert sorted(actions) == [0, 1]
     assert all(0 <= int(action["action"]) < 8 for action in actions.values())
+
+
+def test_recurrent_pipeline_feedback_legacy_checkpoint_auto_downgrades_metadata(tmp_path):
+    from syncorsink.policies.mappo_models import MAPPORecurrentActor
+    from syncorsink.train.recurrent_bc_rl import (
+        PIPELINE_OPTION_NONE,
+        RecurrentConfig,
+        _build_env,
+        _build_recurrent_obs_batch,
+        _feedback_matrix,
+        load_recurrent_checkpoint_policy,
+    )
+
+    legacy_cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=2,
+        fov_preset="easy",
+        max_steps=40,
+        obs_feedback=True,
+        obs_pipeline_feedback=True,
+        obs_pipeline_feedback_metadata=False,
+        comm=True,
+        comm_token_limit=4,
+        comm_vocab_size=16,
+        comm_max_messages=4,
+        hidden_dim=16,
+    )
+    env = _build_env(legacy_cfg)
+    obs, info = env.reset(seed=0)
+    obs_dim = _build_recurrent_obs_batch(
+        obs,
+        env.num_agents,
+        legacy_cfg,
+        feedback=_feedback_matrix(legacy_cfg, env.num_agents),
+    ).shape[1]
+    model = MAPPORecurrentActor(
+        obs_dim=obs_dim,
+        action_dim=8,
+        hidden_dim=legacy_cfg.hidden_dim,
+        comm_enabled=legacy_cfg.comm,
+        comm_token_limit=legacy_cfg.comm_token_limit,
+        comm_vocab_size=legacy_cfg.comm_vocab_size,
+    )
+    raw_cfg = vars(legacy_cfg).copy()
+    raw_cfg.pop("obs_pipeline_feedback_metadata", None)
+    checkpoint = tmp_path / "legacy_pipeline_feedback.pt"
+    torch.save({"model": model.state_dict(), "config": raw_cfg}, checkpoint)
+
+    policy = load_recurrent_checkpoint_policy(checkpoint, device="cpu")
+    actions = policy(obs, info, {"step": 0})
+
+    assert policy.cfg.obs_pipeline_feedback_metadata is False
+    assert sorted(actions) == [0, 1]
 
 
 def test_recurrent_training_map_sizes_helpers():
@@ -5453,6 +8822,7 @@ def test_recurrent_rl_balanced_rollout_collects_each_train_map_size():
         hidden_dim=16,
         rollout_steps=6,
         rl_balanced_rollouts=True,
+        rl_rollout_eval_decoding=True,
     )
     env, active_cfg = _build_training_env(cfg, 0)
     obs, _ = env.reset(seed=0)
@@ -5487,7 +8857,68 @@ def test_recurrent_rl_balanced_rollout_collects_each_train_map_size():
     assert rollout["balanced"] is True
     assert rollout["map_step_counts"] == {"8": 2, "16": 2, "32": 2}
     assert rollout["eval_decoding_action_correction_count"] == 0
-    assert rollout["eval_decoding_action_opportunities"] == 0
+    assert rollout["eval_decoding_action_opportunities"] == 12
+    assert len(rollout["eval_decoding_action_correction_mask_buf"]) == 6
+    assert sum(int(mask.sum().item()) for mask in rollout["eval_decoding_action_correction_mask_buf"]) == 0
+    assert rollout["pipeline_assisted_action_label_count"] == 0
+    assert len(rollout["pipeline_assisted_action_mask_buf"]) == 6
+    assert len(rollout["pipeline_assisted_action_id_buf"]) == 6
+    assert sum(int(mask.sum().item()) for mask in rollout["pipeline_assisted_action_mask_buf"]) == 0
+    assert rollout["pipeline_interact_gate_label_count"] == 0
+    assert rollout["pipeline_interact_gate_positive_label_count"] == 0
+    assert rollout["pipeline_interact_gate_negative_label_count"] == 0
+    assert len(rollout["pipeline_interact_gate_mask_buf"]) == 6
+    assert len(rollout["pipeline_interact_gate_label_buf"]) == 6
+    assert sum(int(mask.sum().item()) for mask in rollout["pipeline_interact_gate_mask_buf"]) == 0
+    assert rollout["pipeline_pickup_gate_label_count"] == 0
+    assert rollout["pipeline_pickup_gate_positive_label_count"] == 0
+    assert rollout["pipeline_pickup_gate_negative_label_count"] == 0
+    assert len(rollout["pipeline_pickup_gate_mask_buf"]) == 6
+    assert len(rollout["pipeline_pickup_gate_label_buf"]) == 6
+    assert sum(int(mask.sum().item()) for mask in rollout["pipeline_pickup_gate_mask_buf"]) == 0
+    assert rollout["pipeline_delivery_progress_action_label_count"] == 0
+    assert len(rollout["pipeline_delivery_progress_action_mask_buf"]) == 6
+    assert len(rollout["pipeline_delivery_progress_action_id_buf"]) == 6
+    assert (
+        sum(
+            int(mask.sum().item())
+            for mask in rollout["pipeline_delivery_progress_action_mask_buf"]
+        )
+        == 0
+    )
+    assert rollout["pipeline_navigation_action_label_count"] == 0
+    assert len(rollout["pipeline_navigation_action_mask_buf"]) == 6
+    assert len(rollout["pipeline_navigation_action_id_buf"]) == 6
+    assert sum(int(mask.sum().item()) for mask in rollout["pipeline_navigation_action_mask_buf"]) == 0
+    assert rollout["pipeline_sync_action_label_count"] == 0
+    assert len(rollout["pipeline_sync_action_mask_buf"]) == 6
+    assert len(rollout["pipeline_sync_action_id_buf"]) == 6
+    assert sum(int(mask.sum().item()) for mask in rollout["pipeline_sync_action_mask_buf"]) == 0
+    assert rollout["pipeline_ready_interact_action_label_count"] == 0
+    assert len(rollout["pipeline_ready_interact_action_mask_buf"]) == 6
+    assert len(rollout["pipeline_ready_interact_action_id_buf"]) == 6
+    assert (
+        sum(int(mask.sum().item()) for mask in rollout["pipeline_ready_interact_action_mask_buf"])
+        == 0
+    )
+    assert rollout["pipeline_station_guard_action_label_count"] == 0
+    assert len(rollout["pipeline_station_guard_action_mask_buf"]) == 6
+    assert len(rollout["pipeline_station_guard_action_id_buf"]) == 6
+    assert sum(int(mask.sum().item()) for mask in rollout["pipeline_station_guard_action_mask_buf"]) == 0
+    assert rollout["pipeline_wrong_station_recovery_action_label_count"] == 0
+    assert len(rollout["pipeline_wrong_station_recovery_action_mask_buf"]) == 6
+    assert len(rollout["pipeline_wrong_station_recovery_action_id_buf"]) == 6
+    assert (
+        sum(
+            int(mask.sum().item())
+            for mask in rollout["pipeline_wrong_station_recovery_action_mask_buf"]
+        )
+        == 0
+    )
+    assert rollout["pipeline_plan_action_label_count"] == 0
+    assert len(rollout["pipeline_plan_action_mask_buf"]) == 6
+    assert len(rollout["pipeline_plan_action_id_buf"]) == 6
+    assert sum(int(mask.sum().item()) for mask in rollout["pipeline_plan_action_mask_buf"]) == 0
     assert rollout["reset_after_buf"][1] is True
     assert rollout["reset_after_buf"][3] is True
     assert rollout["reset_after_buf"][5] is True
@@ -5775,6 +9206,21 @@ def test_recurrent_comm_length_loss_ignores_no_message_examples():
     )
     assert weighted_components["send_rate"].item() == pytest.approx(0.0625)
     assert weighted_components["total"].item() == pytest.approx(expected_weighted.item())
+    content_only_components = _recurrent_comm_loss_components(
+        send_logits,
+        token_logits,
+        len_logits,
+        msg_tokens,
+        msg_lens,
+        sample_weight=torch.tensor([0.0, 1.0]),
+        send_loss_weight=0.0,
+        length_loss_weight=1.0,
+        token_loss_weight=1.0,
+    )
+    assert content_only_components["send"].item() > 0.0
+    assert content_only_components["total"].item() == pytest.approx(
+        (content_only_components["length"] + content_only_components["token"]).item()
+    )
     assert _send_threshold_for_target_rate([0.1, 0.2, 0.8, 0.9], 0.5) == pytest.approx(0.5)
     assert _send_threshold_for_target_rate([0.1, 0.2, 0.8, 0.9], 0.0) == pytest.approx(1.0)
     assert _send_threshold_for_target_rate([0.1, 0.2, 0.8, 0.9], 1.0) == pytest.approx(0.0)
@@ -5782,6 +9228,60 @@ def test_recurrent_comm_length_loss_ignores_no_message_examples():
 
     assert torch.allclose(len_logits.grad[0], torch.zeros_like(len_logits.grad[0]))
     assert len_logits.grad[1].abs().sum().item() > 0.0
+
+
+def test_recurrent_pipeline_interact_gate_threshold_calibration_sets_eval_threshold():
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _calibrate_pipeline_interact_gate_threshold,
+    )
+
+    class FakeModel:
+        def __init__(self):
+            self.step_logits = torch.logit(torch.tensor([
+                [0.1, 0.2],
+                [0.8, 0.9],
+            ]))
+            self.step = 0
+
+        def eval(self):
+            return self
+
+        def init_hidden(self, batch, device):
+            return (
+                torch.zeros((batch, 1), dtype=torch.float32, device=device),
+                torch.zeros((batch, 1), dtype=torch.float32, device=device),
+            )
+
+        def __call__(self, obs_t, hidden):
+            del obs_t
+            h = self.step_logits[self.step].reshape(-1, 1).to(hidden[0].device)
+            self.step += 1
+            return None, None, None, None, (h, hidden[1])
+
+        def pipeline_interact_gate(self, hidden_state):
+            return hidden_state
+
+    episodes = [
+        {
+            "obs": np.zeros((2, 2, 1), dtype=np.float32),
+            "pipeline_interact_gate_mask": np.ones((2, 2), dtype=np.float32),
+            "pipeline_interact_gate_label": np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32),
+        }
+    ]
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        eval_pipeline_interact_gate_threshold=-1.0,
+        bc_pipeline_interact_gate_threshold_target_rate=0.5,
+    )
+
+    calibration = _calibrate_pipeline_interact_gate_threshold(cfg, FakeModel(), episodes, "cpu")
+
+    assert calibration["old_threshold"] == pytest.approx(-1.0)
+    assert calibration["threshold"] == pytest.approx(0.5)
+    assert calibration["label_rate"] == pytest.approx(0.5)
+    assert calibration["pred_rate"] == pytest.approx(0.5)
+    assert cfg.eval_pipeline_interact_gate_threshold == pytest.approx(0.5)
 
 
 def test_recurrent_rl_train_map_sizes_smoke():
@@ -5985,16 +9485,40 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
         checkpoint,
         device="cpu",
         eval_send_threshold=0.42,
+        eval_pipeline_station_interact_guard=True,
+        eval_pipeline_plan_broadcast_assist=True,
+        eval_pipeline_frontier_exploration_assist=True,
+        eval_pipeline_interact_gate_threshold=0.37,
+        eval_pipeline_event_head_threshold=0.62,
+        eval_pipeline_navigation_head_threshold=0.63,
+        eval_pipeline_option_threshold=0.64,
+        eval_pipeline_option_allow_interact=True,
     )(None)
 
     assert calls[0][1]["eval_send_threshold"] is None
+    assert calls[0][1]["eval_pipeline_station_interact_guard"] is None
+    assert calls[0][1]["eval_pipeline_plan_broadcast_assist"] is None
+    assert calls[0][1]["eval_pipeline_frontier_exploration_assist"] is None
+    assert calls[0][1]["eval_pipeline_event_head_threshold"] is None
+    assert calls[0][1]["eval_pipeline_navigation_head_threshold"] is None
+    assert calls[0][1]["eval_pipeline_option_threshold"] is None
+    assert calls[0][1]["eval_pipeline_option_allow_interact"] is None
     assert calls[1][1]["eval_send_threshold"] == pytest.approx(0.42)
+    assert calls[1][1]["eval_pipeline_station_interact_guard"] is True
+    assert calls[1][1]["eval_pipeline_plan_broadcast_assist"] is True
+    assert calls[1][1]["eval_pipeline_frontier_exploration_assist"] is True
+    assert calls[1][1]["eval_pipeline_interact_gate_threshold"] == pytest.approx(0.37)
+    assert calls[1][1]["eval_pipeline_event_head_threshold"] == pytest.approx(0.62)
+    assert calls[1][1]["eval_pipeline_navigation_head_threshold"] == pytest.approx(0.63)
+    assert calls[1][1]["eval_pipeline_option_threshold"] == pytest.approx(0.64)
+    assert calls[1][1]["eval_pipeline_option_allow_interact"] is True
 
 
 def test_recurrent_actor_checkpoint_init_for_rl_smoke(tmp_path):
     from syncorsink.policies.mappo_models import MAPPORecurrentActor
     from syncorsink.train.mappo import resolve_device
     from syncorsink.train.recurrent_bc_rl import (
+        PIPELINE_OPTION_NONE,
         RecurrentConfig,
         _build_env,
         _build_recurrent_obs_batch,
@@ -6065,6 +9589,10 @@ def test_recurrent_actor_checkpoint_init_for_rl_smoke(tmp_path):
             "signal_target_validity.",
             "signal_target_decision.",
             "signal_target_aux.",
+            "pipeline_plan_policy.",
+            "pipeline_event_policy.",
+            "pipeline_navigation_policy.",
+            "pipeline_option_policy.",
         ))
     }
     torch.save({"model": legacy_state, "config": vars(cfg)}, legacy_checkpoint)
@@ -6073,6 +9601,37 @@ def test_recurrent_actor_checkpoint_init_for_rl_smoke(tmp_path):
     assert hasattr(legacy_loaded, "signal_target_validity")
     assert hasattr(legacy_loaded, "signal_target_decision")
     assert hasattr(legacy_loaded, "signal_target_aux")
+    assert torch.allclose(
+        legacy_loaded.pipeline_plan_policy.weight,
+        legacy_loaded.policy.linear.weight,
+    )
+    assert torch.allclose(
+        legacy_loaded.pipeline_plan_policy.bias,
+        legacy_loaded.policy.linear.bias,
+    )
+    assert torch.allclose(
+        legacy_loaded.pipeline_event_policy.weight,
+        legacy_loaded.policy.linear.weight,
+    )
+    assert torch.allclose(
+        legacy_loaded.pipeline_event_policy.bias,
+        legacy_loaded.policy.linear.bias,
+    )
+    assert torch.allclose(
+        legacy_loaded.pipeline_navigation_policy.weight,
+        legacy_loaded.policy.linear.weight,
+    )
+    assert torch.allclose(
+        legacy_loaded.pipeline_navigation_policy.bias,
+        legacy_loaded.policy.linear.bias,
+    )
+    assert torch.allclose(
+        legacy_loaded.pipeline_option_policy.weight,
+        torch.zeros_like(legacy_loaded.pipeline_option_policy.weight),
+    )
+    expected_option_bias = torch.full_like(legacy_loaded.pipeline_option_policy.bias, -6.0)
+    expected_option_bias[PIPELINE_OPTION_NONE] = 6.0
+    assert torch.allclose(legacy_loaded.pipeline_option_policy.bias, expected_option_bias)
     train_recurrent_rl(cfg, loaded, device)
 
     saved = torch.load(tmp_path / "rl_from_init.pt", map_location="cpu")
@@ -6092,6 +9651,211 @@ def test_recurrent_actor_checkpoint_init_for_rl_smoke(tmp_path):
     torch.testing.assert_close(expanded_weight[:, obs_dim:], old_weight[:, -8:])
     with pytest.raises(ValueError, match="hidden_dim"):
         load_recurrent_actor_checkpoint(checkpoint, RecurrentConfig(**{**vars(cfg), "hidden_dim": 32}), device)
+
+
+def test_recurrent_checkpoint_expands_memory_before_pipeline_aux_features(tmp_path):
+    from syncorsink.policies.mappo_models import MAPPORecurrentActor
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _build_env,
+        _build_recurrent_obs_batch,
+        _recurrent_obs_layout_widths,
+        load_recurrent_actor_checkpoint,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=3,
+        fov_preset="easy",
+        max_steps=20,
+        obs_pipeline_features=True,
+        obs_exploration_memory=False,
+        comm=True,
+        hidden_dim=16,
+        device="cpu",
+    )
+    env = _build_env(cfg)
+    obs, _ = env.reset(seed=0)
+    obs_dim = _build_recurrent_obs_batch(obs, env.num_agents, cfg).shape[1]
+    model = MAPPORecurrentActor(
+        obs_dim=obs_dim,
+        action_dim=8,
+        hidden_dim=cfg.hidden_dim,
+        comm_enabled=cfg.comm,
+        comm_token_limit=cfg.comm_token_limit,
+        comm_vocab_size=cfg.comm_vocab_size,
+    )
+    with torch.no_grad():
+        weight = model.encoder.net[0].weight
+        pattern = torch.arange(weight.shape[1], dtype=weight.dtype).unsqueeze(0)
+        weight.copy_(pattern.repeat(weight.shape[0], 1))
+    checkpoint = tmp_path / "pipeline_aux_recurrent.pt"
+    torch.save({"model": model.state_dict(), "config": vars(cfg), "obs_dim": obs_dim}, checkpoint)
+
+    expanded_cfg = RecurrentConfig(**{
+        **vars(cfg),
+        "obs_exploration_memory": True,
+        "obs_memory_mode": "egocentric",
+        "obs_memory_radius": 1,
+        "recurrent_init_allow_obs_dim_mismatch": True,
+    })
+    old_layout = _recurrent_obs_layout_widths(cfg)
+    new_layout = _recurrent_obs_layout_widths(expanded_cfg)
+    loaded = load_recurrent_actor_checkpoint(checkpoint, expanded_cfg, "cpu")
+    old_weight = model.encoder.net[0].weight.detach()
+    expanded_weight = loaded.encoder.net[0].weight.detach()
+
+    base_dim = old_layout["base"]
+    aux_dim = old_layout["aux"]
+    memory_delta = new_layout["memory"] - old_layout["memory"]
+    assert old_layout["memory"] == 0
+    assert memory_delta > 0
+
+    torch.testing.assert_close(expanded_weight[:, :base_dim], old_weight[:, :base_dim])
+    torch.testing.assert_close(
+        expanded_weight[:, base_dim:base_dim + memory_delta],
+        torch.zeros_like(expanded_weight[:, base_dim:base_dim + memory_delta]),
+    )
+    torch.testing.assert_close(
+        expanded_weight[:, base_dim + memory_delta:base_dim + memory_delta + aux_dim],
+        old_weight[:, base_dim:base_dim + aux_dim],
+    )
+    torch.testing.assert_close(expanded_weight[:, -8:], old_weight[:, -8:])
+
+
+def test_recurrent_residual_backbone_checkpoint_round_trip(tmp_path):
+    from syncorsink.policies.mappo_models import MAPPORecurrentActor
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _build_env,
+        _build_recurrent_obs_batch,
+        _feedback_matrix,
+        load_recurrent_actor_checkpoint,
+        load_recurrent_checkpoint_policy,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        fov_preset="easy",
+        max_steps=12,
+        obs_exploration_memory=True,
+        obs_feedback=True,
+        obs_normalize_tokens=True,
+        obs_memory_mode="egocentric",
+        obs_memory_radius=2,
+        hidden_dim=16,
+        recurrent_backbone="residual_mlp",
+        comm=False,
+    )
+    env = _build_env(cfg)
+    obs, _info = env.reset(seed=0)
+    obs_dim = _build_recurrent_obs_batch(
+        obs,
+        env.num_agents,
+        cfg,
+        feedback=_feedback_matrix(cfg, env.num_agents),
+    ).shape[1]
+    model = MAPPORecurrentActor(
+        obs_dim=obs_dim,
+        action_dim=8,
+        hidden_dim=cfg.hidden_dim,
+        backbone=cfg.recurrent_backbone,
+        comm_enabled=cfg.comm,
+        comm_token_limit=cfg.comm_token_limit,
+        comm_vocab_size=cfg.comm_vocab_size,
+    )
+    logits, next_hidden = model(
+        torch.zeros(env.num_agents, obs_dim),
+        model.init_hidden(env.num_agents, torch.device("cpu")),
+    )
+    assert logits.shape == (env.num_agents, 8)
+    assert next_hidden[0].shape == (env.num_agents, cfg.hidden_dim)
+
+    checkpoint = tmp_path / "recurrent_residual.pt"
+    torch.save({"model": model.state_dict(), "config": vars(cfg)}, checkpoint)
+    loaded = load_recurrent_actor_checkpoint(checkpoint, cfg, torch.device("cpu"))
+    assert loaded.backbone == "residual_mlp"
+    assert "encoder.input.0.weight" in loaded.state_dict()
+
+    policy = load_recurrent_checkpoint_policy(checkpoint, device="cpu")
+    assert policy.metadata()["recurrent_backbone"] == "residual_mlp"
+
+    with pytest.raises(ValueError, match="recurrent_backbone"):
+        load_recurrent_actor_checkpoint(
+            checkpoint,
+            RecurrentConfig(**{**vars(cfg), "recurrent_backbone": "mlp"}),
+            torch.device("cpu"),
+        )
+
+
+def test_recurrent_local_cnn_backbone_checkpoint_round_trip(tmp_path):
+    from syncorsink.policies.mappo_models import MAPPORecurrentActor
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _build_env,
+        _build_recurrent_obs_batch,
+        _feedback_matrix,
+        _recurrent_fov_radius,
+        load_recurrent_actor_checkpoint,
+        load_recurrent_checkpoint_policy,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=3,
+        fov_preset="easy",
+        max_steps=20,
+        obs_pipeline_features=True,
+        hidden_dim=16,
+        recurrent_backbone="local_cnn",
+        comm=False,
+    )
+    env = _build_env(cfg)
+    obs, _info = env.reset(seed=0)
+    obs_dim = _build_recurrent_obs_batch(
+        obs,
+        env.num_agents,
+        cfg,
+        feedback=_feedback_matrix(cfg, env.num_agents),
+    ).shape[1]
+    model = MAPPORecurrentActor(
+        obs_dim=obs_dim,
+        action_dim=8,
+        hidden_dim=cfg.hidden_dim,
+        backbone=cfg.recurrent_backbone,
+        fov_radius=_recurrent_fov_radius(cfg),
+        comm_enabled=cfg.comm,
+        comm_token_limit=cfg.comm_token_limit,
+        comm_vocab_size=cfg.comm_vocab_size,
+    )
+    logits, next_hidden = model(
+        torch.zeros(env.num_agents, obs_dim),
+        model.init_hidden(env.num_agents, torch.device("cpu")),
+    )
+    assert logits.shape == (env.num_agents, 8)
+    assert next_hidden[0].shape == (env.num_agents, cfg.hidden_dim)
+
+    checkpoint = tmp_path / "recurrent_local_cnn.pt"
+    torch.save({"model": model.state_dict(), "config": vars(cfg), "obs_dim": obs_dim}, checkpoint)
+    loaded = load_recurrent_actor_checkpoint(checkpoint, cfg, torch.device("cpu"))
+    state_keys = set(loaded.state_dict())
+    assert loaded.backbone == "local_cnn"
+    assert "encoder.spatial.0.weight" in state_keys
+    assert "encoder.tail.0.weight" in state_keys
+
+    policy = load_recurrent_checkpoint_policy(checkpoint, device="cpu")
+    assert policy.metadata()["recurrent_backbone"] == "local_cnn"
+
+    with pytest.raises(ValueError, match="fov_preset"):
+        load_recurrent_actor_checkpoint(
+            checkpoint,
+            RecurrentConfig(**{**vars(cfg), "fov_preset": "medium"}),
+            torch.device("cpu"),
+        )
 
 
 def test_recurrent_comm_feedback_ppo_smoke(tmp_path):
@@ -6124,6 +9888,7 @@ def test_recurrent_comm_feedback_ppo_smoke(tmp_path):
         rl_updates=1,
         rollout_steps=4,
         rl_rollout_eval_decoding=True,
+        rl_eval_decoding_action_loss_weight=0.25,
         rl_epochs=1,
         rl_eval_every=1,
         rl_eval_episodes=1,
@@ -6433,13 +10198,22 @@ def test_pipeline_dagger_focus_helpers_detect_pre_event_misses():
         _label_latest_pipeline_bad_interact_actions,
         _label_latest_pipeline_bad_drop_actions,
         _new_episode_sequence,
+        _pipeline_bad_interact_agents,
         _pipeline_bad_pickup_miss_agents,
         _pipeline_delivery_action_label_mask,
+        _pipeline_delivery_progress_action_label_mask,
         _pipeline_delivery_miss_agents,
+        _pipeline_delivery_ready_agents,
         _pipeline_drop_miss_agents,
+        _pipeline_navigation_action_label_mask,
         _pipeline_pickup_action_label_mask,
+        _pipeline_pickup_gate_label_mask,
+        _pipeline_ready_interact_action_label_mask,
         _pipeline_pickup_miss_agents,
+        _pipeline_station_guard_action_label_mask,
         _pipeline_station_stall_miss_agents,
+        _pipeline_sync_action_label_mask,
+        _pipeline_wrong_station_recovery_action_label_mask,
         _pipeline_wrong_delivery_miss_agents,
         _update_pipeline_wrong_delivery_provenance,
     )
@@ -6467,17 +10241,54 @@ def test_pipeline_dagger_focus_helpers_detect_pre_event_misses():
 
     env.agent_positions[0] = resource_pos
     env.inventories[0] = 0
+    pipeline_label_cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=8,
+        agents=2,
+    )
     pickup_mask, pickup_action_id = _pipeline_pickup_action_label_mask(
         env,
         {0: {"action": env.ACTION_PICKUP}},
     )
     np.testing.assert_array_equal(pickup_mask, np.array([1.0, 0.0], dtype=np.float32))
     np.testing.assert_array_equal(pickup_action_id, np.array([env.ACTION_PICKUP, -1], dtype=np.int64))
+    pickup_gate_mask, pickup_gate_label = _pipeline_pickup_gate_label_mask(
+        env,
+        env._build_observations(),
+        pipeline_label_cfg,
+    )
+    np.testing.assert_array_equal(pickup_gate_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(pickup_gate_label, np.array([1.0, 0.0], dtype=np.float32))
     assert _pipeline_pickup_miss_agents(
         env,
         {0: {"action": env.ACTION_PICKUP}},
         {0: {"action": env.ACTION_STAY}},
     ) == [0]
+    resource_navigation_found = False
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        candidate_pos = (int(resource_pos[0]) + dx, int(resource_pos[1]) + dy)
+        if not (0 <= candidate_pos[0] < env.map_size and 0 <= candidate_pos[1] < env.map_size):
+            continue
+        env.agent_positions[0] = candidate_pos
+        env.inventories[0] = 0
+        nav_obs = env._build_observations()
+        navigation_mask, navigation_action_id = _pipeline_navigation_action_label_mask(
+            env,
+            nav_obs,
+            pipeline_label_cfg,
+        )
+        if float(navigation_mask[0]) <= 0.0:
+            continue
+        resource_navigation_found = True
+        assert int(navigation_action_id[0]) in {
+            env.ACTION_UP,
+            env.ACTION_DOWN,
+            env.ACTION_LEFT,
+            env.ACTION_RIGHT,
+        }
+        assert nav_obs[0]["action_mask"][int(navigation_action_id[0])] == 1
+        break
+    assert resource_navigation_found
 
     unneeded_resource_pos, unneeded_type = next(
         (pos, int(resource_type))
@@ -6487,17 +10298,19 @@ def test_pipeline_dagger_focus_helpers_detect_pre_event_misses():
     env.agent_positions[0] = tuple(unneeded_resource_pos)
     env.inventories[0] = 0
     bad_pickup_obs = env._build_observations()
-    bad_pickup_cfg = RecurrentConfig(
-        scenario="pipeline_assembly",
-        map_size=8,
-        agents=2,
+    pickup_gate_mask, pickup_gate_label = _pipeline_pickup_gate_label_mask(
+        env,
+        bad_pickup_obs,
+        pipeline_label_cfg,
     )
+    np.testing.assert_array_equal(pickup_gate_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(pickup_gate_label, np.array([0.0, 0.0], dtype=np.float32))
     assert _pipeline_bad_pickup_miss_agents(
         env,
         bad_pickup_obs,
         {0: {"action": env.ACTION_STAY}},
         {0: {"action": env.ACTION_PICKUP}},
-        bad_pickup_cfg,
+        pipeline_label_cfg,
     ) == [0]
 
     station = tuple(stage["station"])
@@ -6511,11 +10324,45 @@ def test_pipeline_dagger_focus_helpers_detect_pre_event_misses():
     )
     np.testing.assert_array_equal(delivery_mask, np.array([1.0, 0.0], dtype=np.float32))
     np.testing.assert_array_equal(delivery_action_id, np.array([env.ACTION_INTERACT, -1], dtype=np.int64))
+    delivery_progress_obs = env._build_observations()
+    delivery_progress_mask, delivery_progress_action_id = _pipeline_delivery_progress_action_label_mask(
+        env,
+        delivery_progress_obs,
+        pipeline_label_cfg,
+    )
+    np.testing.assert_array_equal(
+        delivery_progress_mask,
+        np.array([1.0, 0.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        delivery_progress_action_id,
+        np.array([env.ACTION_INTERACT, -1], dtype=np.int64),
+    )
+    ready_interact_mask, ready_interact_action_id = _pipeline_ready_interact_action_label_mask(
+        env,
+        delivery_progress_obs,
+    )
+    np.testing.assert_array_equal(
+        ready_interact_mask,
+        np.array([1.0, 0.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        ready_interact_action_id,
+        np.array([env.ACTION_INTERACT, -1], dtype=np.int64),
+    )
     assert _pipeline_delivery_miss_agents(
         env,
         {0: {"action": env.ACTION_INTERACT}},
         {0: {"action": env.ACTION_STAY}},
     ) == [0]
+    assert _pipeline_delivery_ready_agents(
+        env,
+        {0: {"action": env.ACTION_INTERACT}},
+    ) == [0]
+    assert _pipeline_delivery_ready_agents(
+        env,
+        {0: {"action": env.ACTION_STAY}},
+    ) == []
     assert _pipeline_station_stall_miss_agents(
         env,
         {0: {"action": env.ACTION_INTERACT}},
@@ -6526,14 +10373,129 @@ def test_pipeline_dagger_focus_helpers_detect_pre_event_misses():
         {0: {"action": env.ACTION_STAY}},
         {0: {"action": env.ACTION_DROP}},
     ) == [0]
+
+    stage["sync"] = True
+    stage["delivered"] = []
+    env.agent_positions[0] = station
+    env.inventories[0] = needed_type
+    env.agent_positions[1] = station
+    env.inventories[1] = 0
+    pre_sync_obs = env._build_observations()
+    sync_mask, sync_action_id = _pipeline_sync_action_label_mask(
+        env,
+        pre_sync_obs,
+        pipeline_label_cfg,
+    )
+    np.testing.assert_array_equal(sync_mask, np.array([0.0, 1.0], dtype=np.float32))
+    assert int(sync_action_id[1]) == env.ACTION_INTERACT
+    station_guard_mask, station_guard_action_id = _pipeline_station_guard_action_label_mask(
+        env,
+        pre_sync_obs,
+        pipeline_label_cfg,
+    )
+    np.testing.assert_array_equal(station_guard_mask, np.array([0.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(station_guard_action_id, np.array([-1, -1], dtype=np.int64))
+    assert _pipeline_bad_interact_agents(
+        env,
+        {1: {"action": env.ACTION_INTERACT}},
+    ) == []
+
+    stage["delivered"] = [needed_type]
+    env.agent_positions[0] = station
+    env.inventories[0] = 0
+    env.agent_positions[1] = station
+    env.inventories[1] = 0
+    sync_ready_obs = env._build_observations()
+    sync_mask, sync_action_id = _pipeline_sync_action_label_mask(
+        env,
+        sync_ready_obs,
+        pipeline_label_cfg,
+    )
+    assert float(sync_mask[0]) == pytest.approx(1.0)
+    assert int(sync_action_id[0]) == env.ACTION_INTERACT
+    sync_ready_interact_mask, sync_ready_interact_action_id = (
+        _pipeline_ready_interact_action_label_mask(env, sync_ready_obs)
+    )
+    assert float(sync_ready_interact_mask[0]) == pytest.approx(1.0)
+    assert int(sync_ready_interact_action_id[0]) == env.ACTION_INTERACT
+
+    sync_navigation_found = False
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        candidate_pos = (int(station[0]) + dx, int(station[1]) + dy)
+        if not (0 <= candidate_pos[0] < env.map_size and 0 <= candidate_pos[1] < env.map_size):
+            continue
+        env.agent_positions[0] = candidate_pos
+        env.inventories[0] = 0
+        sync_nav_obs = env._build_observations()
+        sync_mask, sync_action_id = _pipeline_sync_action_label_mask(
+            env,
+            sync_nav_obs,
+            pipeline_label_cfg,
+        )
+        if float(sync_mask[0]) <= 0.0:
+            continue
+        sync_navigation_found = True
+        assert int(sync_action_id[0]) in {
+            env.ACTION_UP,
+            env.ACTION_DOWN,
+            env.ACTION_LEFT,
+            env.ACTION_RIGHT,
+        }
+        assert sync_nav_obs[0]["action_mask"][int(sync_action_id[0])] == 1
+        break
+    assert sync_navigation_found
+
+    stage["sync"] = False
+    stage["delivered"] = []
+
     wrong_station = next(pos for pos in env.meta["stations"] if tuple(pos) != station)
     env.agent_positions[0] = tuple(wrong_station)
     env.inventories[0] = needed_type
+    wrong_station_obs = env._build_observations()
+    navigation_mask, navigation_action_id = _pipeline_navigation_action_label_mask(
+        env,
+        wrong_station_obs,
+        pipeline_label_cfg,
+    )
+    np.testing.assert_array_equal(
+        navigation_mask,
+        np.array([1.0, 0.0], dtype=np.float32),
+    )
+    assert int(navigation_action_id[0]) in {
+        env.ACTION_UP,
+        env.ACTION_DOWN,
+        env.ACTION_LEFT,
+        env.ACTION_RIGHT,
+    }
+    assert wrong_station_obs[0]["action_mask"][int(navigation_action_id[0])] == 1
+    (
+        wrong_station_recovery_mask,
+        wrong_station_recovery_action_id,
+    ) = _pipeline_wrong_station_recovery_action_label_mask(
+        env,
+        wrong_station_obs,
+        pipeline_label_cfg,
+    )
+    np.testing.assert_array_equal(
+        wrong_station_recovery_mask,
+        np.array([1.0, 0.0], dtype=np.float32),
+    )
+    assert int(wrong_station_recovery_action_id[0]) in {
+        env.ACTION_UP,
+        env.ACTION_DOWN,
+        env.ACTION_LEFT,
+        env.ACTION_RIGHT,
+    }
+    assert wrong_station_obs[0]["action_mask"][int(wrong_station_recovery_action_id[0])] == 1
     assert _pipeline_wrong_delivery_miss_agents(
         env,
         {0: {"action": env.ACTION_STAY}},
         {0: {"action": env.ACTION_INTERACT}},
     ) == [0]
+    assert _pipeline_delivery_ready_agents(
+        env,
+        {0: {"action": env.ACTION_INTERACT}},
+    ) == []
 
     ep_data = _new_episode_sequence()
     ep_data["pipeline_bad_pickup_action_mask"].extend([0.0, 0.0])

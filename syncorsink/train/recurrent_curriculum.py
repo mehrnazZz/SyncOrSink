@@ -16,13 +16,16 @@ import torch
 
 from syncorsink.train.mappo import resolve_device
 from syncorsink.train.recurrent_bc_rl import (
+    DEFAULT_DAGGER_FOCUS_EVENTS,
     RecurrentConfig,
     _init_recurrent_wandb,
     _map_diagnostics_wandb_payload,
+    _parse_map_sampling_weights,
     _wandb_log,
     collect_episode_demos,
     evaluate_recurrent_policy_multi_seed,
     load_recurrent_actor_checkpoint,
+    train_pipeline_assisted_rollout_bc_stage,
     train_recurrent_bc_dagger,
     train_recurrent_rl,
 )
@@ -37,7 +40,7 @@ class RecurrentCurriculumConfig:
     agents: int = 2
     fov_preset: str = "easy"
     stage_map_suites: str = "8;8,16;8,16,32"
-    max_steps_by_map: str = "8:60,16:120,32:240"
+    max_steps_by_map: str = "8:80,16:160,32:500"
     train_map_sampling_weights: str = ""
     promotion_success_threshold: float = 0.8
     stop_on_unmet_mastery: bool = True
@@ -54,6 +57,10 @@ class RecurrentCurriculumConfig:
     obs_memory_radius: int = 4
     obs_navigation_features: bool = True
     obs_pipeline_features: bool = True
+    obs_pipeline_feedback: bool = True
+    obs_pipeline_feedback_metadata: bool = True
+    obs_pipeline_progress_features: bool = False
+    obs_pipeline_shared_feedback: bool = False
     obs_signal_features: bool = True
     obs_signal_sync_feedback: bool = True
     obs_signal_scan_state: bool = True
@@ -72,6 +79,7 @@ class RecurrentCurriculumConfig:
     pipeline_required_per_stage_max: int = 2
     pipeline_sync_probability: float = 0.5
     pipeline_dependency_probability: float = 0.7
+    pipeline_wrong_delivery_penalty: float = 0.25
     pipeline_stage_count_schedule: str = ""
     pipeline_required_per_stage_min_schedule: str = ""
     pipeline_required_per_stage_max_schedule: str = ""
@@ -79,6 +87,7 @@ class RecurrentCurriculumConfig:
     pipeline_dependency_probability_schedule: str = ""
 
     hidden_dim: int = 128
+    recurrent_backbone: str = "mlp"
     demo_episodes: int = 60
     bc_epochs: int = 3
     bc_lr: float = 1e-4
@@ -97,8 +106,15 @@ class RecurrentCurriculumConfig:
     )
     bc_comm_loss_weight: float = 0.1
     bc_comm_send_pos_weight: float = 5.0
+    bc_comm_send_loss_weight: float = 1.0
+    bc_comm_length_loss_weight: float = 1.0
+    bc_comm_token_loss_weight: float = 1.0
+    bc_comm_send_rate_penalty_weight: float = 0.0
+    bc_comm_send_rate_target: float = -1.0
     bc_calibrate_send_threshold: bool = True
     bc_send_threshold_target_rate: float = -1.0
+    bc_calibrate_pipeline_interact_gate_threshold: bool = False
+    bc_pipeline_interact_gate_threshold_target_rate: float = -1.0
     bc_signal_redundant_target_interact_weight: float = 1.0
     bc_signal_target_pursuit_weight: float = 1.0
     bc_signal_target_pursuit_action_weight: float = 0.0
@@ -133,8 +149,26 @@ class RecurrentCurriculumConfig:
     bc_signal_frontier_exploration_min_map_size: int = 16
     bc_pipeline_pickup_action_loss_weight: float = 0.0
     bc_pipeline_delivery_action_loss_weight: float = 0.0
+    bc_pipeline_delivery_progress_action_loss_weight: float = 0.0
+    bc_pipeline_navigation_action_loss_weight: float = 0.0
+    bc_pipeline_frontier_exploration_action_loss_weight: float = 0.0
+    bc_pipeline_frontier_exploration_min_map_size: int = 8
+    bc_pipeline_sync_action_loss_weight: float = 0.0
+    bc_pipeline_ready_interact_action_loss_weight: float = 0.0
+    bc_pipeline_station_guard_action_loss_weight: float = 0.0
+    bc_pipeline_pickup_gate_loss_weight: float = 0.0
+    bc_pipeline_pickup_gate_pos_weight: float = 1.0
+    bc_pipeline_pickup_gate_neg_weight: float = 1.0
     bc_pipeline_plan_action_loss_weight: float = 0.0
+    bc_pipeline_plan_head_loss_weight: float = 0.0
+    bc_pipeline_option_loss_weight: float = 0.0
     bc_pipeline_message_loss_weight: float = 0.0
+    bc_pipeline_send_gate_loss_weight: float = 0.0
+    bc_pipeline_send_gate_pos_weight: float = 1.0
+    bc_pipeline_send_gate_neg_weight: float = 1.0
+    bc_pipeline_interact_gate_loss_weight: float = 0.0
+    bc_pipeline_interact_gate_pos_weight: float = 1.0
+    bc_pipeline_interact_gate_neg_weight: float = 1.0
     bc_pipeline_bad_pickup_action_loss_weight: float = 0.0
     bc_pipeline_bad_drop_action_loss_weight: float = 0.0
     bc_pipeline_bad_interact_action_loss_weight: float = 0.0
@@ -147,6 +181,7 @@ class RecurrentCurriculumConfig:
     dagger_seed_list: str = ""
     dagger_retrain_from_scratch: bool = False
     dagger_failed_episode_weight: float = 0.25
+    dagger_focus_events: str = DEFAULT_DAGGER_FOCUS_EVENTS
     dagger_focus_error_weight: float = 3.0
     dagger_focus_recovery_weight: float = 2.0
     dagger_focus_window: int = 1
@@ -164,6 +199,7 @@ class RecurrentCurriculumConfig:
     dagger_movement_stall_focus_weight: float = 4.0
     dagger_solo_target_team_weight: float = 1.0
     dagger_solo_target_team_success_only: bool = False
+    dagger_restore_best: bool = True
     dagger_positive_target_pursuit_min_map_size: int = 16
     dagger_positive_replay_events: str = ""
     dagger_replay_event_weights: str = ""
@@ -181,6 +217,17 @@ class RecurrentCurriculumConfig:
     dagger_failed_parent_replay_weight_scale: float = 1.0
     dagger_expert_max_replay_snippets_per_episode: int = -1
 
+    pipeline_assisted_rollout_episodes: int = 0
+    pipeline_assisted_rollout_seed_base: int = 20000
+    pipeline_assisted_rollout_seed_list: str = ""
+    pipeline_assisted_rollout_max_steps_per_episode: int = 0
+    pipeline_assisted_rollout_weight: float = 1.0
+    pipeline_assisted_rollout_success_only: bool = False
+    pipeline_assisted_rollout_navigation_assist: bool = True
+    pipeline_assisted_rollout_navigation_assist_trust_messages: bool = True
+    pipeline_assisted_rollout_station_interact_guard: bool = True
+    pipeline_assisted_rollout_bc_epochs: int = -1
+
     rl_updates: int = 0
     rl_updates_schedule: str = ""
     rl_early_stop_eval_patience: int = 0
@@ -190,8 +237,30 @@ class RecurrentCurriculumConfig:
     rl_rollout_eval_decoding: bool = False
     rl_rollout_pipeline_navigation_assist: bool = False
     rl_rollout_pipeline_navigation_assist_trust_messages: bool = False
+    rl_rollout_pipeline_station_interact_guard: bool = False
+    rl_rollout_pipeline_interact_gate_promote: bool = False
+    rl_eval_decoding_action_loss_weight: float = 0.0
+    rl_pipeline_assisted_action_loss_weight: float = 0.0
+    rl_pipeline_interact_gate_loss_weight: float = 0.0
+    rl_pipeline_interact_gate_pos_weight: float = 1.0
+    rl_pipeline_interact_gate_neg_weight: float = 1.0
+    rl_pipeline_pickup_gate_loss_weight: float = 0.0
+    rl_pipeline_pickup_gate_pos_weight: float = 1.0
+    rl_pipeline_pickup_gate_neg_weight: float = 1.0
+    rl_pipeline_delivery_progress_action_loss_weight: float = 0.0
+    rl_pipeline_navigation_action_loss_weight: float = 0.0
+    rl_pipeline_sync_action_loss_weight: float = 0.0
+    rl_pipeline_ready_interact_action_loss_weight: float = 0.0
+    rl_pipeline_station_guard_action_loss_weight: float = 0.0
+    rl_pipeline_wrong_station_recovery_action_loss_weight: float = 0.0
+    rl_pipeline_plan_action_loss_weight: float = 0.0
+    rl_pipeline_plan_head_loss_weight: float = 0.0
+    rl_pipeline_option_loss_weight: float = 0.0
     rl_redundant_target_scan_penalty: float = 0.0
     rl_wrong_target_scan_penalty: float = 0.0
+    rl_pipeline_bad_pickup_penalty: float = 0.0
+    rl_pipeline_bad_interact_penalty: float = 0.0
+    rl_pipeline_unneeded_drop_bonus: float = 0.0
     rl_epochs: int = 2
     minibatch_seqs: int = 8
     gamma: float = 0.99
@@ -234,10 +303,22 @@ class RecurrentCurriculumConfig:
     eval_signal_scan_refresh_threshold: float = 0.5
     eval_pipeline_navigation_assist: bool = False
     eval_pipeline_navigation_assist_trust_messages: bool = False
+    eval_pipeline_station_interact_guard: bool = False
+    eval_pipeline_plan_broadcast_assist: bool = False
+    eval_pipeline_pickup_gate_suppress: bool = False
+    eval_pipeline_frontier_exploration_assist: bool = False
+    eval_pipeline_interact_gate_threshold: float = -1.0
+    eval_pipeline_interact_gate_promote: bool = False
+    eval_pipeline_event_head_threshold: float = -1.0
+    eval_pipeline_navigation_head_threshold: float = -1.0
+    eval_pipeline_plan_head_threshold: float = -1.0
+    eval_pipeline_option_threshold: float = -1.0
+    eval_pipeline_option_allow_interact: bool = False
 
     output_dir: str = "logs/recurrent_curriculum"
     run_name: str | None = None
     initial_recurrent_checkpoint: str | None = None
+    recurrent_init_allow_obs_dim_mismatch: bool = False
     seed: int = 0
     device: str = "auto"
     dry_run: bool = False
@@ -249,6 +330,7 @@ class RecurrentCurriculumConfig:
 def run_recurrent_curriculum(cfg: RecurrentCurriculumConfig) -> dict[str, Any]:
     stage_suites = _parse_stage_map_suites(cfg.stage_map_suites)
     max_steps = _parse_max_steps_by_map(cfg.max_steps_by_map)
+    _validate_curriculum_map_sampling_weights(cfg.train_map_sampling_weights, stage_suites)
     run_dir = _make_run_dir(cfg)
     summary_path = run_dir / "summary.json"
     checkpoints_dir = run_dir / "checkpoints"
@@ -304,6 +386,19 @@ def run_recurrent_curriculum(cfg: RecurrentCurriculumConfig) -> dict[str, Any]:
             initial_model=model if cfg.carry_model_between_stages else None,
         )
         bc_eval_result = (best_round or {}).get("eval")
+        assisted_rollout_summary = None
+        if int(stage_cfg.pipeline_assisted_rollout_episodes) > 0:
+            model, all_episodes, assisted_rollout_summary, assisted_eval_result = (
+                train_pipeline_assisted_rollout_bc_stage(
+                    stage_cfg,
+                    model,
+                    all_episodes,
+                    device,
+                    wandb_run=stage_run,
+                )
+            )
+            if assisted_eval_result is not None:
+                bc_eval_result = assisted_eval_result
         if bc_eval_result is None:
             bc_eval_result = evaluate_recurrent_policy_multi_seed(
                 stage_cfg,
@@ -333,14 +428,21 @@ def run_recurrent_curriculum(cfg: RecurrentCurriculumConfig) -> dict[str, Any]:
             eval_result=eval_result,
             history=history,
             best_round=best_round,
+            assisted_rollout_summary=assisted_rollout_summary,
         )
         stage_row = {
             "stage_index": stage_idx,
             "stage_name": _stage_name(suite),
             "train_map_sizes": list(suite),
+            "max_steps": {
+                str(size): int(max_steps.get(size, _stage_max_steps((size,), max_steps)))
+                for size in suite
+            },
+            "pipeline": _stage_pipeline_settings(cfg, stage_idx),
             "checkpoint": str(checkpoint_path),
             "demo_episodes": len(demos),
             "dataset_episodes": len(all_episodes),
+            "pipeline_assisted_rollout": assisted_rollout_summary,
             "dagger_history": history,
             "best_round": best_round,
             "bc_eval": bc_eval_result,
@@ -516,7 +618,10 @@ def _stage_recurrent_config(
         scenario=cfg.scenario,
         map_size=int(suite[0]),
         train_map_sizes=",".join(str(size) for size in suite),
-        train_map_sampling_weights=cfg.train_map_sampling_weights,
+        train_map_sampling_weights=_stage_train_map_sampling_weights(
+            cfg.train_map_sampling_weights,
+            suite,
+        ),
         map_max_steps=_map_max_steps_string(max_steps),
         agents=cfg.agents,
         fov_preset=cfg.fov_preset,
@@ -530,6 +635,10 @@ def _stage_recurrent_config(
         obs_memory_radius=cfg.obs_memory_radius,
         obs_navigation_features=cfg.obs_navigation_features,
         obs_pipeline_features=cfg.obs_pipeline_features,
+        obs_pipeline_feedback=cfg.obs_pipeline_feedback,
+        obs_pipeline_feedback_metadata=cfg.obs_pipeline_feedback_metadata,
+        obs_pipeline_progress_features=cfg.obs_pipeline_progress_features,
+        obs_pipeline_shared_feedback=cfg.obs_pipeline_shared_feedback,
         obs_signal_features=cfg.obs_signal_features,
         obs_signal_sync_feedback=cfg.obs_signal_sync_feedback,
         obs_signal_scan_state=cfg.obs_signal_scan_state,
@@ -538,6 +647,7 @@ def _stage_recurrent_config(
         obs_signal_inferred_target_features=cfg.obs_signal_inferred_target_features,
         obs_signal_target_match_features=cfg.obs_signal_target_match_features,
         hidden_dim=cfg.hidden_dim,
+        recurrent_backbone=cfg.recurrent_backbone,
         comm=cfg.comm,
         comm_token_limit=cfg.comm_token_limit,
         comm_vocab_size=cfg.comm_vocab_size,
@@ -549,6 +659,7 @@ def _stage_recurrent_config(
         pipeline_required_per_stage_max=pipeline["required_per_stage_max"],
         pipeline_sync_probability=pipeline["sync_probability"],
         pipeline_dependency_probability=pipeline["dependency_probability"],
+        pipeline_wrong_delivery_penalty=cfg.pipeline_wrong_delivery_penalty,
         demo_episodes=cfg.demo_episodes,
         bc_epochs=cfg.bc_epochs,
         bc_lr=cfg.bc_lr,
@@ -564,8 +675,19 @@ def _stage_recurrent_config(
         bc_event_action_events=cfg.bc_event_action_events,
         bc_comm_loss_weight=cfg.bc_comm_loss_weight,
         bc_comm_send_pos_weight=cfg.bc_comm_send_pos_weight,
+        bc_comm_send_loss_weight=cfg.bc_comm_send_loss_weight,
+        bc_comm_length_loss_weight=cfg.bc_comm_length_loss_weight,
+        bc_comm_token_loss_weight=cfg.bc_comm_token_loss_weight,
+        bc_comm_send_rate_penalty_weight=cfg.bc_comm_send_rate_penalty_weight,
+        bc_comm_send_rate_target=cfg.bc_comm_send_rate_target,
         bc_calibrate_send_threshold=cfg.bc_calibrate_send_threshold,
         bc_send_threshold_target_rate=cfg.bc_send_threshold_target_rate,
+        bc_calibrate_pipeline_interact_gate_threshold=(
+            cfg.bc_calibrate_pipeline_interact_gate_threshold
+        ),
+        bc_pipeline_interact_gate_threshold_target_rate=(
+            cfg.bc_pipeline_interact_gate_threshold_target_rate
+        ),
         bc_signal_redundant_target_interact_weight=cfg.bc_signal_redundant_target_interact_weight,
         bc_signal_target_pursuit_weight=cfg.bc_signal_target_pursuit_weight,
         bc_signal_target_pursuit_action_weight=cfg.bc_signal_target_pursuit_action_weight,
@@ -608,8 +730,38 @@ def _stage_recurrent_config(
         ),
         bc_pipeline_pickup_action_loss_weight=cfg.bc_pipeline_pickup_action_loss_weight,
         bc_pipeline_delivery_action_loss_weight=cfg.bc_pipeline_delivery_action_loss_weight,
+        bc_pipeline_delivery_progress_action_loss_weight=(
+            cfg.bc_pipeline_delivery_progress_action_loss_weight
+        ),
+        bc_pipeline_navigation_action_loss_weight=(
+            cfg.bc_pipeline_navigation_action_loss_weight
+        ),
+        bc_pipeline_frontier_exploration_action_loss_weight=(
+            cfg.bc_pipeline_frontier_exploration_action_loss_weight
+        ),
+        bc_pipeline_frontier_exploration_min_map_size=(
+            cfg.bc_pipeline_frontier_exploration_min_map_size
+        ),
+        bc_pipeline_sync_action_loss_weight=cfg.bc_pipeline_sync_action_loss_weight,
+        bc_pipeline_ready_interact_action_loss_weight=(
+            cfg.bc_pipeline_ready_interact_action_loss_weight
+        ),
+        bc_pipeline_station_guard_action_loss_weight=(
+            cfg.bc_pipeline_station_guard_action_loss_weight
+        ),
+        bc_pipeline_pickup_gate_loss_weight=cfg.bc_pipeline_pickup_gate_loss_weight,
+        bc_pipeline_pickup_gate_pos_weight=cfg.bc_pipeline_pickup_gate_pos_weight,
+        bc_pipeline_pickup_gate_neg_weight=cfg.bc_pipeline_pickup_gate_neg_weight,
         bc_pipeline_plan_action_loss_weight=cfg.bc_pipeline_plan_action_loss_weight,
+        bc_pipeline_plan_head_loss_weight=cfg.bc_pipeline_plan_head_loss_weight,
+        bc_pipeline_option_loss_weight=cfg.bc_pipeline_option_loss_weight,
         bc_pipeline_message_loss_weight=cfg.bc_pipeline_message_loss_weight,
+        bc_pipeline_send_gate_loss_weight=cfg.bc_pipeline_send_gate_loss_weight,
+        bc_pipeline_send_gate_pos_weight=cfg.bc_pipeline_send_gate_pos_weight,
+        bc_pipeline_send_gate_neg_weight=cfg.bc_pipeline_send_gate_neg_weight,
+        bc_pipeline_interact_gate_loss_weight=cfg.bc_pipeline_interact_gate_loss_weight,
+        bc_pipeline_interact_gate_pos_weight=cfg.bc_pipeline_interact_gate_pos_weight,
+        bc_pipeline_interact_gate_neg_weight=cfg.bc_pipeline_interact_gate_neg_weight,
         bc_pipeline_bad_pickup_action_loss_weight=cfg.bc_pipeline_bad_pickup_action_loss_weight,
         bc_pipeline_bad_drop_action_loss_weight=cfg.bc_pipeline_bad_drop_action_loss_weight,
         bc_pipeline_bad_interact_action_loss_weight=cfg.bc_pipeline_bad_interact_action_loss_weight,
@@ -623,6 +775,7 @@ def _stage_recurrent_config(
             False if has_initial_model and cfg.carry_model_between_stages else cfg.dagger_retrain_from_scratch
         ),
         dagger_failed_episode_weight=cfg.dagger_failed_episode_weight,
+        dagger_focus_events=cfg.dagger_focus_events,
         dagger_focus_error_weight=cfg.dagger_focus_error_weight,
         dagger_focus_recovery_weight=cfg.dagger_focus_recovery_weight,
         dagger_focus_window=cfg.dagger_focus_window,
@@ -644,6 +797,7 @@ def _stage_recurrent_config(
         dagger_movement_stall_focus_weight=cfg.dagger_movement_stall_focus_weight,
         dagger_solo_target_team_weight=cfg.dagger_solo_target_team_weight,
         dagger_solo_target_team_success_only=cfg.dagger_solo_target_team_success_only,
+        dagger_restore_best=cfg.dagger_restore_best,
         dagger_positive_target_pursuit_min_map_size=cfg.dagger_positive_target_pursuit_min_map_size,
         dagger_positive_replay_events=cfg.dagger_positive_replay_events,
         dagger_replay_event_weights=cfg.dagger_replay_event_weights,
@@ -662,6 +816,24 @@ def _stage_recurrent_config(
         ),
         dagger_failed_parent_replay_weight_scale=cfg.dagger_failed_parent_replay_weight_scale,
         dagger_expert_max_replay_snippets_per_episode=cfg.dagger_expert_max_replay_snippets_per_episode,
+        pipeline_assisted_rollout_episodes=cfg.pipeline_assisted_rollout_episodes,
+        pipeline_assisted_rollout_seed_base=cfg.pipeline_assisted_rollout_seed_base,
+        pipeline_assisted_rollout_seed_list=cfg.pipeline_assisted_rollout_seed_list,
+        pipeline_assisted_rollout_max_steps_per_episode=(
+            cfg.pipeline_assisted_rollout_max_steps_per_episode
+        ),
+        pipeline_assisted_rollout_weight=cfg.pipeline_assisted_rollout_weight,
+        pipeline_assisted_rollout_success_only=cfg.pipeline_assisted_rollout_success_only,
+        pipeline_assisted_rollout_navigation_assist=(
+            cfg.pipeline_assisted_rollout_navigation_assist
+        ),
+        pipeline_assisted_rollout_navigation_assist_trust_messages=(
+            cfg.pipeline_assisted_rollout_navigation_assist_trust_messages
+        ),
+        pipeline_assisted_rollout_station_interact_guard=(
+            cfg.pipeline_assisted_rollout_station_interact_guard
+        ),
+        pipeline_assisted_rollout_bc_epochs=cfg.pipeline_assisted_rollout_bc_epochs,
         rl_updates=_stage_rl_updates(cfg, stage_idx),
         rl_early_stop_eval_patience=cfg.rl_early_stop_eval_patience,
         rollout_steps=cfg.rollout_steps,
@@ -672,8 +844,40 @@ def _stage_recurrent_config(
         rl_rollout_pipeline_navigation_assist_trust_messages=(
             cfg.rl_rollout_pipeline_navigation_assist_trust_messages
         ),
+        rl_rollout_pipeline_station_interact_guard=cfg.rl_rollout_pipeline_station_interact_guard,
+        rl_rollout_pipeline_interact_gate_promote=cfg.rl_rollout_pipeline_interact_gate_promote,
+        rl_eval_decoding_action_loss_weight=cfg.rl_eval_decoding_action_loss_weight,
+        rl_pipeline_assisted_action_loss_weight=cfg.rl_pipeline_assisted_action_loss_weight,
+        rl_pipeline_interact_gate_loss_weight=cfg.rl_pipeline_interact_gate_loss_weight,
+        rl_pipeline_interact_gate_pos_weight=cfg.rl_pipeline_interact_gate_pos_weight,
+        rl_pipeline_interact_gate_neg_weight=cfg.rl_pipeline_interact_gate_neg_weight,
+        rl_pipeline_pickup_gate_loss_weight=cfg.rl_pipeline_pickup_gate_loss_weight,
+        rl_pipeline_pickup_gate_pos_weight=cfg.rl_pipeline_pickup_gate_pos_weight,
+        rl_pipeline_pickup_gate_neg_weight=cfg.rl_pipeline_pickup_gate_neg_weight,
+        rl_pipeline_delivery_progress_action_loss_weight=(
+            cfg.rl_pipeline_delivery_progress_action_loss_weight
+        ),
+        rl_pipeline_navigation_action_loss_weight=(
+            cfg.rl_pipeline_navigation_action_loss_weight
+        ),
+        rl_pipeline_sync_action_loss_weight=cfg.rl_pipeline_sync_action_loss_weight,
+        rl_pipeline_ready_interact_action_loss_weight=(
+            cfg.rl_pipeline_ready_interact_action_loss_weight
+        ),
+        rl_pipeline_station_guard_action_loss_weight=(
+            cfg.rl_pipeline_station_guard_action_loss_weight
+        ),
+        rl_pipeline_wrong_station_recovery_action_loss_weight=(
+            cfg.rl_pipeline_wrong_station_recovery_action_loss_weight
+        ),
+        rl_pipeline_plan_action_loss_weight=cfg.rl_pipeline_plan_action_loss_weight,
+        rl_pipeline_plan_head_loss_weight=cfg.rl_pipeline_plan_head_loss_weight,
+        rl_pipeline_option_loss_weight=cfg.rl_pipeline_option_loss_weight,
         rl_redundant_target_scan_penalty=cfg.rl_redundant_target_scan_penalty,
         rl_wrong_target_scan_penalty=cfg.rl_wrong_target_scan_penalty,
+        rl_pipeline_bad_pickup_penalty=cfg.rl_pipeline_bad_pickup_penalty,
+        rl_pipeline_bad_interact_penalty=cfg.rl_pipeline_bad_interact_penalty,
+        rl_pipeline_unneeded_drop_bonus=cfg.rl_pipeline_unneeded_drop_bonus,
         rl_epochs=cfg.rl_epochs,
         minibatch_seqs=cfg.minibatch_seqs,
         gamma=cfg.gamma,
@@ -715,7 +919,19 @@ def _stage_recurrent_config(
         eval_signal_scan_refresh_threshold=cfg.eval_signal_scan_refresh_threshold,
         eval_pipeline_navigation_assist=cfg.eval_pipeline_navigation_assist,
         eval_pipeline_navigation_assist_trust_messages=cfg.eval_pipeline_navigation_assist_trust_messages,
+        eval_pipeline_station_interact_guard=cfg.eval_pipeline_station_interact_guard,
+        eval_pipeline_plan_broadcast_assist=cfg.eval_pipeline_plan_broadcast_assist,
+        eval_pipeline_pickup_gate_suppress=cfg.eval_pipeline_pickup_gate_suppress,
+        eval_pipeline_frontier_exploration_assist=cfg.eval_pipeline_frontier_exploration_assist,
+        eval_pipeline_interact_gate_threshold=cfg.eval_pipeline_interact_gate_threshold,
+        eval_pipeline_interact_gate_promote=cfg.eval_pipeline_interact_gate_promote,
+        eval_pipeline_event_head_threshold=cfg.eval_pipeline_event_head_threshold,
+        eval_pipeline_navigation_head_threshold=cfg.eval_pipeline_navigation_head_threshold,
+        eval_pipeline_plan_head_threshold=cfg.eval_pipeline_plan_head_threshold,
+        eval_pipeline_option_threshold=cfg.eval_pipeline_option_threshold,
+        eval_pipeline_option_allow_interact=cfg.eval_pipeline_option_allow_interact,
         save=str(checkpoint_path),
+        recurrent_init_allow_obs_dim_mismatch=cfg.recurrent_init_allow_obs_dim_mismatch,
         seed=int(cfg.seed) + stage_idx,
         device=cfg.device,
         wandb=cfg.wandb,
@@ -752,6 +968,40 @@ def _stage_pipeline_settings(cfg: RecurrentCurriculumConfig, stage_idx: int) -> 
             cfg.pipeline_dependency_probability,
         ),
     }
+
+
+def _validate_curriculum_map_sampling_weights(
+    raw_value: str,
+    stage_suites: list[tuple[int, ...]],
+) -> None:
+    weights = _parse_map_sampling_weights(
+        raw_value,
+        field_name="train_map_sampling_weights",
+    )
+    if not weights:
+        return
+    planned_maps = {int(size) for suite in stage_suites for size in suite}
+    unknown_maps = sorted(set(weights) - planned_maps)
+    if unknown_maps:
+        raise ValueError(
+            "train_map_sampling_weights contains map sizes not present in any curriculum stage: "
+            f"{unknown_maps}"
+        )
+
+
+def _stage_train_map_sampling_weights(raw_value: str, suite: tuple[int, ...]) -> str:
+    weights = _parse_map_sampling_weights(
+        raw_value,
+        field_name="train_map_sampling_weights",
+    )
+    if not weights:
+        return ""
+    entries = [
+        f"{int(size)}:{int(weights[int(size)])}"
+        for size in suite
+        if int(size) in weights
+    ]
+    return ",".join(entries)
 
 
 def _stage_rl_updates(cfg: RecurrentCurriculumConfig, stage_idx: int) -> int:
@@ -820,6 +1070,7 @@ def _save_stage_checkpoint(
     eval_result: dict[str, Any],
     history: list[dict[str, Any]],
     best_round: dict[str, Any] | None,
+    assisted_rollout_summary: dict[str, Any] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -833,6 +1084,7 @@ def _save_stage_checkpoint(
             "eval_recurrent_policy": eval_result,
             "dagger_history": history,
             "best_dagger_round": best_round,
+            "pipeline_assisted_rollout": assisted_rollout_summary,
         },
         path,
     )
@@ -877,13 +1129,19 @@ def main() -> None:
     parser.add_argument("--fov-preset", choices=["hard", "medium", "easy"], default="easy")
     parser.add_argument("--oracle-type", default="signal_hint_comm")
     parser.add_argument("--stage-map-suites", default="8;8,16;8,16,32")
-    parser.add_argument("--max-steps-by-map", default="8:60,16:120,32:240")
+    parser.add_argument("--max-steps-by-map", default=RecurrentCurriculumConfig.max_steps_by_map)
     parser.add_argument("--train-map-sampling-weights", default="")
     parser.add_argument("--promotion-success-threshold", type=float, default=0.8)
     parser.add_argument("--stop-on-unmet-mastery", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--carry-model-between-stages", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--demo-episodes", type=int, default=60)
     parser.add_argument("--hidden-dim", type=int, default=128)
+    parser.add_argument(
+        "--recurrent-backbone",
+        choices=["mlp", "residual_mlp", "local_cnn"],
+        default=RecurrentCurriculumConfig.recurrent_backbone,
+        help="Recurrent actor encoder backbone for every stage.",
+    )
     parser.add_argument("--bc-epochs", type=int, default=3)
     parser.add_argument("--bc-lr", type=float, default=1e-4)
     parser.add_argument("--bc-seq-len", type=int, default=32)
@@ -901,8 +1159,24 @@ def main() -> None:
     )
     parser.add_argument("--bc-comm-loss-weight", type=float, default=0.1)
     parser.add_argument("--bc-comm-send-pos-weight", type=float, default=5.0)
+    parser.add_argument("--bc-comm-send-loss-weight", type=float, default=1.0)
+    parser.add_argument("--bc-comm-length-loss-weight", type=float, default=1.0)
+    parser.add_argument("--bc-comm-token-loss-weight", type=float, default=1.0)
+    parser.add_argument("--bc-comm-send-rate-penalty-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--bc-comm-send-rate-target",
+        type=float,
+        default=-1.0,
+        help="Target send probability for BC send-rate penalty; negative matches the batch label rate",
+    )
     parser.add_argument("--bc-calibrate-send-threshold", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--bc-send-threshold-target-rate", type=float, default=-1.0)
+    parser.add_argument(
+        "--bc-calibrate-pipeline-interact-gate-threshold",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--bc-pipeline-interact-gate-threshold-target-rate", type=float, default=-1.0)
     parser.add_argument("--obs-exploration-memory", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--obs-signal-negative-memory", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--obs-exploration-age", action=argparse.BooleanOptionalAction, default=False)
@@ -912,6 +1186,10 @@ def main() -> None:
     parser.add_argument("--obs-memory-radius", type=int, default=4)
     parser.add_argument("--obs-navigation-features", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--obs-pipeline-features", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--obs-pipeline-feedback", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--obs-pipeline-feedback-metadata", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--obs-pipeline-progress-features", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--obs-pipeline-shared-feedback", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--obs-signal-features", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--obs-signal-sync-feedback", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--obs-signal-scan-state", action=argparse.BooleanOptionalAction, default=True)
@@ -958,8 +1236,26 @@ def main() -> None:
     parser.add_argument("--bc-signal-frontier-exploration-min-map-size", type=int, default=16)
     parser.add_argument("--bc-pipeline-pickup-action-loss-weight", type=float, default=0.0)
     parser.add_argument("--bc-pipeline-delivery-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-delivery-progress-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-navigation-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-frontier-exploration-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-frontier-exploration-min-map-size", type=int, default=8)
+    parser.add_argument("--bc-pipeline-sync-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-ready-interact-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-station-guard-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-pickup-gate-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-pickup-gate-pos-weight", type=float, default=1.0)
+    parser.add_argument("--bc-pipeline-pickup-gate-neg-weight", type=float, default=1.0)
     parser.add_argument("--bc-pipeline-plan-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-plan-head-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-option-loss-weight", type=float, default=0.0)
     parser.add_argument("--bc-pipeline-message-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-send-gate-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-send-gate-pos-weight", type=float, default=1.0)
+    parser.add_argument("--bc-pipeline-send-gate-neg-weight", type=float, default=1.0)
+    parser.add_argument("--bc-pipeline-interact-gate-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-pipeline-interact-gate-pos-weight", type=float, default=1.0)
+    parser.add_argument("--bc-pipeline-interact-gate-neg-weight", type=float, default=1.0)
     parser.add_argument("--bc-pipeline-bad-pickup-action-loss-weight", type=float, default=0.0)
     parser.add_argument("--bc-pipeline-bad-drop-action-loss-weight", type=float, default=0.0)
     parser.add_argument("--bc-pipeline-bad-interact-action-loss-weight", type=float, default=0.0)
@@ -973,6 +1269,7 @@ def main() -> None:
     parser.add_argument("--pipeline-required-per-stage-max", type=int, default=2)
     parser.add_argument("--pipeline-sync-probability", type=float, default=0.5)
     parser.add_argument("--pipeline-dependency-probability", type=float, default=0.7)
+    parser.add_argument("--pipeline-wrong-delivery-penalty", type=float, default=0.25)
     parser.add_argument(
         "--pipeline-stage-count-schedule",
         default="",
@@ -998,6 +1295,11 @@ def main() -> None:
         ),
     )
     parser.add_argument("--dagger-focus-error-weight", type=float, default=3.0)
+    parser.add_argument(
+        "--dagger-focus-events",
+        default=RecurrentCurriculumConfig.dagger_focus_events,
+        help="Comma-separated trajectory event labels to upweight during DAgger correction.",
+    )
     parser.add_argument("--dagger-focus-recovery-weight", type=float, default=2.0)
     parser.add_argument("--dagger-focus-window", type=int, default=1)
     parser.add_argument(
@@ -1021,6 +1323,7 @@ def main() -> None:
     parser.add_argument("--dagger-movement-stall-focus-weight", type=float, default=4.0)
     parser.add_argument("--dagger-solo-target-team-weight", type=float, default=1.0)
     parser.add_argument("--dagger-solo-target-team-success-only", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--dagger-restore-best", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--dagger-positive-target-pursuit-min-map-size", type=int, default=16)
     parser.add_argument("--dagger-positive-replay-events", default="")
     parser.add_argument("--dagger-replay-event-weights", default="")
@@ -1037,6 +1340,32 @@ def main() -> None:
     parser.add_argument("--dagger-max-failed-parent-replay-snippets-per-episode", type=int, default=-1)
     parser.add_argument("--dagger-failed-parent-replay-weight-scale", type=float, default=1.0)
     parser.add_argument("--dagger-expert-max-replay-snippets-per-episode", type=int, default=-1)
+    parser.add_argument("--pipeline-assisted-rollout-episodes", type=int, default=0)
+    parser.add_argument("--pipeline-assisted-rollout-seed-base", type=int, default=20000)
+    parser.add_argument("--pipeline-assisted-rollout-seed-list", default="")
+    parser.add_argument("--pipeline-assisted-rollout-max-steps-per-episode", type=int, default=0)
+    parser.add_argument("--pipeline-assisted-rollout-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--pipeline-assisted-rollout-success-only",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--pipeline-assisted-rollout-navigation-assist",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--pipeline-assisted-rollout-navigation-assist-trust-messages",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--pipeline-assisted-rollout-station-interact-guard",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--pipeline-assisted-rollout-bc-epochs", type=int, default=-1)
     parser.add_argument("--rl-updates", type=int, default=0)
     parser.add_argument(
         "--rl-updates-schedule",
@@ -1065,8 +1394,50 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=False,
     )
+    parser.add_argument(
+        "--rl-rollout-pipeline-station-interact-guard",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--rl-rollout-pipeline-interact-gate-promote",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--rl-eval-decoding-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--rl-pipeline-assisted-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--rl-pipeline-interact-gate-loss-weight", type=float, default=0.0)
+    parser.add_argument("--rl-pipeline-interact-gate-pos-weight", type=float, default=1.0)
+    parser.add_argument("--rl-pipeline-interact-gate-neg-weight", type=float, default=1.0)
+    parser.add_argument("--rl-pipeline-pickup-gate-loss-weight", type=float, default=0.0)
+    parser.add_argument("--rl-pipeline-pickup-gate-pos-weight", type=float, default=1.0)
+    parser.add_argument("--rl-pipeline-pickup-gate-neg-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--rl-pipeline-delivery-progress-action-loss-weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--rl-pipeline-navigation-action-loss-weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument("--rl-pipeline-sync-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--rl-pipeline-ready-interact-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--rl-pipeline-station-guard-action-loss-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--rl-pipeline-wrong-station-recovery-action-loss-weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument("--rl-pipeline-plan-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--rl-pipeline-plan-head-loss-weight", type=float, default=0.0)
+    parser.add_argument("--rl-pipeline-option-loss-weight", type=float, default=0.0)
     parser.add_argument("--rl-redundant-target-scan-penalty", type=float, default=0.0)
     parser.add_argument("--rl-wrong-target-scan-penalty", type=float, default=0.0)
+    parser.add_argument("--rl-pipeline-bad-pickup-penalty", type=float, default=0.0)
+    parser.add_argument("--rl-pipeline-bad-interact-penalty", type=float, default=0.0)
+    parser.add_argument("--rl-pipeline-unneeded-drop-bonus", type=float, default=0.0)
     parser.add_argument("--rl-epochs", type=int, default=2)
     parser.add_argument("--minibatch-seqs", type=int, default=8)
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -1136,9 +1507,49 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=False,
     )
+    parser.add_argument(
+        "--eval-pipeline-station-interact-guard",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--eval-pipeline-pickup-gate-suppress",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--eval-pipeline-plan-broadcast-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--eval-pipeline-frontier-exploration-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--eval-pipeline-interact-gate-threshold", type=float, default=-1.0)
+    parser.add_argument(
+        "--eval-pipeline-interact-gate-promote",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--eval-pipeline-event-head-threshold", type=float, default=-1.0)
+    parser.add_argument("--eval-pipeline-navigation-head-threshold", type=float, default=-1.0)
+    parser.add_argument("--eval-pipeline-plan-head-threshold", type=float, default=-1.0)
+    parser.add_argument("--eval-pipeline-option-threshold", type=float, default=-1.0)
+    parser.add_argument(
+        "--eval-pipeline-option-allow-interact",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--output-dir", default="logs/recurrent_curriculum")
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--initial-recurrent-checkpoint", default=None)
+    parser.add_argument(
+        "--recurrent-init-allow-obs-dim-mismatch",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--dry-run", action="store_true")
@@ -1160,6 +1571,7 @@ def main() -> None:
         carry_model_between_stages=args.carry_model_between_stages,
         demo_episodes=args.demo_episodes,
         hidden_dim=args.hidden_dim,
+        recurrent_backbone=args.recurrent_backbone,
         bc_epochs=args.bc_epochs,
         bc_lr=args.bc_lr,
         bc_seq_len=args.bc_seq_len,
@@ -1174,8 +1586,19 @@ def main() -> None:
         bc_event_action_events=args.bc_event_action_events,
         bc_comm_loss_weight=args.bc_comm_loss_weight,
         bc_comm_send_pos_weight=args.bc_comm_send_pos_weight,
+        bc_comm_send_loss_weight=args.bc_comm_send_loss_weight,
+        bc_comm_length_loss_weight=args.bc_comm_length_loss_weight,
+        bc_comm_token_loss_weight=args.bc_comm_token_loss_weight,
+        bc_comm_send_rate_penalty_weight=args.bc_comm_send_rate_penalty_weight,
+        bc_comm_send_rate_target=args.bc_comm_send_rate_target,
         bc_calibrate_send_threshold=args.bc_calibrate_send_threshold,
         bc_send_threshold_target_rate=args.bc_send_threshold_target_rate,
+        bc_calibrate_pipeline_interact_gate_threshold=(
+            args.bc_calibrate_pipeline_interact_gate_threshold
+        ),
+        bc_pipeline_interact_gate_threshold_target_rate=(
+            args.bc_pipeline_interact_gate_threshold_target_rate
+        ),
         obs_exploration_memory=args.obs_exploration_memory,
         obs_exploration_age=args.obs_exploration_age,
         obs_feedback=args.obs_feedback,
@@ -1184,6 +1607,10 @@ def main() -> None:
         obs_memory_radius=args.obs_memory_radius,
         obs_navigation_features=args.obs_navigation_features,
         obs_pipeline_features=args.obs_pipeline_features,
+        obs_pipeline_feedback=args.obs_pipeline_feedback,
+        obs_pipeline_feedback_metadata=args.obs_pipeline_feedback_metadata,
+        obs_pipeline_progress_features=args.obs_pipeline_progress_features,
+        obs_pipeline_shared_feedback=args.obs_pipeline_shared_feedback,
         obs_signal_features=args.obs_signal_features,
         obs_signal_sync_feedback=args.obs_signal_sync_feedback,
         obs_signal_scan_state=args.obs_signal_scan_state,
@@ -1237,8 +1664,38 @@ def main() -> None:
         ),
         bc_pipeline_pickup_action_loss_weight=args.bc_pipeline_pickup_action_loss_weight,
         bc_pipeline_delivery_action_loss_weight=args.bc_pipeline_delivery_action_loss_weight,
+        bc_pipeline_delivery_progress_action_loss_weight=(
+            args.bc_pipeline_delivery_progress_action_loss_weight
+        ),
+        bc_pipeline_navigation_action_loss_weight=(
+            args.bc_pipeline_navigation_action_loss_weight
+        ),
+        bc_pipeline_frontier_exploration_action_loss_weight=(
+            args.bc_pipeline_frontier_exploration_action_loss_weight
+        ),
+        bc_pipeline_frontier_exploration_min_map_size=(
+            args.bc_pipeline_frontier_exploration_min_map_size
+        ),
+        bc_pipeline_sync_action_loss_weight=args.bc_pipeline_sync_action_loss_weight,
+        bc_pipeline_ready_interact_action_loss_weight=(
+            args.bc_pipeline_ready_interact_action_loss_weight
+        ),
+        bc_pipeline_station_guard_action_loss_weight=(
+            args.bc_pipeline_station_guard_action_loss_weight
+        ),
+        bc_pipeline_pickup_gate_loss_weight=args.bc_pipeline_pickup_gate_loss_weight,
+        bc_pipeline_pickup_gate_pos_weight=args.bc_pipeline_pickup_gate_pos_weight,
+        bc_pipeline_pickup_gate_neg_weight=args.bc_pipeline_pickup_gate_neg_weight,
         bc_pipeline_plan_action_loss_weight=args.bc_pipeline_plan_action_loss_weight,
+        bc_pipeline_plan_head_loss_weight=args.bc_pipeline_plan_head_loss_weight,
+        bc_pipeline_option_loss_weight=args.bc_pipeline_option_loss_weight,
         bc_pipeline_message_loss_weight=args.bc_pipeline_message_loss_weight,
+        bc_pipeline_send_gate_loss_weight=args.bc_pipeline_send_gate_loss_weight,
+        bc_pipeline_send_gate_pos_weight=args.bc_pipeline_send_gate_pos_weight,
+        bc_pipeline_send_gate_neg_weight=args.bc_pipeline_send_gate_neg_weight,
+        bc_pipeline_interact_gate_loss_weight=args.bc_pipeline_interact_gate_loss_weight,
+        bc_pipeline_interact_gate_pos_weight=args.bc_pipeline_interact_gate_pos_weight,
+        bc_pipeline_interact_gate_neg_weight=args.bc_pipeline_interact_gate_neg_weight,
         bc_pipeline_bad_pickup_action_loss_weight=args.bc_pipeline_bad_pickup_action_loss_weight,
         bc_pipeline_bad_drop_action_loss_weight=args.bc_pipeline_bad_drop_action_loss_weight,
         bc_pipeline_bad_interact_action_loss_weight=args.bc_pipeline_bad_interact_action_loss_weight,
@@ -1248,6 +1705,7 @@ def main() -> None:
         pipeline_required_per_stage_max=args.pipeline_required_per_stage_max,
         pipeline_sync_probability=args.pipeline_sync_probability,
         pipeline_dependency_probability=args.pipeline_dependency_probability,
+        pipeline_wrong_delivery_penalty=args.pipeline_wrong_delivery_penalty,
         pipeline_stage_count_schedule=args.pipeline_stage_count_schedule,
         pipeline_required_per_stage_min_schedule=args.pipeline_required_per_stage_min_schedule,
         pipeline_required_per_stage_max_schedule=args.pipeline_required_per_stage_max_schedule,
@@ -1258,6 +1716,7 @@ def main() -> None:
         dagger_seed_base=args.dagger_seed_base,
         dagger_seed_stride=args.dagger_seed_stride,
         dagger_seed_list=args.dagger_seed_list,
+        dagger_focus_events=args.dagger_focus_events,
         dagger_focus_error_weight=args.dagger_focus_error_weight,
         dagger_focus_recovery_weight=args.dagger_focus_recovery_weight,
         dagger_focus_window=args.dagger_focus_window,
@@ -1278,6 +1737,7 @@ def main() -> None:
         dagger_movement_stall_focus_weight=args.dagger_movement_stall_focus_weight,
         dagger_solo_target_team_weight=args.dagger_solo_target_team_weight,
         dagger_solo_target_team_success_only=args.dagger_solo_target_team_success_only,
+        dagger_restore_best=args.dagger_restore_best,
         dagger_positive_target_pursuit_min_map_size=args.dagger_positive_target_pursuit_min_map_size,
         dagger_positive_replay_events=args.dagger_positive_replay_events,
         dagger_replay_event_weights=args.dagger_replay_event_weights,
@@ -1296,6 +1756,24 @@ def main() -> None:
         ),
         dagger_failed_parent_replay_weight_scale=args.dagger_failed_parent_replay_weight_scale,
         dagger_expert_max_replay_snippets_per_episode=args.dagger_expert_max_replay_snippets_per_episode,
+        pipeline_assisted_rollout_episodes=args.pipeline_assisted_rollout_episodes,
+        pipeline_assisted_rollout_seed_base=args.pipeline_assisted_rollout_seed_base,
+        pipeline_assisted_rollout_seed_list=args.pipeline_assisted_rollout_seed_list,
+        pipeline_assisted_rollout_max_steps_per_episode=(
+            args.pipeline_assisted_rollout_max_steps_per_episode
+        ),
+        pipeline_assisted_rollout_weight=args.pipeline_assisted_rollout_weight,
+        pipeline_assisted_rollout_success_only=args.pipeline_assisted_rollout_success_only,
+        pipeline_assisted_rollout_navigation_assist=(
+            args.pipeline_assisted_rollout_navigation_assist
+        ),
+        pipeline_assisted_rollout_navigation_assist_trust_messages=(
+            args.pipeline_assisted_rollout_navigation_assist_trust_messages
+        ),
+        pipeline_assisted_rollout_station_interact_guard=(
+            args.pipeline_assisted_rollout_station_interact_guard
+        ),
+        pipeline_assisted_rollout_bc_epochs=args.pipeline_assisted_rollout_bc_epochs,
         rl_updates=args.rl_updates,
         rl_updates_schedule=args.rl_updates_schedule,
         rl_early_stop_eval_patience=args.rl_early_stop_eval_patience,
@@ -1307,8 +1785,42 @@ def main() -> None:
         rl_rollout_pipeline_navigation_assist_trust_messages=(
             args.rl_rollout_pipeline_navigation_assist_trust_messages
         ),
+        rl_rollout_pipeline_station_interact_guard=args.rl_rollout_pipeline_station_interact_guard,
+        rl_rollout_pipeline_interact_gate_promote=args.rl_rollout_pipeline_interact_gate_promote,
+        rl_eval_decoding_action_loss_weight=args.rl_eval_decoding_action_loss_weight,
+        rl_pipeline_assisted_action_loss_weight=(
+            args.rl_pipeline_assisted_action_loss_weight
+        ),
+        rl_pipeline_interact_gate_loss_weight=args.rl_pipeline_interact_gate_loss_weight,
+        rl_pipeline_interact_gate_pos_weight=args.rl_pipeline_interact_gate_pos_weight,
+        rl_pipeline_interact_gate_neg_weight=args.rl_pipeline_interact_gate_neg_weight,
+        rl_pipeline_pickup_gate_loss_weight=args.rl_pipeline_pickup_gate_loss_weight,
+        rl_pipeline_pickup_gate_pos_weight=args.rl_pipeline_pickup_gate_pos_weight,
+        rl_pipeline_pickup_gate_neg_weight=args.rl_pipeline_pickup_gate_neg_weight,
+        rl_pipeline_delivery_progress_action_loss_weight=(
+            args.rl_pipeline_delivery_progress_action_loss_weight
+        ),
+        rl_pipeline_navigation_action_loss_weight=(
+            args.rl_pipeline_navigation_action_loss_weight
+        ),
+        rl_pipeline_sync_action_loss_weight=args.rl_pipeline_sync_action_loss_weight,
+        rl_pipeline_ready_interact_action_loss_weight=(
+            args.rl_pipeline_ready_interact_action_loss_weight
+        ),
+        rl_pipeline_station_guard_action_loss_weight=(
+            args.rl_pipeline_station_guard_action_loss_weight
+        ),
+        rl_pipeline_wrong_station_recovery_action_loss_weight=(
+            args.rl_pipeline_wrong_station_recovery_action_loss_weight
+        ),
+        rl_pipeline_plan_action_loss_weight=args.rl_pipeline_plan_action_loss_weight,
+        rl_pipeline_plan_head_loss_weight=args.rl_pipeline_plan_head_loss_weight,
+        rl_pipeline_option_loss_weight=args.rl_pipeline_option_loss_weight,
         rl_redundant_target_scan_penalty=args.rl_redundant_target_scan_penalty,
         rl_wrong_target_scan_penalty=args.rl_wrong_target_scan_penalty,
+        rl_pipeline_bad_pickup_penalty=args.rl_pipeline_bad_pickup_penalty,
+        rl_pipeline_bad_interact_penalty=args.rl_pipeline_bad_interact_penalty,
+        rl_pipeline_unneeded_drop_bonus=args.rl_pipeline_unneeded_drop_bonus,
         rl_epochs=args.rl_epochs,
         minibatch_seqs=args.minibatch_seqs,
         gamma=args.gamma,
@@ -1350,9 +1862,21 @@ def main() -> None:
         eval_signal_scan_refresh_threshold=args.eval_signal_scan_refresh_threshold,
         eval_pipeline_navigation_assist=args.eval_pipeline_navigation_assist,
         eval_pipeline_navigation_assist_trust_messages=args.eval_pipeline_navigation_assist_trust_messages,
+        eval_pipeline_station_interact_guard=args.eval_pipeline_station_interact_guard,
+        eval_pipeline_plan_broadcast_assist=args.eval_pipeline_plan_broadcast_assist,
+        eval_pipeline_pickup_gate_suppress=args.eval_pipeline_pickup_gate_suppress,
+        eval_pipeline_frontier_exploration_assist=args.eval_pipeline_frontier_exploration_assist,
+        eval_pipeline_interact_gate_threshold=args.eval_pipeline_interact_gate_threshold,
+        eval_pipeline_interact_gate_promote=args.eval_pipeline_interact_gate_promote,
+        eval_pipeline_event_head_threshold=args.eval_pipeline_event_head_threshold,
+        eval_pipeline_navigation_head_threshold=args.eval_pipeline_navigation_head_threshold,
+        eval_pipeline_plan_head_threshold=args.eval_pipeline_plan_head_threshold,
+        eval_pipeline_option_threshold=args.eval_pipeline_option_threshold,
+        eval_pipeline_option_allow_interact=args.eval_pipeline_option_allow_interact,
         output_dir=args.output_dir,
         run_name=args.run_name,
         initial_recurrent_checkpoint=args.initial_recurrent_checkpoint,
+        recurrent_init_allow_obs_dim_mismatch=args.recurrent_init_allow_obs_dim_mismatch,
         seed=args.seed,
         device=args.device,
         dry_run=args.dry_run,
