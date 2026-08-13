@@ -551,6 +551,64 @@ def test_signal_trajectory_audit_oracle_smoke():
     assert "actions" in trace[0]
 
 
+def test_trajectory_audit_records_policy_env_overrides():
+    from syncorsink.envs import SyncOrSinkConfig
+    from syncorsink.eval.trajectory_audit import AuditPolicySpec, run_trajectory_audit
+
+    base_env = SyncOrSinkConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        num_agents=2,
+        fov_preset="easy",
+        max_steps=3,
+        comm_token_limit=8,
+        token_vocab_size=32,
+        max_messages=8,
+    )
+    policy_env = SyncOrSinkConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        num_agents=4,
+        fov_preset="medium",
+        max_steps=3,
+        comm_token_limit=8,
+        token_vocab_size=32,
+        max_messages=8,
+    )
+
+    def _factory(env):
+        assert env.num_agents == 4
+
+        def _policy(obs, info, state):
+            del info, state
+            return {int(agent_id): {"action": 0} for agent_id in obs}
+
+        return _policy
+
+    result = run_trajectory_audit(
+        base_env,
+        [
+            AuditPolicySpec(
+                label="override",
+                factory=_factory,
+                env_config=policy_env,
+            )
+        ],
+        episodes=1,
+        seed=0,
+    )
+
+    assert result["config"]["env"]["num_agents"] == 2
+    assert result["config"]["policy_envs"] == [
+        {
+            "label": "override",
+            "env": result["policies"][0]["env_config"],
+        }
+    ]
+    assert result["policies"][0]["env_config"]["num_agents"] == 4
+    assert result["policies"][0]["summary"]["episodes"] == 1
+
+
 def test_pipeline_trajectory_audit_oracle_smoke():
     from syncorsink.envs import SyncOrSinkConfig
     from syncorsink.eval.trajectory_audit import (

@@ -406,12 +406,211 @@ Pipeline assembly remains **0% for all trained methods** across every approach t
 | Scenario | Success | Initial Return | Final Return | Entropy | Notes |
 |---|---|---|---|---|---|
 | **pipeline_assembly** | **10%** | 11.9 | 29.5 | 1.0 (stable) | First trained method to solve it |
+| **signal_hunt 8x8** | **98%** | — | 16.32 avg audit return | — | Official 2-agent Signal checkpoint; external 100-episode trajectory audit |
+| **signal_hunt 16x16** | **79%** | — | 30.54 avg audit return | — | Fresh Signal specialist checkpoint with canonical constraint-message eval assist; external 100-episode trajectory audit |
 
 - **Architecture:** MLP encoder → LSTMCell → policy head (same width as MAPPO actor + LSTM)
 - **Training:** 200 oracle demos → recurrent BC (truncated BPTT, 30 epochs) → PPO fine-tuning (3000 updates, KL=0.5)
 - **Why it works:** The LSTM maintains hidden state across steps, tracking stage progress (which delivered, which pending). MLP policies can't do this — they see each step independently.
 - **Why only 10%:** Pipeline assembly has 4+ stages with dependencies. The LSTM learns sequential behavior but still struggles with multi-agent coordination (no communication in current version).
 - **Key insight:** Memory is necessary but not sufficient for sequential multi-agent tasks. Communication + memory is the next step.
+
+### Current Signal Specialist Status (August 12, 2026)
+
+The prior `examples/core_training_sweep.py` Signal specialist default was
+validated on `signal_hunt_16x16_scaled_search` with seed 0, 30 demo episodes,
+4 BC epochs, 2 DAgger rounds of 30 episodes, no PPO updates, and a 100-episode
+external trajectory audit. That promoted default profile included clue-fusion
+auxiliary supervision, agent role/search-sector features preserved in BC/DAgger
+rows, target pursuit/match action auxiliaries, target scan auxiliaries,
+sync-response supervision, frontier-exploration replay, and target-handoff
+positive/failure replay.
+
+After this audit, an opt-in visible-clue action/replay profile was tested to
+target the remaining `no_clue_or_target_scan` failures without using hidden
+target state. It improved clue collection but regressed final success and is
+therefore not promoted as the default profile.
+
+| Run | Audit Success | Failure Mix |
+|---|---|---|
+| `recurrent_signal16_default_profile_seed0` | **54/100** | `no_clue_or_target_scan`: 25, `no_target_scan`: 17, `decoy_scan`: 4 |
+| `recurrent_signal16_rolefix_seed0` | **52/100** | `no_clue_or_target_scan`: 16, `no_target_scan`: 27, `decoy_scan`: 5 |
+| `recurrent_signal16_rolefix_handoff_seed0` | **57/100** | `no_clue_or_target_scan`: 19, `no_target_scan`: 19, `solo_target_scan`: 1, `decoy_scan`: 4 |
+| `recurrent_signal16_rolefix_handoff_targetscan_lock_seed0` | 57/100 | same failure mix as rolefix-handoff; avg return fell `22.52 -> 21.13` and decoy-scan events rose `13 -> 292` |
+| `recurrent_signal16_rolefix_handoff_forcefirst_seed0` | 57/100 | no audit change from rolefix-handoff; force-first scan-sync eval toggle was a no-op on this panel |
+| `recurrent_signal16_exact_handoff_seed0` | 53/100 | `no_clue_or_target_scan`: 25, `no_target_scan`: 17, `solo_target_scan`: 1, `decoy_scan`: 4; avg return `20.93` |
+| `recurrent_signal16_scanpressure_seed0` | 38/100 | `no_clue_or_target_scan`: 49, `no_target_scan`: 12, `decoy_scan`: 1; avg return `15.01` |
+| `recurrent_signal16_visible_clue_seed0` | 48/100 | `no_clue_or_target_scan`: 18, `no_target_scan`: 34 |
+| `recurrent_signal16_memorylabels_seed0` | 53/100 sweep eval | Opt-in trusted exact-memory pursuit labels; more decoy scans than the promoted baseline, not externally audited |
+| `recurrent_signal16_rolefix_handoff_frontier_assist_seed0` | 56/100 | Opt-in frontier eval assist on the rolefix-handoff checkpoint; `no_clue_or_target_scan`: 18, `no_target_scan`: 21, `solo_target_scan`: 2, `decoy_scan`: 3 |
+| `recurrent_signal16_rolefix_handoff_constraintcopy_seed0` | **77/100** | Canonical Signal clue-message copy assist on the rolefix-handoff checkpoint; matched seed-3000 audit failure mix `no_clue_or_target_scan`: 11, `no_target_scan`: 9, `solo_target_scan`: 2, `decoy_scan`: 1 |
+| `recurrent_signal16_rolefix_handoff_constraintcopy_compatible_seed0` | **77/100** | Adding compatible visible-target scan assist on top of constraint-copy did not improve success or failure mix |
+| `recurrent_signal16_constraintcopy_rolefix_profile_seed0` | **79/100** | Fresh rolefix-profile training with constraint-message copy default; `no_clue_or_target_scan`: 17, `no_target_scan`: 2, `solo_target_scan`: 2, no decoy failures; avg return `30.54`, avg steps `73.05` |
+| `recurrent_signal8_constraintcopy_rolefix_profile_seed0` | **98/100** | Official 2-agent 8x8 Signal checkpoint; `no_clue_or_target_scan`: 1, `decoy_scan`: 1; W&B run `hzm8kztx` |
+| `recurrent_signal_multisize_16_32_constraintcopy_seed0_v3` | **84/100 @16x16**, **41/100 @32x32** | 16/32 mixed curriculum improved 16x16 but did not improve 32x32; 32x32 failures: `no_clue_or_target_scan`: 36, `no_target_scan`: 15, `decoy_scan`: 8 |
+| `recurrent_signal_multisize_16_32_large_map_conservative_seed0` | **88/100 @16x16**, **55/100 @32x32** | Tuned `--recurrent-signal-preset large_map`; best current 32x32 result; 32x32 failures: `no_clue_or_target_scan`: 18, `no_target_scan`: 22, `solo_target_scan`: 2, `decoy_scan`: 3; W&B run `bggn5dip` |
+| `recurrent_signal_multisize_16_32_large_map_scanconvert_seed0` | 84/100 @16x16, 49/100 @32x32 | Negative ablation: added first/joint-scan positive replay and stronger scan-action weights; 32x32 `no_target_scan` rose to 28 and success regressed; W&B run `duosomim` |
+| `recurrent_signal_multisize_16_32_large_map_targetmemory_seed0` | 65% mixed eval | Negative ablation: trusted exact-memory target pursuit with broad responder labels; split eval was 80% at 16x16 and 50% at 32x32, below the conservative baseline; W&B run `8ibvfhg2` |
+| `recurrent_signal_multisize_16_32_large_map_targetmemory_cap1_seed0` | 62.5% mixed eval | Negative ablation: trusted exact-memory target pursuit capped to the nearest responder; W&B DAgger split was 75% at 16x16 and 30% at 32x32, so no full audit was run; W&B run `zw2fadn1` |
+| `recurrent_signal_multisize_16_32_large_map_age_seed0` | 57.5% mixed eval | Negative ablation: enabled exploration-age observations for the large-map preset; 32x32 split was 40% despite higher clue count, so age remains opt-in; W&B run `ekvcpsb2` |
+| `recurrent_signal_multisize_16_32_large_map_constraintfrontier_seed0` | 60% mixed eval | Negative ablation: constraint-compatible Signal frontier labels; 32x32 split was 45% and target scans fell, so the bias remains opt-in; W&B run `bs4stt2m` |
+| `recurrent_signal_multisize_16_32_large_map_constraintfrontier_tight_seed0` | 67.5% mixed eval | Diagnostic ablation after tightening constraint-frontier labels to bounded inferred targets; 16x16 rose to 90% but 32x32 stayed at 45%, so no full audit was run; W&B run `xy4w9cpc` |
+| `recurrent_signal_multisize_16_32_large_map_signalfrontier_seed0` | 62.5% mixed eval | Negative isolation: Signal-anchor fallback frontier assignment without constraint bias; 16x16 rose to 85% but 32x32 fell to 30% with many decoy target visits; W&B run `fil29d02` |
+| `recurrent_signal_multisize_16_32_large_map_targetrendezvous_seed0` | 60% mixed eval | Negative ablation: exact-target-informed pair rendezvous labels; 16x16 reached 80% but 32x32 fell to 40%, with lower true-target reach despite fewer decoy scans; W&B run `vde2xcu5` |
+| `recurrent_signal_multisize_16_32_large_map_cluepositive_seed0` | 60% mixed eval | Negative ablation: added `clue_found` positive replay; 16x16 reached 80% but 32x32 stayed at 40%, with 32x32 decoy scans rising to 6.7; W&B run `tuudojwi` |
+| `recurrent_signal_multisize_16_32_large_map_ambiguousdecision_seed0` | 70% mixed eval | Diagnostic ablation: ambiguous true-target scans become negative target-decision labels; best split was 90% at 16x16 and 50% at 32x32, matching but not beating the conservative 32x32 eval slice; W&B run `7dr55x28` |
+| `recurrent_signal_multisize_16_32_large_map_ambiguousdecision_scanpush_seed0` | 65% mixed eval | Negative follow-up: ambiguity labels plus moderate first-scan/opportunity pressure; best split was 85% at 16x16 and 45% at 32x32; W&B run `8tbyh3s6` |
+
+The main remaining bottlenecks are now weighted toward large-map discovery.
+Constraint-message copy fixed a major communication failure where generated
+step-0 and post-clue structured tokens contradicted the true private clues,
+causing agents to reject the real target after reaching it. Handoff replay reduced the role-fix-only
+`no_target_scan` spike while keeping the discovery gains from agent role
+features. The visible-clue ablation raised audit `avg_clues_found` to `0.85`
+but shifted failures into `no_target_scan`; the target-scan lock ablation showed
+that simply bypassing learned scan suppressors over-scans decoys without raising
+success. The exact-handoff-label ablation was also negative: stricter responder
+evidence reduced target-handoff labels, lowered success to 53/100, and increased
+target-reach-without-scan exposure (`20.25 -> 32.88` agent-steps). A narrow
+force-first scan-sync eval toggle did not change behavior. A stronger scan
+pressure ablation (`first_target_scan=1.2`, `target_opportunity=0.8`,
+`scan_decision_pos=3.0`) reduced decoy scans but collapsed discovery and joint
+scan completion. The next useful fix is therefore better large-map discovery,
+message-driven target memory, and teammate routing before scan conversion, not
+a stricter handoff-label filter, broader forced-interact rule, or larger
+positive scan loss.
+The matched seed-3000 rolefix-handoff baseline was 56/100; canonical
+constraint-message copy raised it to 77/100, reduced average steps from
+142.21 to 79.98, and reduced target-reach-without-scan exposure from 22.03 to
+8.76 agent-steps. Decoy failures also dropped from 2 to 1. A compatible
+visible-target scan assist on top was flat, so the useful promotion candidate is
+message canonicalization rather than another forced-scan rule.
+
+A fresh comparable run
+(`recurrent_signal16_constraintcopy_rolefix_profile_seed0`) trained with the
+new default enabled reached 79/100 on the same 100-episode seed-3000 audit, with
+zero decoy failures and only two `no_target_scan` failures. The remaining misses
+are now mostly discovery failures (`no_clue_or_target_scan`: 17). W&B tracked the
+training run at
+`https://wandb.ai/orion8/syncorsink-core-training/runs/04h8pmkn`. A 32x32,
+4-agent audit of the same checkpoint reached 41/100, with failures dominated by
+`no_clue_or_target_scan`: 51. This confirms the policy executes at the larger
+map scale, but large-map discovery remains the next implementation bottleneck.
+A same-checkpoint 8x8 stress audit reached 91/100 using the
+checkpoint-compatible 4-agent env; the official 2-agent 8x8 track is covered by
+the separate 8x8 checkpoint below.
+
+The official 2-agent 8x8 Signal checkpoint
+(`recurrent_signal8_constraintcopy_rolefix_profile_seed0`) now reaches 98/100
+on a 100-episode seed-3000 trajectory audit, with one discovery failure and one
+decoy-scan failure. Its W&B run is
+`https://wandb.ai/orion8/syncorsink-core-training/runs/hzm8kztx`.
+
+A first 16/32 mixed curriculum
+(`recurrent_signal_multisize_16_32_constraintcopy_seed0_v3`) trained in 207.4s
+and logged to
+`https://wandb.ai/orion8/syncorsink-core-training/runs/79ukojb9`. It improved
+the independent 16x16 audit to 84/100, but 32x32 remained 41/100 and shifted
+failures toward decoy scans and missed target scans. Mixing 32x32 into the
+current curriculum is therefore not sufficient. The sweep now provides
+`--recurrent-signal-preset large_map`, which inherits the current specialist
+defaults and adds a conservative 32x32-only visible-clue auxiliary, light
+decoy-drift/decoy-scan suppression, and targeted DAgger replay for
+`visible_clue_miss`, `decoy_scan`, and `rejected_target_scan`. A first heavier
+version with rejected-target-drift replay collected thousands of drift labels
+and lowered round-2 mixed eval, so that broad drift pressure is intentionally
+not part of the current preset. The tuned large-map run
+(`recurrent_signal_multisize_16_32_large_map_conservative_seed0`) logged to
+`https://wandb.ai/orion8/syncorsink-core-training/runs/bggn5dip`, reached 70%
+on the 20+20 mixed eval panel, and improved the independent audits to 88/100 at
+16x16 and 55/100 at 32x32. The remaining 32x32 failures are now split between
+`no_clue_or_target_scan` and `no_target_scan`, so the next Signal step is
+post-discovery target conversion and teammate routing on large maps. A direct
+scan-conversion ablation
+(`recurrent_signal_multisize_16_32_large_map_scanconvert_seed0`) appended
+`first_target_scan`/`joint_target_scan` positive replay and moderately raised
+target-scan action weights. It looked promising on the 20+20 eval panel
+(`60%` at 32x32), but the full independent audits regressed to 84/100 at 16x16
+and 49/100 at 32x32, with `no_target_scan` rising to 28. It is therefore not
+promoted; the next fix should improve teammate routing/role assignment after
+target evidence rather than simply increasing scan-positive pressure. Two
+target-memory pursuit ablations also stayed below the conservative baseline:
+the broad exact-memory label run (`8ibvfhg2`) reached only 65% mixed eval, and
+the nearest-responder cap run (`zw2fadn1`) reached only 62.5% mixed eval with
+30% 32x32 DAgger success. The cap remains available for controlled ablations,
+but large-map Signal should move next toward explicit role/teammate routing
+rather than broader pursuit-label replay. Enabling exploration-age observations
+(`ekvcpsb2`) was also negative: it increased 32x32 clue count to 0.85 on the
+20-episode split but lowered 32x32 success to 40%, so exploration age remains
+an explicit flag rather than a large-map default. Constraint-biased frontier
+labels (`bs4stt2m`) and Signal-anchor fallback frontier assignment (`fil29d02`)
+were also negative on the 32x32 split, so the default frontier fallback remains
+the prior conservative behavior while the constraint-frontier bias stays opt-in
+for controlled experiments. After this ablation, the opt-in constraint-frontier
+path was tightened to reuse the bounded inferred-target candidate set from
+target decoding, avoiding weak one-clue or parity-only frontier bias. The
+tightened rerun (`xy4w9cpc`) improved mixed eval to 67.5% by raising 16x16 to
+90%, but 32x32 remained at 45%, so large-map Signal still needs a stronger
+post-discovery routing/search change rather than more local frontier scoring.
+The target-rendezvous ablation
+(`recurrent_signal_multisize_16_32_large_map_targetrendezvous_seed0`,
+`vde2xcu5`) routed the closest exact-target-informed pair toward the target and
+made an early scanner wait when its partner could not still arrive and scan
+inside the target-scan window. It produced many labels
+(`6526` action labels and `369` wait labels in round 2) but regressed mixed eval
+to 60%, with 80% on 16x16 and only 40% on 32x32. It reduced decoy scanning but
+also reduced 32x32 true-target reach, so no full audit was run and the flag
+remains diagnostic.
+Adding `clue_found` to positive replay
+(`recurrent_signal_multisize_16_32_large_map_cluepositive_seed0`, `tuudojwi`)
+also failed to improve the large-map split: the event path was active
+(`36` positive replay events and `11` replay triggers in round 2), but mixed
+eval stayed at 60% with 80% on 16x16 and 40% on 32x32, and 32x32 decoy scans
+rose to 6.7. This suggests the next Signal fix should change how agents choose
+between candidate clue/target hypotheses on large maps rather than simply
+replaying more successful clue pickups.
+The ambiguity-label ablation
+(`recurrent_signal_multisize_16_32_large_map_ambiguousdecision_seed0`,
+`7dr55x28`) changed target-decision labels so a true target tile is still a
+negative scan decision when the local observation admits multiple compatible
+target hypotheses. It matched the conservative 70% mixed eval headline and
+suppressed decoy scans in the best round, but its 32x32 split stayed at 50% and
+first-target-scan misses rose sharply, so no full audit was run. A moderate
+scan-pressure follow-up
+(`recurrent_signal_multisize_16_32_large_map_ambiguousdecision_scanpush_seed0`,
+`8tbyh3s6`) regressed to 65% mixed eval with at most 45% on 32x32. The useful
+lesson is that ambiguity-aware target decisions help decoy discipline but need
+better evidence acquisition or scan timing before they can improve the official
+large-map score.
+
+Implementation note:
+`--recurrent-eval-signal-constraint-message-copy-assist` now defaults on for
+Signal specialist sweep runs and forwards
+`--eval-signal-constraint-message-copy-assist`. It replaces sent Signal clue
+messages with canonical structured constraints from the sender's current
+`goal_hint`, preventing learned token errors from poisoning teammate target
+inference.
+Signal inferred-target features and eval decoding now compile each observation's
+structured clue/message constraints once and reuse that compiled state for
+target filtering. The 32x32 100-episode audit completed in 39.90s after this
+change, making full large-map trajectory audits practical.
+`--recurrent-eval-signal-frontier-exploration-assist` is now available as an
+opt-in diagnostic ablation. It reuses the Signal frontier label policy during
+eval/rollout decoding when no visible clue, target, or unique target evidence
+exists, and fixes the nearest-frontier fallback to select the best-scored
+frontier rather than the last scanned frontier. On the rolefix-handoff 16x16
+checkpoint it reached 56/100 in a 100-episode external audit, just below the
+57/100 promoted baseline, so it remains default-off.
+`--recurrent-bc-signal-target-pursuit-trust-exact-memory` adds an opt-in
+target-pursuit label path that reads trusted exact target memory from the Signal
+scan state, allowing BC/DAgger data to supervise continued movement toward a
+teammate-broadcast target after the inbox message expires. A first 16x16 run
+(`recurrent_signal16_memorylabels_seed0`) reached 53/100 in the round-1 sweep
+eval with more decoy scans, below the 57/100 rolefix-handoff baseline, and was
+not promoted as default behavior.
+`--recurrent-dagger-target-handoff-requires-exact-target`, which restricts
+target-handoff labels to responders with trusted exact target evidence, remains
+available for reproduction but default-off after the first audit.
 
 ---
 

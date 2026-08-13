@@ -104,7 +104,7 @@ class RecurrentCurriculumConfig:
         "picked_resource,dropped_resource,delivered,stage_completed,sync_complete,"
         "recharged,joint_target_scan"
     )
-    bc_comm_loss_weight: float = 0.1
+    bc_comm_loss_weight: float = 1.0
     bc_comm_send_pos_weight: float = 5.0
     bc_comm_send_loss_weight: float = 1.0
     bc_comm_length_loss_weight: float = 1.0
@@ -118,6 +118,11 @@ class RecurrentCurriculumConfig:
     bc_signal_redundant_target_interact_weight: float = 1.0
     bc_signal_target_pursuit_weight: float = 1.0
     bc_signal_target_pursuit_action_weight: float = 0.0
+    bc_signal_target_pursuit_trust_exact_memory: bool = False
+    bc_signal_target_pursuit_max_agents: int = 0
+    bc_signal_constraint_frontier_bias: bool = False
+    bc_signal_initial_message_weight: float = 4.0
+    bc_signal_initial_message_loss_weight: float = 4.0
     bc_signal_sync_response_weight: float = 1.0
     bc_signal_sync_response_action_loss_weight: float = 0.0
     bc_signal_target_aux_weight: float = 0.0
@@ -127,18 +132,20 @@ class RecurrentCurriculumConfig:
     bc_signal_joint_target_scan_action_weight: float = 0.0
     bc_signal_target_opportunity_action_weight: float = 0.0
     bc_signal_redundant_target_wait_action_loss_weight: float = 0.0
-    bc_signal_scan_decision_loss_weight: float = 0.0
-    bc_signal_scan_decision_pos_weight: float = 1.0
-    bc_signal_scan_decision_neg_weight: float = 1.0
-    bc_signal_scan_gate_loss_weight: float = 0.0
-    bc_signal_scan_gate_pos_weight: float = 1.0
-    bc_signal_scan_gate_neg_weight: float = 1.0
-    bc_signal_target_validity_loss_weight: float = 0.0
-    bc_signal_target_validity_pos_weight: float = 1.0
-    bc_signal_target_validity_neg_weight: float = 1.0
-    bc_signal_target_decision_loss_weight: float = 0.0
-    bc_signal_target_decision_pos_weight: float = 1.0
-    bc_signal_target_decision_neg_weight: float = 1.0
+    bc_signal_scan_decision_loss_weight: float = 1.0
+    bc_signal_scan_decision_pos_weight: float = 2.0
+    bc_signal_scan_decision_neg_weight: float = 3.0
+    bc_signal_scan_gate_loss_weight: float = 1.0
+    bc_signal_scan_gate_pos_weight: float = 2.0
+    bc_signal_scan_gate_neg_weight: float = 3.0
+    bc_signal_target_validity_loss_weight: float = 1.0
+    bc_signal_target_validity_pos_weight: float = 2.0
+    bc_signal_target_validity_neg_weight: float = 3.0
+    bc_signal_target_decision_loss_weight: float = 1.0
+    bc_signal_target_decision_pos_weight: float = 2.0
+    bc_signal_target_decision_neg_weight: float = 3.0
+    bc_signal_ambiguous_target_decision_negatives: bool = False
+    bc_signal_ambiguous_target_decision_min_map_size: int = 16
     bc_signal_rejected_target_interact_loss_weight: float = 0.05
     bc_signal_rejected_target_interact_action_loss_weight: float = 0.0
     bc_signal_bad_redundant_target_interact_loss_weight: float = 0.05
@@ -190,7 +197,12 @@ class RecurrentCurriculumConfig:
     dagger_pipeline_wrong_delivery_provenance_weight: float = -1.0
     dagger_oracle_message_rollin_rate: float = 0.0
     dagger_oracle_action_rollin_rate: float = 0.0
+    dagger_initial_target_broadcast_labels: bool = True
     dagger_target_scan_broadcast_labels: bool = False
+    dagger_target_handoff_requires_exact_target: bool = False
+    dagger_signal_target_rendezvous_labels: bool = False
+    dagger_signal_target_rendezvous_min_map_size: int = 16
+    dagger_signal_target_rendezvous_max_agents: int = 2
     dagger_redundant_target_wait_labels: bool = False
     dagger_target_discovery_min_map_size: int = 16
     dagger_target_discovery_focus_weight: float = 3.0
@@ -288,19 +300,25 @@ class RecurrentCurriculumConfig:
     eval_seed_count: int = 2
     eval_send_threshold: float | None = None
     eval_signal_target_scan_threshold: float = -1.0
-    eval_signal_scan_gate_threshold: float = -1.0
-    eval_signal_scan_gate_suppress: bool = False
-    eval_signal_target_validity_threshold: float = -1.0
-    eval_signal_target_decision_threshold: float = -1.0
+    eval_signal_scan_gate_threshold: float = 0.4
+    eval_signal_scan_gate_suppress: bool = True
+    eval_signal_target_validity_threshold: float = 0.4
+    eval_signal_target_decision_threshold: float = 0.4
     eval_signal_target_decision_suppress: bool = True
+    eval_signal_exact_target_scan_lock: bool = False
+    eval_signal_compatible_target_scan_assist: bool = False
+    eval_signal_compatible_target_scan_min_strength: int = 3
     eval_signal_scan_sync_assist: bool = False
     eval_signal_scan_sync_force_first: bool = False
     eval_signal_scan_broadcast_assist: bool = False
+    eval_signal_constraint_message_copy_assist: bool = False
     eval_signal_exact_target_message_guard: bool = False
+    eval_signal_initial_exact_message_copy_assist: bool = True
     eval_signal_exact_target_navigation_assist: bool = False
     eval_signal_exact_target_memory_steps: int = 0
     eval_signal_scan_refresh_assist: bool = False
     eval_signal_scan_refresh_threshold: float = 0.5
+    eval_signal_frontier_exploration_assist: bool = False
     eval_pipeline_navigation_assist: bool = False
     eval_pipeline_navigation_assist_trust_messages: bool = False
     eval_pipeline_station_interact_guard: bool = False
@@ -691,6 +709,13 @@ def _stage_recurrent_config(
         bc_signal_redundant_target_interact_weight=cfg.bc_signal_redundant_target_interact_weight,
         bc_signal_target_pursuit_weight=cfg.bc_signal_target_pursuit_weight,
         bc_signal_target_pursuit_action_weight=cfg.bc_signal_target_pursuit_action_weight,
+        bc_signal_target_pursuit_trust_exact_memory=(
+            cfg.bc_signal_target_pursuit_trust_exact_memory
+        ),
+        bc_signal_target_pursuit_max_agents=cfg.bc_signal_target_pursuit_max_agents,
+        bc_signal_constraint_frontier_bias=cfg.bc_signal_constraint_frontier_bias,
+        bc_signal_initial_message_weight=cfg.bc_signal_initial_message_weight,
+        bc_signal_initial_message_loss_weight=cfg.bc_signal_initial_message_loss_weight,
         bc_signal_sync_response_weight=cfg.bc_signal_sync_response_weight,
         bc_signal_sync_response_action_loss_weight=cfg.bc_signal_sync_response_action_loss_weight,
         bc_signal_target_aux_weight=cfg.bc_signal_target_aux_weight,
@@ -712,6 +737,12 @@ def _stage_recurrent_config(
         bc_signal_target_decision_loss_weight=cfg.bc_signal_target_decision_loss_weight,
         bc_signal_target_decision_pos_weight=cfg.bc_signal_target_decision_pos_weight,
         bc_signal_target_decision_neg_weight=cfg.bc_signal_target_decision_neg_weight,
+        bc_signal_ambiguous_target_decision_negatives=(
+            cfg.bc_signal_ambiguous_target_decision_negatives
+        ),
+        bc_signal_ambiguous_target_decision_min_map_size=(
+            cfg.bc_signal_ambiguous_target_decision_min_map_size
+        ),
         bc_signal_rejected_target_interact_loss_weight=cfg.bc_signal_rejected_target_interact_loss_weight,
         bc_signal_rejected_target_interact_action_loss_weight=(
             cfg.bc_signal_rejected_target_interact_action_loss_weight
@@ -788,7 +819,18 @@ def _stage_recurrent_config(
         ),
         dagger_oracle_message_rollin_rate=cfg.dagger_oracle_message_rollin_rate,
         dagger_oracle_action_rollin_rate=cfg.dagger_oracle_action_rollin_rate,
+        dagger_initial_target_broadcast_labels=cfg.dagger_initial_target_broadcast_labels,
         dagger_target_scan_broadcast_labels=cfg.dagger_target_scan_broadcast_labels,
+        dagger_target_handoff_requires_exact_target=(
+            cfg.dagger_target_handoff_requires_exact_target
+        ),
+        dagger_signal_target_rendezvous_labels=cfg.dagger_signal_target_rendezvous_labels,
+        dagger_signal_target_rendezvous_min_map_size=(
+            cfg.dagger_signal_target_rendezvous_min_map_size
+        ),
+        dagger_signal_target_rendezvous_max_agents=(
+            cfg.dagger_signal_target_rendezvous_max_agents
+        ),
         dagger_redundant_target_wait_labels=cfg.dagger_redundant_target_wait_labels,
         dagger_target_discovery_min_map_size=cfg.dagger_target_discovery_min_map_size,
         dagger_target_discovery_focus_weight=cfg.dagger_target_discovery_focus_weight,
@@ -909,14 +951,22 @@ def _stage_recurrent_config(
         eval_signal_target_validity_threshold=cfg.eval_signal_target_validity_threshold,
         eval_signal_target_decision_threshold=cfg.eval_signal_target_decision_threshold,
         eval_signal_target_decision_suppress=cfg.eval_signal_target_decision_suppress,
+        eval_signal_exact_target_scan_lock=cfg.eval_signal_exact_target_scan_lock,
+        eval_signal_compatible_target_scan_assist=cfg.eval_signal_compatible_target_scan_assist,
+        eval_signal_compatible_target_scan_min_strength=cfg.eval_signal_compatible_target_scan_min_strength,
         eval_signal_scan_sync_assist=cfg.eval_signal_scan_sync_assist,
         eval_signal_scan_sync_force_first=cfg.eval_signal_scan_sync_force_first,
         eval_signal_scan_broadcast_assist=cfg.eval_signal_scan_broadcast_assist,
+        eval_signal_constraint_message_copy_assist=cfg.eval_signal_constraint_message_copy_assist,
         eval_signal_exact_target_message_guard=cfg.eval_signal_exact_target_message_guard,
+        eval_signal_initial_exact_message_copy_assist=(
+            cfg.eval_signal_initial_exact_message_copy_assist
+        ),
         eval_signal_exact_target_navigation_assist=cfg.eval_signal_exact_target_navigation_assist,
         eval_signal_exact_target_memory_steps=cfg.eval_signal_exact_target_memory_steps,
         eval_signal_scan_refresh_assist=cfg.eval_signal_scan_refresh_assist,
         eval_signal_scan_refresh_threshold=cfg.eval_signal_scan_refresh_threshold,
+        eval_signal_frontier_exploration_assist=cfg.eval_signal_frontier_exploration_assist,
         eval_pipeline_navigation_assist=cfg.eval_pipeline_navigation_assist,
         eval_pipeline_navigation_assist_trust_messages=cfg.eval_pipeline_navigation_assist_trust_messages,
         eval_pipeline_station_interact_guard=cfg.eval_pipeline_station_interact_guard,
@@ -1157,7 +1207,7 @@ def main() -> None:
         "--bc-event-action-events",
         default=RecurrentCurriculumConfig.bc_event_action_events,
     )
-    parser.add_argument("--bc-comm-loss-weight", type=float, default=0.1)
+    parser.add_argument("--bc-comm-loss-weight", type=float, default=1.0)
     parser.add_argument("--bc-comm-send-pos-weight", type=float, default=5.0)
     parser.add_argument("--bc-comm-send-loss-weight", type=float, default=1.0)
     parser.add_argument("--bc-comm-length-loss-weight", type=float, default=1.0)
@@ -1205,6 +1255,35 @@ def main() -> None:
     parser.add_argument("--bc-signal-redundant-target-interact-weight", type=float, default=1.0)
     parser.add_argument("--bc-signal-target-pursuit-weight", type=float, default=1.0)
     parser.add_argument("--bc-signal-target-pursuit-action-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--bc-signal-target-pursuit-trust-exact-memory",
+        action=argparse.BooleanOptionalAction,
+        default=RecurrentCurriculumConfig.bc_signal_target_pursuit_trust_exact_memory,
+        help=(
+            "Allow Signal target-pursuit action labels to use trusted exact target "
+            "messages retained in scan-state memory."
+        ),
+    )
+    parser.add_argument(
+        "--bc-signal-target-pursuit-max-agents",
+        type=int,
+        default=RecurrentCurriculumConfig.bc_signal_target_pursuit_max_agents,
+        help=(
+            "Optional cap on how many closest agents receive Signal target-pursuit "
+            "action labels at a step; 0 keeps all eligible agents."
+        ),
+    )
+    parser.add_argument(
+        "--bc-signal-constraint-frontier-bias",
+        action=argparse.BooleanOptionalAction,
+        default=RecurrentCurriculumConfig.bc_signal_constraint_frontier_bias,
+        help=(
+            "Bias Signal frontier action labels toward cells compatible with "
+            "currently known target constraints."
+        ),
+    )
+    parser.add_argument("--bc-signal-initial-message-weight", type=float, default=4.0)
+    parser.add_argument("--bc-signal-initial-message-loss-weight", type=float, default=4.0)
     parser.add_argument("--bc-signal-sync-response-weight", type=float, default=1.0)
     parser.add_argument("--bc-signal-sync-response-action-loss-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-target-aux-weight", type=float, default=0.0)
@@ -1214,18 +1293,28 @@ def main() -> None:
     parser.add_argument("--bc-signal-joint-target-scan-action-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-target-opportunity-action-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-redundant-target-wait-action-loss-weight", type=float, default=0.0)
-    parser.add_argument("--bc-signal-scan-decision-loss-weight", type=float, default=0.0)
-    parser.add_argument("--bc-signal-scan-decision-pos-weight", type=float, default=1.0)
-    parser.add_argument("--bc-signal-scan-decision-neg-weight", type=float, default=1.0)
-    parser.add_argument("--bc-signal-scan-gate-loss-weight", type=float, default=0.0)
-    parser.add_argument("--bc-signal-scan-gate-pos-weight", type=float, default=1.0)
-    parser.add_argument("--bc-signal-scan-gate-neg-weight", type=float, default=1.0)
-    parser.add_argument("--bc-signal-target-validity-loss-weight", type=float, default=0.0)
-    parser.add_argument("--bc-signal-target-validity-pos-weight", type=float, default=1.0)
-    parser.add_argument("--bc-signal-target-validity-neg-weight", type=float, default=1.0)
-    parser.add_argument("--bc-signal-target-decision-loss-weight", type=float, default=0.0)
-    parser.add_argument("--bc-signal-target-decision-pos-weight", type=float, default=1.0)
-    parser.add_argument("--bc-signal-target-decision-neg-weight", type=float, default=1.0)
+    parser.add_argument("--bc-signal-scan-decision-loss-weight", type=float, default=1.0)
+    parser.add_argument("--bc-signal-scan-decision-pos-weight", type=float, default=2.0)
+    parser.add_argument("--bc-signal-scan-decision-neg-weight", type=float, default=3.0)
+    parser.add_argument("--bc-signal-scan-gate-loss-weight", type=float, default=1.0)
+    parser.add_argument("--bc-signal-scan-gate-pos-weight", type=float, default=2.0)
+    parser.add_argument("--bc-signal-scan-gate-neg-weight", type=float, default=3.0)
+    parser.add_argument("--bc-signal-target-validity-loss-weight", type=float, default=1.0)
+    parser.add_argument("--bc-signal-target-validity-pos-weight", type=float, default=2.0)
+    parser.add_argument("--bc-signal-target-validity-neg-weight", type=float, default=3.0)
+    parser.add_argument("--bc-signal-target-decision-loss-weight", type=float, default=1.0)
+    parser.add_argument("--bc-signal-target-decision-pos-weight", type=float, default=2.0)
+    parser.add_argument("--bc-signal-target-decision-neg-weight", type=float, default=3.0)
+    parser.add_argument(
+        "--bc-signal-ambiguous-target-decision-negatives",
+        action="store_true",
+        default=False,
+        help=(
+            "Opt-in Signal ablation: label true target scans as negative target "
+            "decisions when local constraints still allow multiple target hypotheses."
+        ),
+    )
+    parser.add_argument("--bc-signal-ambiguous-target-decision-min-map-size", type=int, default=16)
     parser.add_argument("--bc-signal-rejected-target-interact-loss-weight", type=float, default=0.05)
     parser.add_argument("--bc-signal-rejected-target-interact-action-loss-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-bad-redundant-target-interact-loss-weight", type=float, default=0.05)
@@ -1314,7 +1403,25 @@ def main() -> None:
     )
     parser.add_argument("--dagger-oracle-message-rollin-rate", type=float, default=0.0)
     parser.add_argument("--dagger-oracle-action-rollin-rate", type=float, default=0.0)
+    parser.add_argument(
+        "--dagger-initial-target-broadcast-labels",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Label step-0 Signal Hunt agents with unambiguous private exact target hints to broadcast [26, x, y]",
+    )
     parser.add_argument("--dagger-target-scan-broadcast-labels", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--dagger-target-handoff-requires-exact-target",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--dagger-signal-target-rendezvous-labels",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--dagger-signal-target-rendezvous-min-map-size", type=int, default=16)
+    parser.add_argument("--dagger-signal-target-rendezvous-max-agents", type=int, default=2)
     parser.add_argument("--dagger-redundant-target-wait-labels", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--dagger-target-discovery-min-map-size", type=int, default=16)
     parser.add_argument("--dagger-target-discovery-focus-weight", type=float, default=3.0)
@@ -1480,19 +1587,32 @@ def main() -> None:
     parser.add_argument("--eval-seed-count", type=int, default=2)
     parser.add_argument("--eval-send-threshold", type=float, default=None)
     parser.add_argument("--eval-signal-target-scan-threshold", type=float, default=-1.0)
-    parser.add_argument("--eval-signal-scan-gate-threshold", type=float, default=-1.0)
-    parser.add_argument("--eval-signal-scan-gate-suppress", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--eval-signal-target-validity-threshold", type=float, default=-1.0)
-    parser.add_argument("--eval-signal-target-decision-threshold", type=float, default=-1.0)
+    parser.add_argument("--eval-signal-scan-gate-threshold", type=float, default=0.4)
+    parser.add_argument("--eval-signal-scan-gate-suppress", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--eval-signal-target-validity-threshold", type=float, default=0.4)
+    parser.add_argument("--eval-signal-target-decision-threshold", type=float, default=0.4)
     parser.add_argument(
         "--eval-signal-target-decision-suppress",
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    parser.add_argument("--eval-signal-exact-target-scan-lock", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--eval-signal-compatible-target-scan-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--eval-signal-compatible-target-scan-min-strength", type=int, default=3)
     parser.add_argument("--eval-signal-scan-sync-assist", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--eval-signal-scan-sync-force-first", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--eval-signal-scan-broadcast-assist", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--eval-signal-constraint-message-copy-assist", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--eval-signal-exact-target-message-guard", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--eval-signal-initial-exact-message-copy-assist",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument(
         "--eval-signal-exact-target-navigation-assist",
         action=argparse.BooleanOptionalAction,
@@ -1501,6 +1621,11 @@ def main() -> None:
     parser.add_argument("--eval-signal-exact-target-memory-steps", type=int, default=0)
     parser.add_argument("--eval-signal-scan-refresh-assist", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--eval-signal-scan-refresh-threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--eval-signal-frontier-exploration-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--eval-pipeline-navigation-assist", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--eval-pipeline-navigation-assist-trust-messages",
@@ -1627,6 +1752,13 @@ def main() -> None:
         bc_signal_redundant_target_interact_weight=args.bc_signal_redundant_target_interact_weight,
         bc_signal_target_pursuit_weight=args.bc_signal_target_pursuit_weight,
         bc_signal_target_pursuit_action_weight=args.bc_signal_target_pursuit_action_weight,
+        bc_signal_target_pursuit_trust_exact_memory=(
+            args.bc_signal_target_pursuit_trust_exact_memory
+        ),
+        bc_signal_target_pursuit_max_agents=args.bc_signal_target_pursuit_max_agents,
+        bc_signal_constraint_frontier_bias=args.bc_signal_constraint_frontier_bias,
+        bc_signal_initial_message_weight=args.bc_signal_initial_message_weight,
+        bc_signal_initial_message_loss_weight=args.bc_signal_initial_message_loss_weight,
         bc_signal_sync_response_weight=args.bc_signal_sync_response_weight,
         bc_signal_sync_response_action_loss_weight=args.bc_signal_sync_response_action_loss_weight,
         bc_signal_target_aux_weight=args.bc_signal_target_aux_weight,
@@ -1648,6 +1780,12 @@ def main() -> None:
         bc_signal_target_decision_loss_weight=args.bc_signal_target_decision_loss_weight,
         bc_signal_target_decision_pos_weight=args.bc_signal_target_decision_pos_weight,
         bc_signal_target_decision_neg_weight=args.bc_signal_target_decision_neg_weight,
+        bc_signal_ambiguous_target_decision_negatives=(
+            args.bc_signal_ambiguous_target_decision_negatives
+        ),
+        bc_signal_ambiguous_target_decision_min_map_size=(
+            args.bc_signal_ambiguous_target_decision_min_map_size
+        ),
         bc_signal_rejected_target_interact_loss_weight=args.bc_signal_rejected_target_interact_loss_weight,
         bc_signal_rejected_target_interact_action_loss_weight=(
             args.bc_signal_rejected_target_interact_action_loss_weight
@@ -1728,7 +1866,18 @@ def main() -> None:
         ),
         dagger_oracle_message_rollin_rate=args.dagger_oracle_message_rollin_rate,
         dagger_oracle_action_rollin_rate=args.dagger_oracle_action_rollin_rate,
+        dagger_initial_target_broadcast_labels=args.dagger_initial_target_broadcast_labels,
         dagger_target_scan_broadcast_labels=args.dagger_target_scan_broadcast_labels,
+        dagger_target_handoff_requires_exact_target=(
+            args.dagger_target_handoff_requires_exact_target
+        ),
+        dagger_signal_target_rendezvous_labels=args.dagger_signal_target_rendezvous_labels,
+        dagger_signal_target_rendezvous_min_map_size=(
+            args.dagger_signal_target_rendezvous_min_map_size
+        ),
+        dagger_signal_target_rendezvous_max_agents=(
+            args.dagger_signal_target_rendezvous_max_agents
+        ),
         dagger_redundant_target_wait_labels=args.dagger_redundant_target_wait_labels,
         dagger_target_discovery_min_map_size=args.dagger_target_discovery_min_map_size,
         dagger_target_discovery_focus_weight=args.dagger_target_discovery_focus_weight,
@@ -1852,14 +2001,24 @@ def main() -> None:
         eval_signal_target_validity_threshold=args.eval_signal_target_validity_threshold,
         eval_signal_target_decision_threshold=args.eval_signal_target_decision_threshold,
         eval_signal_target_decision_suppress=args.eval_signal_target_decision_suppress,
+        eval_signal_exact_target_scan_lock=args.eval_signal_exact_target_scan_lock,
+        eval_signal_compatible_target_scan_assist=args.eval_signal_compatible_target_scan_assist,
+        eval_signal_compatible_target_scan_min_strength=(
+            args.eval_signal_compatible_target_scan_min_strength
+        ),
         eval_signal_scan_sync_assist=args.eval_signal_scan_sync_assist,
         eval_signal_scan_sync_force_first=args.eval_signal_scan_sync_force_first,
         eval_signal_scan_broadcast_assist=args.eval_signal_scan_broadcast_assist,
+        eval_signal_constraint_message_copy_assist=args.eval_signal_constraint_message_copy_assist,
         eval_signal_exact_target_message_guard=args.eval_signal_exact_target_message_guard,
+        eval_signal_initial_exact_message_copy_assist=(
+            args.eval_signal_initial_exact_message_copy_assist
+        ),
         eval_signal_exact_target_navigation_assist=args.eval_signal_exact_target_navigation_assist,
         eval_signal_exact_target_memory_steps=args.eval_signal_exact_target_memory_steps,
         eval_signal_scan_refresh_assist=args.eval_signal_scan_refresh_assist,
         eval_signal_scan_refresh_threshold=args.eval_signal_scan_refresh_threshold,
+        eval_signal_frontier_exploration_assist=args.eval_signal_frontier_exploration_assist,
         eval_pipeline_navigation_assist=args.eval_pipeline_navigation_assist,
         eval_pipeline_navigation_assist_trust_messages=args.eval_pipeline_navigation_assist_trust_messages,
         eval_pipeline_station_interact_guard=args.eval_pipeline_station_interact_guard,

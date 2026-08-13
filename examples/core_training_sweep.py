@@ -25,6 +25,8 @@ class ScenarioCase:
     fov_preset: str
     max_steps: int
     energy_preset: str | None = None
+    benchmark_case: str | None = None
+    energy_private_monitor: bool | None = None
 
 
 @dataclass
@@ -66,6 +68,7 @@ DEFAULT_CASES: dict[str, ScenarioCase] = {
         fov_preset="easy",
         max_steps=80,
         energy_preset="easy",
+        energy_private_monitor=True,
     ),
     "pipeline_assembly": ScenarioCase(
         scenario="pipeline_assembly",
@@ -116,6 +119,31 @@ RECURRENT_AUTO_ORACLES = {
     "pipeline_assembly": "planner_comm",
 }
 
+RECURRENT_DEFAULT_DAGGER_FOCUS_EVENTS = (
+    "missed_delivery,missed_target_scan,solo_target_interact,target_interact_miss,"
+    "target_pursuit_miss,target_decoy_drift_miss,target_discovery_miss,"
+    "frontier_exploration_miss,target_handoff_miss,movement_stall_miss,"
+    "pipeline_wrong_delivery,pipeline_dependency_blocked,"
+    "pipeline_sync_wait,pipeline_pickup_miss,pipeline_delivery_miss,pipeline_station_stall_miss,"
+    "pipeline_drop_miss,pipeline_bad_pickup,pipeline_wrong_delivery_root_pickup"
+)
+
+RECURRENT_SIGNAL_SPECIALIST_PRESETS = frozenset({"specialist", "large_map"})
+RECURRENT_SIGNAL_LARGE_MAP_FOCUS_EVENTS = (
+    "visible_clue_miss",
+    "decoy_scan",
+    "rejected_target_scan",
+)
+RECURRENT_SIGNAL_LARGE_MAP_REPLAY_EVENT_WEIGHTS = {
+    "visible_clue_miss": 4.0,
+    "decoy_scan": 4.0,
+    "rejected_target_scan": 4.0,
+}
+RECURRENT_SIGNAL_LARGE_MAP_REPLAY_PRIORITY_EVENTS = (
+    "visible_clue_miss",
+    "decoy_scan",
+    "rejected_target_scan",
+)
 
 RECURRENT_PPO_PROFILES = {
     "standard": {
@@ -261,18 +289,23 @@ RECURRENT_PPO_PROFILES = {
         "recurrent_dagger_replay_post_steps": 2,
         "recurrent_dagger_replay_weight": 1.0,
         "recurrent_dagger_positive_replay_events": (
-            "pipeline_delivery_ready,delivered,stage_completed"
+            "target_handoff,pipeline_delivery_ready,delivered,stage_completed"
         ),
         "recurrent_dagger_replay_event_weights": (
             "pipeline_delivery_ready:4.0,pipeline_delivery_miss:4.0,"
             "pipeline_station_stall_miss:3.0,"
             "pipeline_sync_wait:4.0,"
+            "frontier_exploration_miss:4.0,target_discovery_miss:4.0,"
+            "target_decoy_drift_miss:4.0,target_pursuit_miss:3.0,"
+            "target_handoff_miss:4.0,target_handoff:3.0,"
             "pipeline_wrong_delivery:3.0,pipeline_wrong_delivery_root_pickup:3.0,"
             "delivered:2.0,stage_completed:2.0"
         ),
         "recurrent_dagger_replay_event_caps": "",
         "recurrent_dagger_replay_success_only_events": "delivered,stage_completed",
         "recurrent_dagger_replay_priority_events": (
+            "frontier_exploration_miss,target_discovery_miss,target_decoy_drift_miss,"
+            "target_handoff_miss,target_handoff,"
             "pipeline_delivery_miss,pipeline_delivery_ready,pipeline_wrong_delivery,"
             "pipeline_wrong_delivery_root_pickup,pipeline_sync_wait"
         ),
@@ -337,6 +370,63 @@ def _expand_contiguous_seed_range(spec: str) -> str:
     if count <= 0:
         raise ValueError("seed range COUNT must be positive")
     return ",".join(str(start + offset) for offset in range(count))
+
+
+def _safe_run_name(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value).strip())
+    safe = safe.strip("._-")
+    return safe or "case"
+
+
+def _benchmark_path(raw_path: str) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return ROOT / path
+
+
+def _case_from_benchmark_case(benchmark_case) -> ScenarioCase:
+    spec = dict(benchmark_case.spec)
+    required = ("scenario", "map_size", "agents", "fov_preset", "max_steps")
+    missing = [key for key in required if key not in spec]
+    if missing:
+        raise ValueError(
+            f"benchmark case {benchmark_case.name!r} missing required fields: {missing}"
+        )
+    return ScenarioCase(
+        scenario=str(spec["scenario"]),
+        map_size=int(spec["map_size"]),
+        agents=int(spec["agents"]),
+        fov_preset=str(spec["fov_preset"]),
+        max_steps=int(spec["max_steps"]),
+        energy_preset=(
+            str(spec["energy_preset"]) if spec.get("energy_preset") is not None else None
+        ),
+        benchmark_case=str(benchmark_case.name),
+        energy_private_monitor=(
+            bool(spec["energy_private_monitor"])
+            if spec.get("energy_private_monitor") is not None
+            else None
+        ),
+    )
+
+
+def _cases_from_args(args) -> list[ScenarioCase]:
+    if not args.benchmark_spec:
+        return [DEFAULT_CASES[name] for name in args.scenarios]
+
+    from syncorsink.eval.benchmark_spec import load_benchmark
+
+    benchmark = load_benchmark(str(_benchmark_path(args.benchmark_spec)))
+    by_name = {case.name: case for case in benchmark.cases}
+    selected_names = args.benchmark_cases or list(by_name)
+    missing = [name for name in selected_names if name not in by_name]
+    if missing:
+        raise ValueError(
+            f"unknown benchmark cases for {args.benchmark_spec}: {missing}; "
+            f"available cases: {sorted(by_name)}"
+        )
+    return [_case_from_benchmark_case(by_name[name]) for name in selected_names]
 
 
 def _expand_seed_range(spec: str) -> str:
@@ -426,6 +516,11 @@ def build_command(
     ]
     if case.energy_preset is not None:
         cmd.extend(["--energy-preset", case.energy_preset])
+    if case.energy_private_monitor is not None:
+        if case.energy_private_monitor:
+            cmd.append("--energy-private-monitor")
+        else:
+            cmd.append("--no-energy-private-monitor")
     if algorithm == "mappo":
         cmd.extend([
             "--comm",
@@ -468,6 +563,39 @@ def _resolve_recurrent_signal_obs_memory_mode(args) -> str:
     return args.recurrent_obs_memory_mode
 
 
+def _csv_items(value: str | None) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+def _append_csv_items(value: str | None, additions: Iterable[str]) -> str:
+    items = _csv_items(value)
+    seen = set(items)
+    for item in additions:
+        item = str(item).strip()
+        if item and item not in seen:
+            items.append(item)
+            seen.add(item)
+    return ",".join(items)
+
+
+def _weighted_event_name(item: str) -> str:
+    return item.split(":", 1)[0].strip()
+
+
+def _append_weighted_csv_items(
+    value: str | None,
+    additions: dict[str, float],
+) -> str:
+    items = _csv_items(value)
+    seen = {_weighted_event_name(item) for item in items}
+    for event, weight in additions.items():
+        event = str(event).strip()
+        if event and event not in seen:
+            items.append(f"{event}:{float(weight):.1f}")
+            seen.add(event)
+    return ",".join(items)
+
+
 def _build_recurrent_command(
     *,
     case: ScenarioCase,
@@ -485,8 +613,230 @@ def _build_recurrent_command(
     rl_eval_episodes = args.recurrent_rl_eval_episodes
     if rl_eval_episodes is None:
         rl_eval_episodes = eval_episodes
-    signal_specialist = args.recurrent_signal_preset == "specialist" and case.scenario == "signal_hunt"
-
+    signal_preset = (
+        args.recurrent_signal_preset
+        if case.scenario == "signal_hunt"
+        else "minimal"
+    )
+    signal_specialist = signal_preset in RECURRENT_SIGNAL_SPECIALIST_PRESETS
+    signal_large_map = signal_preset == "large_map"
+    recurrent_obs_exploration_age = bool(args.recurrent_obs_exploration_age)
+    initial_target_broadcast_labels = args.recurrent_dagger_initial_target_broadcast_labels
+    if initial_target_broadcast_labels is None:
+        initial_target_broadcast_labels = signal_specialist
+    target_handoff_requires_exact_target = (
+        args.recurrent_dagger_target_handoff_requires_exact_target
+    )
+    if target_handoff_requires_exact_target is None:
+        target_handoff_requires_exact_target = False
+    bc_comm_send_pos_weight = float(args.recurrent_bc_comm_send_pos_weight)
+    if signal_specialist and bc_comm_send_pos_weight == 0.0:
+        bc_comm_send_pos_weight = -1.0
+    bc_signal_initial_message_weight = args.recurrent_bc_signal_initial_message_weight
+    if bc_signal_initial_message_weight is None:
+        bc_signal_initial_message_weight = 4.0 if signal_specialist else 1.0
+    bc_signal_initial_message_loss_weight = (
+        args.recurrent_bc_signal_initial_message_loss_weight
+    )
+    if bc_signal_initial_message_loss_weight is None:
+        bc_signal_initial_message_loss_weight = 4.0 if signal_specialist else 0.0
+    bc_signal_target_aux_weight = args.recurrent_bc_signal_target_aux_weight
+    if bc_signal_target_aux_weight is None:
+        bc_signal_target_aux_weight = 0.25 if signal_specialist else 0.0
+    bc_signal_target_pursuit_action_weight = (
+        args.recurrent_bc_signal_target_pursuit_action_weight
+    )
+    if bc_signal_target_pursuit_action_weight is None:
+        bc_signal_target_pursuit_action_weight = 0.4 if signal_specialist else 0.0
+    bc_signal_target_pursuit_max_agents = (
+        args.recurrent_bc_signal_target_pursuit_max_agents
+    )
+    if bc_signal_target_pursuit_max_agents is None:
+        bc_signal_target_pursuit_max_agents = 0
+    bc_signal_sync_response_action_loss_weight = (
+        args.recurrent_bc_signal_sync_response_action_loss_weight
+    )
+    if bc_signal_sync_response_action_loss_weight is None:
+        bc_signal_sync_response_action_loss_weight = 0.2 if signal_specialist else 0.0
+    bc_signal_target_match_action_weight = (
+        args.recurrent_bc_signal_target_match_action_weight
+    )
+    if bc_signal_target_match_action_weight is None:
+        bc_signal_target_match_action_weight = 0.4 if signal_specialist else 0.0
+    bc_signal_first_target_scan_action_weight = (
+        args.recurrent_bc_signal_first_target_scan_action_weight
+    )
+    if bc_signal_first_target_scan_action_weight is None:
+        bc_signal_first_target_scan_action_weight = 0.8 if signal_specialist else 0.0
+    bc_signal_refresh_target_scan_action_weight = (
+        args.recurrent_bc_signal_refresh_target_scan_action_weight
+    )
+    if bc_signal_refresh_target_scan_action_weight is None:
+        bc_signal_refresh_target_scan_action_weight = 0.3 if signal_specialist else 0.0
+    bc_signal_joint_target_scan_action_weight = (
+        args.recurrent_bc_signal_joint_target_scan_action_weight
+    )
+    if bc_signal_joint_target_scan_action_weight is None:
+        bc_signal_joint_target_scan_action_weight = 0.5 if signal_specialist else 0.0
+    bc_signal_target_opportunity_action_weight = (
+        args.recurrent_bc_signal_target_opportunity_action_weight
+    )
+    if bc_signal_target_opportunity_action_weight is None:
+        bc_signal_target_opportunity_action_weight = 0.4 if signal_specialist else 0.0
+    bc_signal_redundant_target_wait_action_loss_weight = (
+        args.recurrent_bc_signal_redundant_target_wait_action_loss_weight
+    )
+    if bc_signal_redundant_target_wait_action_loss_weight is None:
+        bc_signal_redundant_target_wait_action_loss_weight = 0.0
+    bc_signal_scan_decision_loss_weight = args.recurrent_bc_signal_scan_decision_loss_weight
+    if bc_signal_scan_decision_loss_weight is None:
+        bc_signal_scan_decision_loss_weight = 1.0 if signal_specialist else 0.0
+    bc_signal_scan_decision_pos_weight = args.recurrent_bc_signal_scan_decision_pos_weight
+    if bc_signal_scan_decision_pos_weight is None:
+        bc_signal_scan_decision_pos_weight = 2.0 if signal_specialist else 1.0
+    bc_signal_scan_decision_neg_weight = args.recurrent_bc_signal_scan_decision_neg_weight
+    if bc_signal_scan_decision_neg_weight is None:
+        bc_signal_scan_decision_neg_weight = 3.0 if signal_specialist else 1.0
+    bc_signal_scan_gate_loss_weight = args.recurrent_bc_signal_scan_gate_loss_weight
+    if bc_signal_scan_gate_loss_weight is None:
+        bc_signal_scan_gate_loss_weight = 1.0 if signal_specialist else 0.0
+    bc_signal_scan_gate_pos_weight = args.recurrent_bc_signal_scan_gate_pos_weight
+    if bc_signal_scan_gate_pos_weight is None:
+        bc_signal_scan_gate_pos_weight = 2.0 if signal_specialist else 1.0
+    bc_signal_scan_gate_neg_weight = args.recurrent_bc_signal_scan_gate_neg_weight
+    if bc_signal_scan_gate_neg_weight is None:
+        bc_signal_scan_gate_neg_weight = 3.0 if signal_specialist else 1.0
+    bc_signal_target_validity_loss_weight = (
+        args.recurrent_bc_signal_target_validity_loss_weight
+    )
+    if bc_signal_target_validity_loss_weight is None:
+        bc_signal_target_validity_loss_weight = 1.0 if signal_specialist else 0.0
+    bc_signal_target_validity_pos_weight = (
+        args.recurrent_bc_signal_target_validity_pos_weight
+    )
+    if bc_signal_target_validity_pos_weight is None:
+        bc_signal_target_validity_pos_weight = 2.0 if signal_specialist else 1.0
+    bc_signal_target_validity_neg_weight = (
+        args.recurrent_bc_signal_target_validity_neg_weight
+    )
+    if bc_signal_target_validity_neg_weight is None:
+        bc_signal_target_validity_neg_weight = 3.0 if signal_specialist else 1.0
+    bc_signal_target_decision_loss_weight = (
+        args.recurrent_bc_signal_target_decision_loss_weight
+    )
+    if bc_signal_target_decision_loss_weight is None:
+        bc_signal_target_decision_loss_weight = 1.0 if signal_specialist else 0.0
+    bc_signal_target_decision_pos_weight = (
+        args.recurrent_bc_signal_target_decision_pos_weight
+    )
+    if bc_signal_target_decision_pos_weight is None:
+        bc_signal_target_decision_pos_weight = 2.0 if signal_specialist else 1.0
+    bc_signal_target_decision_neg_weight = (
+        args.recurrent_bc_signal_target_decision_neg_weight
+    )
+    if bc_signal_target_decision_neg_weight is None:
+        bc_signal_target_decision_neg_weight = 3.0 if signal_specialist else 1.0
+    signal_scan_head_overrides = any(
+        value is not None
+        for value in (
+            args.recurrent_bc_signal_scan_decision_loss_weight,
+            args.recurrent_bc_signal_scan_decision_pos_weight,
+            args.recurrent_bc_signal_scan_decision_neg_weight,
+            args.recurrent_bc_signal_scan_gate_loss_weight,
+            args.recurrent_bc_signal_scan_gate_pos_weight,
+            args.recurrent_bc_signal_scan_gate_neg_weight,
+            args.recurrent_bc_signal_target_validity_loss_weight,
+            args.recurrent_bc_signal_target_validity_pos_weight,
+            args.recurrent_bc_signal_target_validity_neg_weight,
+            args.recurrent_bc_signal_target_decision_loss_weight,
+            args.recurrent_bc_signal_target_decision_pos_weight,
+            args.recurrent_bc_signal_target_decision_neg_weight,
+        )
+    )
+    bc_signal_decoy_drift_action_loss_weight = (
+        args.recurrent_bc_signal_decoy_drift_action_loss_weight
+    )
+    if bc_signal_decoy_drift_action_loss_weight is None:
+        bc_signal_decoy_drift_action_loss_weight = 0.1 if signal_large_map else 0.0
+    bc_signal_decoy_scan_action_loss_weight = (
+        args.recurrent_bc_signal_decoy_scan_action_loss_weight
+    )
+    if bc_signal_decoy_scan_action_loss_weight is None:
+        bc_signal_decoy_scan_action_loss_weight = 0.25 if signal_large_map else 0.0
+    bc_signal_rejected_target_drift_action_loss_weight = (
+        args.recurrent_bc_signal_rejected_target_drift_action_loss_weight
+    )
+    if bc_signal_rejected_target_drift_action_loss_weight is None:
+        bc_signal_rejected_target_drift_action_loss_weight = 0.0
+    bc_signal_visible_clue_action_weight = (
+        args.recurrent_bc_signal_visible_clue_action_weight
+    )
+    if bc_signal_visible_clue_action_weight is None:
+        bc_signal_visible_clue_action_weight = 0.25 if signal_large_map else 0.0
+    bc_signal_visible_clue_min_map_size = (
+        args.recurrent_bc_signal_visible_clue_min_map_size
+    )
+    if bc_signal_visible_clue_min_map_size is None:
+        bc_signal_visible_clue_min_map_size = 32 if signal_large_map else 16
+    bc_signal_frontier_exploration_action_weight = (
+        args.recurrent_bc_signal_frontier_exploration_action_weight
+    )
+    if bc_signal_frontier_exploration_action_weight is None:
+        if signal_large_map:
+            bc_signal_frontier_exploration_action_weight = 0.25
+        else:
+            bc_signal_frontier_exploration_action_weight = 0.25 if signal_specialist else 0.0
+    bc_signal_frontier_exploration_min_map_size = (
+        args.recurrent_bc_signal_frontier_exploration_min_map_size
+    )
+    if bc_signal_frontier_exploration_min_map_size is None:
+        bc_signal_frontier_exploration_min_map_size = 16
+    bc_comm_loss_weight = args.recurrent_bc_comm_loss_weight
+    if bc_comm_loss_weight is None:
+        bc_comm_loss_weight = 1.0 if signal_specialist else 0.1
+    initial_exact_message_copy_assist = (
+        args.recurrent_eval_signal_initial_exact_message_copy_assist
+    )
+    if initial_exact_message_copy_assist is None:
+        initial_exact_message_copy_assist = signal_specialist
+    constraint_message_copy_assist = (
+        args.recurrent_eval_signal_constraint_message_copy_assist
+    )
+    if constraint_message_copy_assist is None:
+        constraint_message_copy_assist = signal_specialist
+    recurrent_obs_agent_id_features = args.recurrent_obs_agent_id_features
+    if recurrent_obs_agent_id_features is None:
+        recurrent_obs_agent_id_features = signal_specialist
+    eval_signal_target_scan_threshold = args.recurrent_eval_signal_target_scan_threshold
+    if eval_signal_target_scan_threshold is None and signal_specialist:
+        eval_signal_target_scan_threshold = 0.0
+    eval_signal_target_scan_lock = args.recurrent_eval_signal_target_scan_lock
+    if eval_signal_target_scan_lock is None:
+        eval_signal_target_scan_lock = False
+    eval_signal_exact_target_scan_lock = (
+        args.recurrent_eval_signal_exact_target_scan_lock
+    )
+    if eval_signal_exact_target_scan_lock is None:
+        eval_signal_exact_target_scan_lock = False
+    eval_signal_compatible_target_scan_assist = (
+        args.recurrent_eval_signal_compatible_target_scan_assist
+    )
+    dagger_focus_events = args.recurrent_dagger_focus_events
+    dagger_replay_event_weights = args.recurrent_dagger_replay_event_weights
+    dagger_replay_priority_events = args.recurrent_dagger_replay_priority_events
+    if signal_large_map:
+        dagger_focus_events = _append_csv_items(
+            dagger_focus_events,
+            RECURRENT_SIGNAL_LARGE_MAP_FOCUS_EVENTS,
+        )
+        dagger_replay_event_weights = _append_weighted_csv_items(
+            dagger_replay_event_weights,
+            RECURRENT_SIGNAL_LARGE_MAP_REPLAY_EVENT_WEIGHTS,
+        )
+        dagger_replay_priority_events = _append_csv_items(
+            dagger_replay_priority_events,
+            RECURRENT_SIGNAL_LARGE_MAP_REPLAY_PRIORITY_EVENTS,
+        )
     cmd = [
         sys.executable,
         "-u",
@@ -517,6 +867,8 @@ def _build_recurrent_command(
         str(args.recurrent_bc_event_action_weight),
         "--bc-event-action-events",
         args.recurrent_bc_event_action_events,
+        "--bc-comm-loss-weight",
+        str(bc_comm_loss_weight),
         "--bc-pipeline-pickup-action-loss-weight",
         str(args.recurrent_bc_pipeline_pickup_action_loss_weight),
         "--bc-pipeline-delivery-action-loss-weight",
@@ -575,6 +927,44 @@ def _build_recurrent_command(
         str(args.recurrent_bc_pipeline_bad_action_margin_loss_weight),
         "--bc-pipeline-bad-action-margin",
         str(args.recurrent_bc_pipeline_bad_action_margin),
+        "--bc-signal-initial-message-weight",
+        str(bc_signal_initial_message_weight),
+        "--bc-signal-initial-message-loss-weight",
+        str(bc_signal_initial_message_loss_weight),
+        "--bc-signal-target-aux-weight",
+        str(bc_signal_target_aux_weight),
+        "--bc-signal-target-pursuit-action-weight",
+        str(bc_signal_target_pursuit_action_weight),
+        "--bc-signal-target-pursuit-max-agents",
+        str(bc_signal_target_pursuit_max_agents),
+        "--bc-signal-sync-response-action-loss-weight",
+        str(bc_signal_sync_response_action_loss_weight),
+        "--bc-signal-target-match-action-weight",
+        str(bc_signal_target_match_action_weight),
+        "--bc-signal-first-target-scan-action-weight",
+        str(bc_signal_first_target_scan_action_weight),
+        "--bc-signal-refresh-target-scan-action-weight",
+        str(bc_signal_refresh_target_scan_action_weight),
+        "--bc-signal-joint-target-scan-action-weight",
+        str(bc_signal_joint_target_scan_action_weight),
+        "--bc-signal-target-opportunity-action-weight",
+        str(bc_signal_target_opportunity_action_weight),
+        "--bc-signal-redundant-target-wait-action-loss-weight",
+        str(bc_signal_redundant_target_wait_action_loss_weight),
+        "--bc-signal-decoy-drift-action-loss-weight",
+        str(bc_signal_decoy_drift_action_loss_weight),
+        "--bc-signal-decoy-scan-action-loss-weight",
+        str(bc_signal_decoy_scan_action_loss_weight),
+        "--bc-signal-rejected-target-drift-action-loss-weight",
+        str(bc_signal_rejected_target_drift_action_loss_weight),
+        "--bc-signal-visible-clue-action-weight",
+        str(bc_signal_visible_clue_action_weight),
+        "--bc-signal-visible-clue-min-map-size",
+        str(bc_signal_visible_clue_min_map_size),
+        "--bc-signal-frontier-exploration-action-weight",
+        str(bc_signal_frontier_exploration_action_weight),
+        "--bc-signal-frontier-exploration-min-map-size",
+        str(bc_signal_frontier_exploration_min_map_size),
         "--pipeline-required-per-stage-min",
         str(args.recurrent_pipeline_required_per_stage_min),
         "--pipeline-required-per-stage-max",
@@ -586,7 +976,7 @@ def _build_recurrent_command(
         "--pipeline-wrong-delivery-penalty",
         str(args.recurrent_pipeline_wrong_delivery_penalty),
         "--bc-comm-send-pos-weight",
-        str(args.recurrent_bc_comm_send_pos_weight),
+        str(bc_comm_send_pos_weight),
         "--bc-comm-send-rate-penalty-weight",
         str(args.recurrent_bc_comm_send_rate_penalty_weight),
         "--bc-comm-send-rate-target",
@@ -604,13 +994,27 @@ def _build_recurrent_command(
         "--dagger-oracle-message-rollin-rate",
         str(args.recurrent_dagger_oracle_message_rollin_rate),
         "--dagger-focus-events",
-        args.recurrent_dagger_focus_events,
+        dagger_focus_events,
         "--dagger-focus-error-weight",
         str(args.recurrent_dagger_focus_error_weight),
         "--dagger-focus-recovery-weight",
         str(args.recurrent_dagger_focus_recovery_weight),
         "--dagger-focus-window",
         str(args.recurrent_dagger_focus_window),
+        "--dagger-target-interact-focus-weight",
+        str(args.recurrent_dagger_target_interact_focus_weight),
+        "--dagger-target-discovery-min-map-size",
+        str(args.recurrent_dagger_target_discovery_min_map_size),
+        "--dagger-target-discovery-focus-weight",
+        str(args.recurrent_dagger_target_discovery_focus_weight),
+        "--dagger-movement-stall-min-map-size",
+        str(args.recurrent_dagger_movement_stall_min_map_size),
+        "--dagger-movement-stall-window",
+        str(args.recurrent_dagger_movement_stall_window),
+        "--dagger-movement-stall-focus-weight",
+        str(args.recurrent_dagger_movement_stall_focus_weight),
+        "--dagger-target-decoy-drift-focus-weight",
+        str(args.recurrent_dagger_target_decoy_drift_focus_weight),
         "--dagger-replay-pre-steps",
         str(args.recurrent_dagger_replay_pre_steps),
         "--dagger-replay-post-steps",
@@ -620,13 +1024,13 @@ def _build_recurrent_command(
         "--dagger-positive-replay-events",
         args.recurrent_dagger_positive_replay_events,
         "--dagger-replay-event-weights",
-        args.recurrent_dagger_replay_event_weights,
+        dagger_replay_event_weights,
         "--dagger-replay-event-caps",
         args.recurrent_dagger_replay_event_caps,
         "--dagger-replay-success-only-events",
         args.recurrent_dagger_replay_success_only_events,
         "--dagger-replay-priority-events",
-        args.recurrent_dagger_replay_priority_events,
+        dagger_replay_priority_events,
         "--dagger-replay-balance-positive-events",
         args.recurrent_dagger_replay_balance_positive_events,
         "--dagger-replay-balance-negative-events",
@@ -641,6 +1045,10 @@ def _build_recurrent_command(
         str(args.recurrent_dagger_failed_parent_replay_weight_scale),
         "--dagger-expert-max-replay-snippets-per-episode",
         str(args.recurrent_dagger_expert_max_replay_snippets_per_episode),
+        "--dagger-signal-target-rendezvous-min-map-size",
+        str(args.recurrent_dagger_signal_target_rendezvous_min_map_size),
+        "--dagger-signal-target-rendezvous-max-agents",
+        str(args.recurrent_dagger_signal_target_rendezvous_max_agents),
         "--rl-updates",
         str(rl_updates),
         "--rl-early-stop-eval-patience",
@@ -750,6 +1158,27 @@ def _build_recurrent_command(
         cmd.extend(["--eval-map-sizes", args.recurrent_eval_map_sizes])
     if args.recurrent_eval_seed_list:
         cmd.extend(["--eval-seed-list", args.recurrent_eval_seed_list])
+    if case.scenario == "signal_hunt" and eval_signal_target_scan_threshold is not None:
+        cmd.extend([
+            "--eval-signal-target-scan-threshold",
+            str(eval_signal_target_scan_threshold),
+        ])
+    if args.recurrent_bc_signal_target_pursuit_trust_exact_memory:
+        cmd.append("--bc-signal-target-pursuit-trust-exact-memory")
+    if case.scenario == "signal_hunt" and eval_signal_target_scan_lock:
+        cmd.append("--eval-signal-target-scan-lock")
+    if case.scenario == "signal_hunt" and eval_signal_exact_target_scan_lock:
+        cmd.append("--eval-signal-exact-target-scan-lock")
+    if case.scenario == "signal_hunt" and eval_signal_compatible_target_scan_assist:
+        cmd.append("--eval-signal-compatible-target-scan-assist")
+        cmd.extend([
+            "--eval-signal-compatible-target-scan-min-strength",
+            str(args.recurrent_eval_signal_compatible_target_scan_min_strength),
+        ])
+    if case.scenario == "signal_hunt" and args.recurrent_eval_signal_frontier_exploration_assist:
+        cmd.append("--eval-signal-frontier-exploration-assist")
+    if case.scenario == "signal_hunt" and constraint_message_copy_assist:
+        cmd.append("--eval-signal-constraint-message-copy-assist")
     if args.recurrent_dagger_seed_list:
         cmd.extend(["--dagger-seed-list", args.recurrent_dagger_seed_list])
     if (
@@ -828,6 +1257,8 @@ def _build_recurrent_command(
         cmd.append("--bc-calibrate-send-threshold")
     if args.recurrent_obs_exploration_memory:
         cmd.append("--obs-exploration-memory")
+        if args.recurrent_obs_exploration_age:
+            cmd.append("--obs-exploration-age")
     if args.recurrent_obs_memory_mode != "auto" and not signal_specialist:
         cmd.extend([
             "--obs-memory-mode",
@@ -863,11 +1294,15 @@ def _build_recurrent_command(
         cmd.append("--obs-signal-sync-feedback")
     if args.recurrent_obs_signal_scan_state:
         cmd.append("--obs-signal-scan-state")
+    if recurrent_obs_agent_id_features:
+        cmd.append("--obs-agent-id-features")
     if (
         args.recurrent_bc_pipeline_proactive_bad_action_labels
         and case.scenario == "pipeline_assembly"
     ):
         cmd.append("--bc-pipeline-proactive-bad-action-labels")
+    if args.recurrent_bc_signal_constraint_frontier_bias and case.scenario == "signal_hunt":
+        cmd.append("--bc-signal-constraint-frontier-bias")
     if (
         args.recurrent_bc_calibrate_pipeline_interact_gate_threshold
         and case.scenario == "pipeline_assembly"
@@ -879,6 +1314,12 @@ def _build_recurrent_command(
         cmd.append("--no-dagger-retrain-from-scratch")
     if not args.recurrent_dagger_restore_best:
         cmd.append("--no-dagger-restore-best")
+    if initial_target_broadcast_labels and case.scenario == "signal_hunt":
+        cmd.append("--dagger-initial-target-broadcast-labels")
+    if target_handoff_requires_exact_target and case.scenario == "signal_hunt":
+        cmd.append("--dagger-target-handoff-requires-exact-target")
+    if args.recurrent_dagger_signal_target_rendezvous_labels and case.scenario == "signal_hunt":
+        cmd.append("--dagger-signal-target-rendezvous-labels")
     if (
         args.recurrent_dagger_pipeline_wrong_delivery_provenance_labels
         and case.scenario == "pipeline_assembly"
@@ -950,6 +1391,37 @@ def _build_recurrent_command(
         ])
     if args.recurrent_eval_pipeline_option_allow_interact and case.scenario == "pipeline_assembly":
         cmd.append("--eval-pipeline-option-allow-interact")
+    if signal_specialist or (case.scenario == "signal_hunt" and signal_scan_head_overrides):
+        cmd.extend([
+            "--bc-signal-scan-decision-loss-weight",
+            str(bc_signal_scan_decision_loss_weight),
+            "--bc-signal-scan-decision-pos-weight",
+            str(bc_signal_scan_decision_pos_weight),
+            "--bc-signal-scan-decision-neg-weight",
+            str(bc_signal_scan_decision_neg_weight),
+            "--bc-signal-scan-gate-loss-weight",
+            str(bc_signal_scan_gate_loss_weight),
+            "--bc-signal-scan-gate-pos-weight",
+            str(bc_signal_scan_gate_pos_weight),
+            "--bc-signal-scan-gate-neg-weight",
+            str(bc_signal_scan_gate_neg_weight),
+            "--bc-signal-target-validity-loss-weight",
+            str(bc_signal_target_validity_loss_weight),
+            "--bc-signal-target-validity-pos-weight",
+            str(bc_signal_target_validity_pos_weight),
+            "--bc-signal-target-validity-neg-weight",
+            str(bc_signal_target_validity_neg_weight),
+            "--bc-signal-target-decision-loss-weight",
+            str(bc_signal_target_decision_loss_weight),
+            "--bc-signal-target-decision-pos-weight",
+            str(bc_signal_target_decision_pos_weight),
+            "--bc-signal-target-decision-neg-weight",
+            str(bc_signal_target_decision_neg_weight),
+            "--bc-signal-ambiguous-target-decision-min-map-size",
+            str(args.recurrent_bc_signal_ambiguous_target_decision_min_map_size),
+        ])
+    if args.recurrent_bc_signal_ambiguous_target_decision_negatives and case.scenario == "signal_hunt":
+        cmd.append("--bc-signal-ambiguous-target-decision-negatives")
     if signal_specialist:
         cmd.extend([
             "--obs-exploration-memory",
@@ -972,7 +1444,18 @@ def _build_recurrent_command(
             "--eval-signal-exact-target-navigation-assist",
             "--eval-signal-exact-target-memory-steps",
             str(args.recurrent_eval_signal_exact_target_memory_steps),
+            "--eval-signal-scan-gate-threshold",
+            "0.4",
+            "--eval-signal-scan-gate-suppress",
+            "--eval-signal-target-validity-threshold",
+            "0.4",
+            "--eval-signal-target-decision-threshold",
+            "0.4",
         ])
+        if recurrent_obs_exploration_age:
+            cmd.append("--obs-exploration-age")
+    if case.scenario == "signal_hunt" and initial_exact_message_copy_assist:
+        cmd.append("--eval-signal-initial-exact-message-copy-assist")
     cmd.extend(_learning_profile_args(args.learning_profile, "recurrent_bc_rl", case))
     if args.wandb:
         cmd.append("--wandb")
@@ -1033,13 +1516,14 @@ def _apply_recurrent_ppo_profile(args):
 def run_suite(args) -> dict:
     suite_dir = _suite_dir(args)
     suite_dir.mkdir(parents=True, exist_ok=True)
-    cases = [DEFAULT_CASES[name] for name in args.scenarios]
+    cases = _cases_from_args(args)
     records: list[RunRecord] = []
 
     for algorithm in args.algorithms:
         for case in cases:
             for seed in args.seeds:
-                run_name = f"{algorithm}_{case.scenario}_{case.map_size}x{case.map_size}_seed{seed}"
+                case_name = case.benchmark_case or f"{case.scenario}_{case.map_size}x{case.map_size}"
+                run_name = f"{algorithm}_{_safe_run_name(case_name)}_seed{seed}"
                 run_dir = suite_dir / run_name
                 checkpoint_dir = run_dir / "checkpoints"
                 checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -1085,6 +1569,8 @@ def run_suite(args) -> dict:
         "config": {
             "algorithms": args.algorithms,
             "scenarios": args.scenarios,
+            "benchmark_spec": args.benchmark_spec,
+            "benchmark_cases": args.benchmark_cases,
             "updates": args.updates,
             "rollout_steps": args.rollout_steps,
             "epochs": args.epochs,
@@ -1126,6 +1612,7 @@ def run_suite(args) -> dict:
             "recurrent_bc_action_class_balance_max_weight": args.recurrent_bc_action_class_balance_max_weight,
             "recurrent_bc_event_action_weight": args.recurrent_bc_event_action_weight,
             "recurrent_bc_event_action_events": args.recurrent_bc_event_action_events,
+            "recurrent_bc_comm_loss_weight": args.recurrent_bc_comm_loss_weight,
             "recurrent_bc_pipeline_pickup_action_loss_weight": (
                 args.recurrent_bc_pipeline_pickup_action_loss_weight
             ),
@@ -1269,15 +1756,156 @@ def run_suite(args) -> dict:
             "recurrent_bc_comm_send_pos_weight": args.recurrent_bc_comm_send_pos_weight,
             "recurrent_bc_comm_send_rate_penalty_weight": args.recurrent_bc_comm_send_rate_penalty_weight,
             "recurrent_bc_comm_send_rate_target": args.recurrent_bc_comm_send_rate_target,
+            "recurrent_bc_signal_initial_message_weight": (
+                args.recurrent_bc_signal_initial_message_weight
+            ),
+            "recurrent_bc_signal_initial_message_loss_weight": (
+                args.recurrent_bc_signal_initial_message_loss_weight
+            ),
+            "recurrent_bc_signal_target_aux_weight": (
+                args.recurrent_bc_signal_target_aux_weight
+            ),
+            "recurrent_bc_signal_target_pursuit_action_weight": (
+                args.recurrent_bc_signal_target_pursuit_action_weight
+            ),
+            "recurrent_bc_signal_target_pursuit_trust_exact_memory": (
+                bool(args.recurrent_bc_signal_target_pursuit_trust_exact_memory)
+            ),
+            "recurrent_bc_signal_target_pursuit_max_agents": (
+                args.recurrent_bc_signal_target_pursuit_max_agents
+            ),
+            "recurrent_bc_signal_sync_response_action_loss_weight": (
+                args.recurrent_bc_signal_sync_response_action_loss_weight
+            ),
+            "recurrent_bc_signal_target_match_action_weight": (
+                args.recurrent_bc_signal_target_match_action_weight
+            ),
+            "recurrent_bc_signal_first_target_scan_action_weight": (
+                args.recurrent_bc_signal_first_target_scan_action_weight
+            ),
+            "recurrent_bc_signal_refresh_target_scan_action_weight": (
+                args.recurrent_bc_signal_refresh_target_scan_action_weight
+            ),
+            "recurrent_bc_signal_joint_target_scan_action_weight": (
+                args.recurrent_bc_signal_joint_target_scan_action_weight
+            ),
+            "recurrent_bc_signal_target_opportunity_action_weight": (
+                args.recurrent_bc_signal_target_opportunity_action_weight
+            ),
+            "recurrent_bc_signal_redundant_target_wait_action_loss_weight": (
+                args.recurrent_bc_signal_redundant_target_wait_action_loss_weight
+            ),
+            "recurrent_bc_signal_scan_decision_loss_weight": (
+                args.recurrent_bc_signal_scan_decision_loss_weight
+            ),
+            "recurrent_bc_signal_scan_decision_pos_weight": (
+                args.recurrent_bc_signal_scan_decision_pos_weight
+            ),
+            "recurrent_bc_signal_scan_decision_neg_weight": (
+                args.recurrent_bc_signal_scan_decision_neg_weight
+            ),
+            "recurrent_bc_signal_scan_gate_loss_weight": (
+                args.recurrent_bc_signal_scan_gate_loss_weight
+            ),
+            "recurrent_bc_signal_scan_gate_pos_weight": (
+                args.recurrent_bc_signal_scan_gate_pos_weight
+            ),
+            "recurrent_bc_signal_scan_gate_neg_weight": (
+                args.recurrent_bc_signal_scan_gate_neg_weight
+            ),
+            "recurrent_bc_signal_target_validity_loss_weight": (
+                args.recurrent_bc_signal_target_validity_loss_weight
+            ),
+            "recurrent_bc_signal_target_validity_pos_weight": (
+                args.recurrent_bc_signal_target_validity_pos_weight
+            ),
+            "recurrent_bc_signal_target_validity_neg_weight": (
+                args.recurrent_bc_signal_target_validity_neg_weight
+            ),
+            "recurrent_bc_signal_target_decision_loss_weight": (
+                args.recurrent_bc_signal_target_decision_loss_weight
+            ),
+            "recurrent_bc_signal_target_decision_pos_weight": (
+                args.recurrent_bc_signal_target_decision_pos_weight
+            ),
+            "recurrent_bc_signal_target_decision_neg_weight": (
+                args.recurrent_bc_signal_target_decision_neg_weight
+            ),
+            "recurrent_bc_signal_ambiguous_target_decision_negatives": (
+                bool(args.recurrent_bc_signal_ambiguous_target_decision_negatives)
+            ),
+            "recurrent_bc_signal_ambiguous_target_decision_min_map_size": (
+                args.recurrent_bc_signal_ambiguous_target_decision_min_map_size
+            ),
+            "recurrent_bc_signal_constraint_frontier_bias": (
+                bool(args.recurrent_bc_signal_constraint_frontier_bias)
+            ),
+            "recurrent_bc_signal_decoy_drift_action_loss_weight": (
+                args.recurrent_bc_signal_decoy_drift_action_loss_weight
+            ),
+            "recurrent_bc_signal_decoy_scan_action_loss_weight": (
+                args.recurrent_bc_signal_decoy_scan_action_loss_weight
+            ),
+            "recurrent_bc_signal_rejected_target_drift_action_loss_weight": (
+                args.recurrent_bc_signal_rejected_target_drift_action_loss_weight
+            ),
+            "recurrent_bc_signal_visible_clue_action_weight": (
+                args.recurrent_bc_signal_visible_clue_action_weight
+            ),
+            "recurrent_bc_signal_visible_clue_min_map_size": (
+                args.recurrent_bc_signal_visible_clue_min_map_size
+            ),
+            "recurrent_bc_signal_frontier_exploration_action_weight": (
+                args.recurrent_bc_signal_frontier_exploration_action_weight
+            ),
+            "recurrent_bc_signal_frontier_exploration_min_map_size": (
+                args.recurrent_bc_signal_frontier_exploration_min_map_size
+            ),
             "recurrent_dagger_rounds": args.recurrent_dagger_rounds,
             "recurrent_dagger_episodes": args.recurrent_dagger_episodes,
             "recurrent_dagger_failed_effective_ratio_cap": args.recurrent_dagger_failed_effective_ratio_cap,
             "recurrent_dagger_oracle_action_rollin_rate": args.recurrent_dagger_oracle_action_rollin_rate,
             "recurrent_dagger_oracle_message_rollin_rate": args.recurrent_dagger_oracle_message_rollin_rate,
+            "recurrent_dagger_initial_target_broadcast_labels": (
+                args.recurrent_dagger_initial_target_broadcast_labels
+            ),
+            "recurrent_dagger_target_handoff_requires_exact_target": (
+                args.recurrent_dagger_target_handoff_requires_exact_target
+            ),
+            "recurrent_dagger_signal_target_rendezvous_labels": bool(
+                args.recurrent_dagger_signal_target_rendezvous_labels
+            ),
+            "recurrent_dagger_signal_target_rendezvous_min_map_size": (
+                args.recurrent_dagger_signal_target_rendezvous_min_map_size
+            ),
+            "recurrent_dagger_signal_target_rendezvous_max_agents": (
+                args.recurrent_dagger_signal_target_rendezvous_max_agents
+            ),
             "recurrent_dagger_focus_events": args.recurrent_dagger_focus_events,
             "recurrent_dagger_focus_error_weight": args.recurrent_dagger_focus_error_weight,
             "recurrent_dagger_focus_recovery_weight": args.recurrent_dagger_focus_recovery_weight,
             "recurrent_dagger_focus_window": args.recurrent_dagger_focus_window,
+            "recurrent_dagger_target_interact_focus_weight": (
+                args.recurrent_dagger_target_interact_focus_weight
+            ),
+            "recurrent_dagger_target_discovery_min_map_size": (
+                args.recurrent_dagger_target_discovery_min_map_size
+            ),
+            "recurrent_dagger_target_discovery_focus_weight": (
+                args.recurrent_dagger_target_discovery_focus_weight
+            ),
+            "recurrent_dagger_movement_stall_min_map_size": (
+                args.recurrent_dagger_movement_stall_min_map_size
+            ),
+            "recurrent_dagger_movement_stall_window": (
+                args.recurrent_dagger_movement_stall_window
+            ),
+            "recurrent_dagger_movement_stall_focus_weight": (
+                args.recurrent_dagger_movement_stall_focus_weight
+            ),
+            "recurrent_dagger_target_decoy_drift_focus_weight": (
+                args.recurrent_dagger_target_decoy_drift_focus_weight
+            ),
             "recurrent_dagger_focus_replay": args.recurrent_dagger_focus_replay,
             "recurrent_dagger_retrain_from_scratch": args.recurrent_dagger_retrain_from_scratch,
             "recurrent_dagger_restore_best": args.recurrent_dagger_restore_best,
@@ -1450,6 +2078,7 @@ def run_suite(args) -> dict:
             "recurrent_hidden_dim": args.recurrent_hidden_dim,
             "recurrent_backbone": args.recurrent_backbone,
             "recurrent_obs_exploration_memory": args.recurrent_obs_exploration_memory,
+            "recurrent_obs_exploration_age": args.recurrent_obs_exploration_age,
             "recurrent_obs_feedback": args.recurrent_obs_feedback,
             "recurrent_obs_normalize_tokens": args.recurrent_obs_normalize_tokens,
             "recurrent_obs_navigation_features": args.recurrent_obs_navigation_features,
@@ -1465,6 +2094,27 @@ def run_suite(args) -> dict:
             "recurrent_obs_memory_radius": args.recurrent_obs_memory_radius,
             "recurrent_eval_signal_exact_target_memory_steps": (
                 args.recurrent_eval_signal_exact_target_memory_steps
+            ),
+            "recurrent_eval_signal_target_scan_lock": (
+                args.recurrent_eval_signal_target_scan_lock
+            ),
+            "recurrent_eval_signal_exact_target_scan_lock": (
+                args.recurrent_eval_signal_exact_target_scan_lock
+            ),
+            "recurrent_eval_signal_compatible_target_scan_assist": (
+                bool(args.recurrent_eval_signal_compatible_target_scan_assist)
+            ),
+            "recurrent_eval_signal_compatible_target_scan_min_strength": (
+                args.recurrent_eval_signal_compatible_target_scan_min_strength
+            ),
+            "recurrent_eval_signal_frontier_exploration_assist": (
+                bool(args.recurrent_eval_signal_frontier_exploration_assist)
+            ),
+            "recurrent_eval_signal_initial_exact_message_copy_assist": (
+                args.recurrent_eval_signal_initial_exact_message_copy_assist
+            ),
+            "recurrent_eval_signal_constraint_message_copy_assist": (
+                args.recurrent_eval_signal_constraint_message_copy_assist
             ),
         },
         "cases": [asdict(case) for case in cases],
@@ -1896,6 +2546,17 @@ def parse_args(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="Run core learned-policy training sweeps.")
     parser.add_argument("--algorithms", nargs="+", default=["mappo", "comm_mat", "tarmac"], choices=sorted(TRAIN_SCRIPTS))
     parser.add_argument("--scenarios", nargs="+", default=list(DEFAULT_CASES), choices=sorted(DEFAULT_CASES))
+    parser.add_argument(
+        "--benchmark-spec",
+        default="",
+        help="Optional benchmark manifest path; when set, cases are read from the manifest instead of --scenarios",
+    )
+    parser.add_argument(
+        "--benchmark-cases",
+        nargs="+",
+        default=None,
+        help="Subset of benchmark case names to run from --benchmark-spec; defaults to all manifest cases",
+    )
     parser.add_argument("--updates", type=int, default=3)
     parser.add_argument("--rollout-steps", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=2)
@@ -1942,7 +2603,15 @@ def parse_args(argv: list[str] | None = None):
             "and scenario planner communication teachers for Energy Grid/Pipeline."
         ),
     )
-    parser.add_argument("--recurrent-signal-preset", default="specialist", choices=["minimal", "specialist"])
+    parser.add_argument(
+        "--recurrent-signal-preset",
+        default="specialist",
+        choices=["minimal", "specialist", "large_map"],
+        help=(
+            "Signal Hunt recurrent defaults. large_map inherits specialist and adds "
+            "32x32-oriented clue-discovery and decoy-suppression training signals."
+        ),
+    )
     parser.add_argument("--recurrent-demo-episodes", type=int, default=20)
     parser.add_argument("--recurrent-bc-epochs", type=int, default=1)
     parser.add_argument("--recurrent-bc-lr", type=float, default=1e-3)
@@ -1958,6 +2627,12 @@ def parse_args(argv: list[str] | None = None):
         "--recurrent-bc-event-action-events",
         default="picked_resource,dropped_resource,delivered,stage_completed,sync_complete,"
         "recharged,joint_target_scan",
+    )
+    parser.add_argument(
+        "--recurrent-bc-comm-loss-weight",
+        type=float,
+        default=None,
+        help="Overall recurrent BC communication loss weight; defaults to 1.0 for Signal specialist",
     )
     parser.add_argument("--recurrent-bc-pipeline-pickup-action-loss-weight", type=float, default=None)
     parser.add_argument("--recurrent-bc-pipeline-delivery-action-loss-weight", type=float, default=None)
@@ -2050,23 +2725,279 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-bc-comm-send-pos-weight", type=float, default=0.0)
     parser.add_argument("--recurrent-bc-comm-send-rate-penalty-weight", type=float, default=0.0)
     parser.add_argument("--recurrent-bc-comm-send-rate-target", type=float, default=-1.0)
+    parser.add_argument(
+        "--recurrent-bc-signal-initial-message-weight",
+        type=float,
+        default=None,
+        help="Signal specialist BC weight for step-0 private-hint message labels; defaults to 4.0 for specialist",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-initial-message-loss-weight",
+        type=float,
+        default=None,
+        help="Signal specialist auxiliary token/length loss for step-0 private-hint messages",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-aux-weight",
+        type=float,
+        default=None,
+        help=(
+            "Signal specialist auxiliary loss for predicting fused exact target location from clues; "
+            "defaults to 0.25 for the specialist preset"
+        ),
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-pursuit-action-weight",
+        type=float,
+        default=None,
+        help="Signal specialist action loss for moving toward observation-safe target candidates",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-pursuit-trust-exact-memory",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Opt-in Signal ablation: let target-pursuit labels follow trusted exact "
+            "target messages retained in scan-state memory."
+        ),
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-pursuit-max-agents",
+        type=int,
+        default=None,
+        help=(
+            "Optional cap on how many closest agents receive Signal target-pursuit "
+            "action labels; 0 keeps all eligible agents."
+        ),
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-sync-response-action-loss-weight",
+        type=float,
+        default=None,
+        help="Signal specialist action loss for responding to teammate target scans",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-match-action-weight",
+        type=float,
+        default=None,
+        help="Signal specialist action loss for matching target-directed oracle moves",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-first-target-scan-action-weight",
+        type=float,
+        default=None,
+        help="Signal specialist positive action loss for first true-target scan labels",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-refresh-target-scan-action-weight",
+        type=float,
+        default=None,
+        help="Signal specialist positive action loss for refresh true-target scan labels",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-joint-target-scan-action-weight",
+        type=float,
+        default=None,
+        help="Signal specialist positive action loss for joint-completion target scans",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-opportunity-action-weight",
+        type=float,
+        default=None,
+        help="Signal specialist positive action loss for observation-safe target scan opportunities",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-redundant-target-wait-action-loss-weight",
+        type=float,
+        default=None,
+        help="Signal specialist action loss for waiting after an active target scan",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-constraint-frontier-bias",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Opt-in Signal ablation: bias frontier exploration labels toward "
+            "cells compatible with known target constraints."
+        ),
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-scan-decision-loss-weight",
+        type=float,
+        default=None,
+        help="Signal specialist auxiliary loss for scan/no-scan decisions",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-scan-decision-pos-weight",
+        type=float,
+        default=None,
+        help="Positive class weight for Signal scan-decision auxiliary labels",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-scan-decision-neg-weight",
+        type=float,
+        default=None,
+        help="Negative class weight for Signal scan-decision auxiliary labels",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-scan-gate-loss-weight",
+        type=float,
+        default=None,
+        help="Signal specialist auxiliary loss for suppressing unsafe target scans",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-scan-gate-pos-weight",
+        type=float,
+        default=None,
+        help="Positive class weight for Signal scan-gate auxiliary labels",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-scan-gate-neg-weight",
+        type=float,
+        default=None,
+        help="Negative class weight for Signal scan-gate auxiliary labels",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-validity-loss-weight",
+        type=float,
+        default=None,
+        help="Signal specialist auxiliary loss for true-vs-rejected target validity",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-validity-pos-weight",
+        type=float,
+        default=None,
+        help="Positive class weight for Signal target-validity auxiliary labels",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-validity-neg-weight",
+        type=float,
+        default=None,
+        help="Negative class weight for Signal target-validity auxiliary labels",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-decision-loss-weight",
+        type=float,
+        default=None,
+        help="Signal specialist auxiliary loss for target-center interact decisions",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-decision-pos-weight",
+        type=float,
+        default=None,
+        help="Positive class weight for Signal target-decision auxiliary labels",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-decision-neg-weight",
+        type=float,
+        default=None,
+        help="Negative class weight for Signal target-decision auxiliary labels",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-ambiguous-target-decision-negatives",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Signal ablation: target-decision labels treat locally ambiguous true-target "
+            "scans as negative until constraints identify a unique target."
+        ),
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-ambiguous-target-decision-min-map-size",
+        type=int,
+        default=16,
+        help="Minimum map size for ambiguous target-decision negative labels.",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-decoy-drift-action-loss-weight",
+        type=float,
+        default=None,
+        help="Signal specialist bad-action loss for drifting toward known decoy targets",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-decoy-scan-action-loss-weight",
+        type=float,
+        default=None,
+        help="Signal specialist bad-action loss for scanning known decoy targets",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-rejected-target-drift-action-loss-weight",
+        type=float,
+        default=None,
+        help="Signal specialist bad-action loss for moving toward rejected target candidates",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-visible-clue-action-weight",
+        type=float,
+        default=None,
+        help="Signal specialist action loss for moving toward/interacting with visible clues",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-visible-clue-min-map-size",
+        type=int,
+        default=None,
+        help="Minimum map size for Signal visible-clue labels in recurrent sweep runs",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-frontier-exploration-action-weight",
+        type=float,
+        default=None,
+        help="Signal specialist action loss for exploring frontiers when no clue/target is visible",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-frontier-exploration-min-map-size",
+        type=int,
+        default=None,
+        help="Minimum map size for Signal frontier-exploration labels in recurrent sweep runs",
+    )
     parser.add_argument("--recurrent-dagger-rounds", type=int, default=0)
     parser.add_argument("--recurrent-dagger-episodes", type=int, default=20)
     parser.add_argument("--recurrent-dagger-failed-effective-ratio-cap", type=float, default=0.25)
     parser.add_argument("--recurrent-dagger-oracle-action-rollin-rate", type=float, default=0.25)
     parser.add_argument("--recurrent-dagger-oracle-message-rollin-rate", type=float, default=0.0)
     parser.add_argument(
-        "--recurrent-dagger-focus-events",
-        default=(
-            "missed_delivery,missed_target_scan,solo_target_interact,target_interact_miss,"
-            "movement_stall_miss,pipeline_wrong_delivery,pipeline_dependency_blocked,"
-            "pipeline_sync_wait,pipeline_pickup_miss,pipeline_delivery_miss,pipeline_station_stall_miss,"
-            "pipeline_drop_miss,pipeline_bad_pickup,pipeline_wrong_delivery_root_pickup"
+        "--recurrent-dagger-initial-target-broadcast-labels",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "For Signal Hunt recurrent training, label step-0 agents with unambiguous private exact "
+            "target hints to broadcast [26, x, y]. Defaults on for the specialist preset."
         ),
+    )
+    parser.add_argument(
+        "--recurrent-dagger-target-handoff-requires-exact-target",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Signal recurrent ablation: only label target-handoff joins when the responder "
+            "has trusted exact target evidence."
+        ),
+    )
+    parser.add_argument(
+        "--recurrent-dagger-signal-target-rendezvous-labels",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Signal recurrent ablation: route the closest target-informed pair to the "
+            "target and make an early scanner wait until a partner can complete."
+        ),
+    )
+    parser.add_argument("--recurrent-dagger-signal-target-rendezvous-min-map-size", type=int, default=16)
+    parser.add_argument("--recurrent-dagger-signal-target-rendezvous-max-agents", type=int, default=2)
+    parser.add_argument(
+        "--recurrent-dagger-focus-events",
+        default=RECURRENT_DEFAULT_DAGGER_FOCUS_EVENTS,
     )
     parser.add_argument("--recurrent-dagger-focus-error-weight", type=float, default=3.0)
     parser.add_argument("--recurrent-dagger-focus-recovery-weight", type=float, default=2.0)
     parser.add_argument("--recurrent-dagger-focus-window", type=int, default=1)
+    parser.add_argument("--recurrent-dagger-target-interact-focus-weight", type=float, default=5.0)
+    parser.add_argument("--recurrent-dagger-target-discovery-min-map-size", type=int, default=16)
+    parser.add_argument("--recurrent-dagger-target-discovery-focus-weight", type=float, default=3.0)
+    parser.add_argument("--recurrent-dagger-movement-stall-min-map-size", type=int, default=16)
+    parser.add_argument("--recurrent-dagger-movement-stall-window", type=int, default=6)
+    parser.add_argument("--recurrent-dagger-movement-stall-focus-weight", type=float, default=4.0)
+    parser.add_argument("--recurrent-dagger-target-decoy-drift-focus-weight", type=float, default=5.0)
     parser.add_argument(
         "--recurrent-dagger-focus-replay",
         action=argparse.BooleanOptionalAction,
@@ -2290,6 +3221,7 @@ def parse_args(argv: list[str] | None = None):
         help="Recurrent actor encoder backbone.",
     )
     parser.add_argument("--recurrent-obs-exploration-memory", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--recurrent-obs-exploration-age", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-obs-feedback", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-obs-normalize-tokens", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-obs-navigation-features", action=argparse.BooleanOptionalAction, default=False)
@@ -2301,6 +3233,15 @@ def parse_args(argv: list[str] | None = None):
     )
     parser.add_argument("--recurrent-obs-signal-sync-feedback", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-obs-signal-scan-state", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--recurrent-obs-agent-id-features",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Append recurrent-only agent identity/search-role features. "
+            "Defaults on for Signal Hunt specialist runs."
+        ),
+    )
     parser.add_argument("--recurrent-obs-pipeline-feedback", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--recurrent-obs-pipeline-feedback-metadata",
@@ -2321,7 +3262,74 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--recurrent-calibrate-send-threshold", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--recurrent-obs-memory-mode", default="auto", choices=["auto", "full", "egocentric"])
     parser.add_argument("--recurrent-obs-memory-radius", type=int, default=4)
+    parser.add_argument(
+        "--recurrent-eval-signal-target-scan-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Signal specialist decode calibration: force interact on an observation-safe "
+            "center true target when the model assigns at least this interact probability. "
+            "Defaults to 0.0 for Signal specialist runs; set -1 to disable."
+        ),
+    )
     parser.add_argument("--recurrent-eval-signal-exact-target-memory-steps", type=int, default=32)
+    parser.add_argument(
+        "--recurrent-eval-signal-target-scan-lock",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Keep observation-safe Signal target scans from being suppressed by learned "
+            "scan/validity/decision gates. Opt-in; broad candidates can over-scan decoys."
+        ),
+    )
+    parser.add_argument(
+        "--recurrent-eval-signal-exact-target-scan-lock",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Keep exact, trusted Signal target scans from being suppressed by learned "
+            "scan/validity/decision gates without locking weaker target guesses."
+        ),
+    )
+    parser.add_argument(
+        "--recurrent-eval-signal-compatible-target-scan-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Opt-in Signal ablation: scan visible center target tiles that satisfy shared "
+            "constraints even when the constraints do not infer a unique target yet."
+        ),
+    )
+    parser.add_argument(
+        "--recurrent-eval-signal-compatible-target-scan-min-strength",
+        type=int,
+        default=3,
+        help="Minimum Signal clue constraint strength for compatible target scan assist.",
+    )
+    parser.add_argument(
+        "--recurrent-eval-signal-initial-exact-message-copy-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Canonicalize Signal specialist step-0 exact-target messages from private exact hints",
+    )
+    parser.add_argument(
+        "--recurrent-eval-signal-constraint-message-copy-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Canonicalize sent Signal clue messages from the agent's private/collected "
+            "structured goal-hint constraints. Defaults on for Signal specialist runs."
+        ),
+    )
+    parser.add_argument(
+        "--recurrent-eval-signal-frontier-exploration-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Opt-in Signal ablation: during eval, use exploration-memory frontiers "
+            "for agents without visible clue/target or unique target evidence."
+        ),
+    )
     parser.add_argument("--recurrent-eval-pipeline-navigation-assist", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--recurrent-eval-pipeline-navigation-assist-trust-messages",

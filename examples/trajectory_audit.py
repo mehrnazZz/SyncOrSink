@@ -95,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Override recurrent checkpoint send threshold; omitted uses the checkpoint value.",
     )
+    parser.add_argument("--recurrent-signal-target-scan-threshold", type=float, default=None)
     parser.add_argument("--recurrent-signal-scan-gate-threshold", type=float, default=None)
     parser.add_argument(
         "--recurrent-signal-scan-gate-suppress",
@@ -108,6 +109,22 @@ def main(argv: list[str] | None = None) -> int:
         action=argparse.BooleanOptionalAction,
         default=None,
     )
+    parser.add_argument(
+        "--recurrent-signal-target-scan-lock",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-signal-exact-target-scan-lock",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-signal-compatible-target-scan-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--recurrent-signal-compatible-target-scan-min-strength", type=int, default=None)
     parser.add_argument(
         "--recurrent-signal-scan-sync-assist",
         action=argparse.BooleanOptionalAction,
@@ -124,7 +141,17 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
     )
     parser.add_argument(
+        "--recurrent-signal-constraint-message-copy-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
         "--recurrent-signal-exact-target-message-guard",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-signal-initial-exact-message-copy-assist",
         action=argparse.BooleanOptionalAction,
         default=None,
     )
@@ -140,6 +167,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
     )
     parser.add_argument("--recurrent-signal-scan-refresh-threshold", type=float, default=None)
+    parser.add_argument(
+        "--recurrent-signal-frontier-exploration-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument(
         "--recurrent-pipeline-navigation-assist",
         action=argparse.BooleanOptionalAction,
@@ -259,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         "policies": [
             {
                 "label": policy["label"],
+                "env_config": policy.get("env_config"),
                 "summary": policy["summary"],
                 "failure_type_counts": policy["diagnostics"]["failure_type_counts"],
                 "pipeline": policy["diagnostics"].get("pipeline"),
@@ -325,21 +358,39 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 checkpoint,
                 device=args.device,
                 eval_send_threshold=args.recurrent_send_threshold,
+                eval_signal_target_scan_threshold=args.recurrent_signal_target_scan_threshold,
                 eval_signal_scan_gate_threshold=args.recurrent_signal_scan_gate_threshold,
                 eval_signal_scan_gate_suppress=args.recurrent_signal_scan_gate_suppress,
                 eval_signal_target_validity_threshold=args.recurrent_signal_target_validity_threshold,
                 eval_signal_target_decision_threshold=args.recurrent_signal_target_decision_threshold,
                 eval_signal_target_decision_suppress=args.recurrent_signal_target_decision_suppress,
+                eval_signal_target_scan_lock=args.recurrent_signal_target_scan_lock,
+                eval_signal_exact_target_scan_lock=args.recurrent_signal_exact_target_scan_lock,
+                eval_signal_compatible_target_scan_assist=(
+                    args.recurrent_signal_compatible_target_scan_assist
+                ),
+                eval_signal_compatible_target_scan_min_strength=(
+                    args.recurrent_signal_compatible_target_scan_min_strength
+                ),
                 eval_signal_scan_sync_assist=args.recurrent_signal_scan_sync_assist,
                 eval_signal_scan_sync_force_first=args.recurrent_signal_scan_sync_force_first,
                 eval_signal_scan_broadcast_assist=args.recurrent_signal_scan_broadcast_assist,
+                eval_signal_constraint_message_copy_assist=(
+                    args.recurrent_signal_constraint_message_copy_assist
+                ),
                 eval_signal_exact_target_message_guard=args.recurrent_signal_exact_target_message_guard,
+                eval_signal_initial_exact_message_copy_assist=(
+                    args.recurrent_signal_initial_exact_message_copy_assist
+                ),
                 eval_signal_exact_target_navigation_assist=(
                     args.recurrent_signal_exact_target_navigation_assist
                 ),
                 eval_signal_exact_target_memory_steps=args.recurrent_signal_exact_target_memory_steps,
                 eval_signal_scan_refresh_assist=args.recurrent_signal_scan_refresh_assist,
                 eval_signal_scan_refresh_threshold=args.recurrent_signal_scan_refresh_threshold,
+                eval_signal_frontier_exploration_assist=(
+                    args.recurrent_signal_frontier_exploration_assist
+                ),
                 eval_pipeline_navigation_assist=args.recurrent_pipeline_navigation_assist,
                 eval_pipeline_navigation_assist_trust_messages=(
                     args.recurrent_pipeline_navigation_assist_trust_messages
@@ -381,21 +432,39 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 "kind": "recurrent",
                 "checkpoint": checkpoint,
                 "eval_send_threshold": args.recurrent_send_threshold,
+                "eval_signal_target_scan_threshold": args.recurrent_signal_target_scan_threshold,
                 "eval_signal_scan_gate_threshold": args.recurrent_signal_scan_gate_threshold,
                 "eval_signal_scan_gate_suppress": args.recurrent_signal_scan_gate_suppress,
                 "eval_signal_target_validity_threshold": args.recurrent_signal_target_validity_threshold,
                 "eval_signal_target_decision_threshold": args.recurrent_signal_target_decision_threshold,
                 "eval_signal_target_decision_suppress": args.recurrent_signal_target_decision_suppress,
+                "eval_signal_target_scan_lock": args.recurrent_signal_target_scan_lock,
+                "eval_signal_exact_target_scan_lock": args.recurrent_signal_exact_target_scan_lock,
+                "eval_signal_compatible_target_scan_assist": (
+                    args.recurrent_signal_compatible_target_scan_assist
+                ),
+                "eval_signal_compatible_target_scan_min_strength": (
+                    args.recurrent_signal_compatible_target_scan_min_strength
+                ),
                 "eval_signal_scan_sync_assist": args.recurrent_signal_scan_sync_assist,
                 "eval_signal_scan_sync_force_first": args.recurrent_signal_scan_sync_force_first,
                 "eval_signal_scan_broadcast_assist": args.recurrent_signal_scan_broadcast_assist,
+                "eval_signal_constraint_message_copy_assist": (
+                    args.recurrent_signal_constraint_message_copy_assist
+                ),
                 "eval_signal_exact_target_message_guard": args.recurrent_signal_exact_target_message_guard,
+                "eval_signal_initial_exact_message_copy_assist": (
+                    args.recurrent_signal_initial_exact_message_copy_assist
+                ),
                 "eval_signal_exact_target_navigation_assist": (
                     args.recurrent_signal_exact_target_navigation_assist
                 ),
                 "eval_signal_exact_target_memory_steps": args.recurrent_signal_exact_target_memory_steps,
                 "eval_signal_scan_refresh_assist": args.recurrent_signal_scan_refresh_assist,
                 "eval_signal_scan_refresh_threshold": args.recurrent_signal_scan_refresh_threshold,
+                "eval_signal_frontier_exploration_assist": (
+                    args.recurrent_signal_frontier_exploration_assist
+                ),
                 "eval_pipeline_navigation_assist": args.recurrent_pipeline_navigation_assist,
                 "eval_pipeline_navigation_assist_trust_messages": (
                     args.recurrent_pipeline_navigation_assist_trust_messages

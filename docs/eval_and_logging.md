@@ -456,12 +456,116 @@ Conservative replay controls:
 
 Large-map Signal Hunt search auxiliary:
 
+- The sweep-level `--recurrent-signal-preset large_map` preset inherits the
+  current Signal specialist defaults, then enables the large-map discovery and
+  decoy-discrimination path for new 32x32 ablations. It resolves to visible
+  clue action loss `0.25` for maps at least 32x32, keeps frontier exploration
+  action loss at `0.25` for maps at least 16x16, adds decoy-drift action loss
+  `0.1`, decoy-scan action loss `0.25`, and DAgger focus/replay for
+  `visible_clue_miss`, `decoy_scan`, and `rejected_target_scan`. A first
+  heavier version over-weighted rejected-target drift and regressed DAgger
+  eval, so the current preset is deliberately conservative. The tuned run
+  `recurrent_signal_multisize_16_32_large_map_conservative_seed0` reached
+  88/100 on the independent 16x16 audit and 55/100 on the independent 32x32
+  audit, with W&B run
+  `https://wandb.ai/orion8/syncorsink-core-training/runs/bggn5dip`.
+  A follow-up scan-conversion ablation,
+  `recurrent_signal_multisize_16_32_large_map_scanconvert_seed0`, appended
+  `first_target_scan`/`joint_target_scan` positive replay and moderately raised
+  target-scan action weights. It regressed the full audits to 84/100 at 16x16
+  and 49/100 at 32x32 despite a promising 20-episode eval slice, so it is not
+  part of the preset.
+- `--bc-signal-target-pursuit-trust-exact-memory` lets target-pursuit action
+  labels use trusted exact target messages retained by scan-state memory. This
+  is an opt-in ablation rather than a default because the first 16x16 run did
+  not improve the promoted Signal profile. `--bc-signal-target-pursuit-max-agents`
+  optionally caps those labels to the closest responders; `0` keeps all
+  eligible agents. The 16/32 large-map target-memory runs also underperformed:
+  broad exact-memory labels (`8ibvfhg2`) reached 65% mixed eval, and the cap-1
+  variant (`zw2fadn1`) reached 62.5% mixed eval with only 30% 32x32 DAgger
+  success, so neither is promoted.
+- `--recurrent-obs-exploration-age` forwards per-cell exploration recency into
+  recurrent training. It remains opt-in: the large-map age ablation
+  `recurrent_signal_multisize_16_32_large_map_age_seed0` logged to
+  `https://wandb.ai/orion8/syncorsink-core-training/runs/ekvcpsb2` but reached
+  only 57.5% mixed eval, with 40% 32x32 split success.
+- `--bc-signal-constraint-frontier-bias` is an opt-in Signal search-label
+  ablation that scores frontier targets by their distance to bounded inferred
+  target candidates when the agent has strong partial clue evidence but no
+  exact target. It intentionally reuses the target-decoding candidate cap so
+  weak one-clue or parity-only states keep using broad coordinated search. The
+  first permissive 16/32 run
+  `recurrent_signal_multisize_16_32_large_map_constraintfrontier_seed0` logged
+  to `https://wandb.ai/orion8/syncorsink-core-training/runs/bs4stt2m`, but it
+  reached only 60% mixed eval with 45% 32x32 split success and lower target-scan
+  counts, so the tightened bias remains diagnostic rather than part of
+  `large_map`. The tightened rerun
+  `recurrent_signal_multisize_16_32_large_map_constraintfrontier_tight_seed0`
+  logged to `https://wandb.ai/orion8/syncorsink-core-training/runs/xy4w9cpc`
+  and improved mixed eval to 67.5% by raising 16x16 to 90%, but 32x32 remained
+  at 45%.
+- `--dagger-signal-target-rendezvous-labels` is an opt-in post-discovery
+  Signal Hunt label for large maps. When at least two agents have exact target
+  evidence through private clues or scan-state memory, DAgger/demo collection
+  routes the closest target-informed pair toward the true target. If one
+  selected agent is already on the target but the partner cannot still arrive
+  and scan inside the scan window, the label makes the early scanner wait
+  instead of converting a likely solo target scan. The sweep wrapper exposes it
+  as `--recurrent-dagger-signal-target-rendezvous-labels`, with
+  `--recurrent-dagger-signal-target-rendezvous-min-map-size` and
+  `--recurrent-dagger-signal-target-rendezvous-max-agents` controlling where
+  and how many target-informed agents are selected. It is not part of
+  `large_map`: the isolated 16/32 run
+  `recurrent_signal_multisize_16_32_large_map_targetrendezvous_seed0` logged to
+  `https://wandb.ai/orion8/syncorsink-core-training/runs/vde2xcu5` and reached
+  only 60% mixed eval, with 80% on 16x16 and 40% on 32x32. It reduced decoy
+  scanning but also reduced 32x32 true-target reach, so no full audit was run.
+- A discovery-side `clue_found` positive-replay ablation,
+  `recurrent_signal_multisize_16_32_large_map_cluepositive_seed0`, logged to
+  `https://wandb.ai/orion8/syncorsink-core-training/runs/tuudojwi` and also
+  reached only 60% mixed eval, with 80% on 16x16 and 40% on 32x32. The event
+  path was active (`36` positive replay events and `11` replay triggers in
+  round 2), but 32x32 decoy scans rose to `6.7`, so clue replay is not promoted
+  into the large-map preset.
+- `--bc-signal-ambiguous-target-decision-negatives` is an opt-in target-decision
+  label ablation. It treats visible true-target scans as negative target
+  decisions when the observation cannot uniquely justify that center target,
+  avoiding hidden-oracle positives for locally ambiguous target hypotheses.
+  The sweep flag is
+  `--recurrent-bc-signal-ambiguous-target-decision-negatives`, with
+  `--recurrent-bc-signal-ambiguous-target-decision-min-map-size` controlling
+  where it starts. The isolated 16/32 run
+  `recurrent_signal_multisize_16_32_large_map_ambiguousdecision_seed0` logged
+  to `https://wandb.ai/orion8/syncorsink-core-training/runs/7dr55x28` and
+  matched the conservative 70% mixed eval headline, but did not improve 32x32:
+  the best split was 90% on 16x16 and 50% on 32x32. It can suppress decoy scans
+  but raises first-target-scan misses, so no full audit was run. A moderate
+  scan-pressure follow-up,
+  `recurrent_signal_multisize_16_32_large_map_ambiguousdecision_scanpush_seed0`,
+  logged to `https://wandb.ai/orion8/syncorsink-core-training/runs/8tbyh3s6`
+  and regressed to 65% mixed eval with at most 45% on 32x32.
+- `--bc-signal-visible-clue-action-weight` enables a BC action loss for agents
+  that can locally see an unclaimed clue but do not yet have a unique known
+  target. The label moves toward the nearest visible clue or interacts if the
+  agent is already standing on it. This is currently opt-in because the first
+  16x16 validation improved clue collection but regressed final success.
+- `--bc-signal-visible-clue-min-map-size` defaults to `16` in the trainer CLI;
+  the sweep `large_map` preset raises it to `32` so mixed 16/32 runs target the
+  visible-clue auxiliary at 32x32 without changing the promoted 16x16 profile.
 - `--bc-signal-frontier-exploration-action-weight` enables an additional BC
   action loss for states with exploration memory, no visible clue/target, and
-  no unique known target. The label points to the nearest memory frontier or an
-  immediately adjacent unexplored cell.
+  no unique known target. On large multi-agent maps, labels use coordinated
+  frontier anchors to spread agents across the search area instead of sending
+  every agent to the same nearest frontier.
 - `--bc-signal-frontier-exploration-min-map-size` defaults to `16`, keeping the
   auxiliary focused on larger maps where no-clue/no-target timeouts dominate.
+- `--eval-signal-frontier-exploration-assist` is an opt-in eval/rollout assist
+  that applies the same Signal frontier policy at decode time when no visible
+  clue, target, or unique target evidence exists. Use the sweep flag
+  `--recurrent-eval-signal-frontier-exploration-assist` to diagnose whether
+  remaining large-map failures come from learned exploration execution versus
+  downstream clue/scan conversion. It remains default-off after a 16x16 audit
+  reached 56/100 versus the 57/100 rolefix-handoff baseline.
 
 Checkpoint workflow:
 
@@ -498,6 +602,121 @@ BC/DAgger/PPO trainer. Recurrent runs use `--recurrent-*` flags for oracle,
 demo count, BC epochs, DAgger rounds/focus settings, Pipeline wrong-delivery
 provenance labels, checkpoint init, train/eval map schedules, Signal Hunt
 specialist observation/eval assists, and PPO stability controls.
+For Signal Hunt specialist runs, the sweep defaults
+`--recurrent-bc-signal-target-aux-weight` to `0.25`, adding auxiliary
+supervision for fusing private clues into the exact target location. It also
+defaults Signal action auxiliaries to the current Signal specialist profile:
+target-pursuit `0.4`, target-match `0.4`, first target scan `0.8`, refresh scan
+`0.3`, joint target scan `0.5`, target opportunity `0.4`, sync response `0.2`,
+and frontier exploration `0.25` for maps at least 16x16. The preset also turns
+on scan-decision, scan-gate, target-validity, and target-decision auxiliaries;
+their loss/positive/negative weights can be overridden with
+`--recurrent-bc-signal-scan-*`, `--recurrent-bc-signal-target-validity-*`, and
+`--recurrent-bc-signal-target-decision-*` flags for ablations. Specialist runs turn
+on `--obs-agent-id-features` so a shared recurrent actor can learn stable
+search-sector roles on large maps during both BC/DAgger training and eval, and
+set
+`--eval-signal-target-scan-threshold 0.0`, which only forces `INTERACT` when the
+agent is standing on an observation-safe center target candidate. The guarded
+profile replays Signal target-discovery, decoy-drift, frontier-exploration, and
+target-handoff misses, and includes positive target-handoff snippets so larger
+maps emphasize both search recovery and post-discovery scan completion.
+Signal specialist runs also default
+`--recurrent-eval-signal-constraint-message-copy-assist` on, which forwards
+`--eval-signal-constraint-message-copy-assist` and replaces sent Signal clue
+messages with canonical structured constraints from the sender's current
+`goal_hint`. This prevents wrong generated clue tokens from causing teammates to
+reject a true target that satisfies the actual private/collected clues. On the
+rolefix-handoff 16x16 checkpoint, the matched seed-3000 audit improved from
+56/100 to 77/100 and reduced `no_target_scan` failures from 23 to 9.
+A fresh comparable rolefix-profile training run with this default enabled
+(`recurrent_signal16_constraintcopy_rolefix_profile_seed0`) reached 79/100 on
+the same 100-episode seed-3000 audit, with failure mix
+`no_clue_or_target_scan`: 17, `no_target_scan`: 2, `solo_target_scan`: 2, and no
+decoy failures. It logged online to W&B at
+`https://wandb.ai/orion8/syncorsink-core-training/runs/04h8pmkn`. A 32x32,
+4-agent audit of that checkpoint reached 41/100, with failures dominated by
+`no_clue_or_target_scan`: 51. Signal inferred-target features and eval decoding
+now compile each observation's structured clue/message constraints once and
+reuse that compiled state for target filtering; after that optimization the
+32x32 100-episode audit completed in 39.90s. Large-map discovery is therefore
+the next implementation bottleneck rather than audit runtime.
+The official 2-agent Signal 8x8 case now has a current recurrent checkpoint:
+`recurrent_signal8_constraintcopy_rolefix_profile_seed0` reached 98/100 on a
+100-episode seed-3000 trajectory audit, with W&B run
+`https://wandb.ai/orion8/syncorsink-core-training/runs/hzm8kztx`.
+A first 16/32 mixed curriculum
+(`recurrent_signal_multisize_16_32_constraintcopy_seed0_v3`) logged to
+`https://wandb.ai/orion8/syncorsink-core-training/runs/79ukojb9` and reached
+84/100 on the independent 16x16 audit but stayed at 41/100 on 32x32. The 32x32
+failure mix shifted toward `no_clue_or_target_scan`, `no_target_scan`, and
+`decoy_scan`, so `--recurrent-signal-preset large_map` was added instead of
+relying on map-size mixing alone. The tuned large-map run
+(`recurrent_signal_multisize_16_32_large_map_conservative_seed0`) reached
+88/100 on 16x16 and 55/100 on 32x32. The remaining 32x32 failure mix is
+`no_clue_or_target_scan`: 18, `no_target_scan`: 22, `solo_target_scan`: 2, and
+`decoy_scan`: 3, making post-discovery target conversion and large-map teammate
+routing the next bottleneck. The direct scan-positive ablation
+`recurrent_signal_multisize_16_32_large_map_scanconvert_seed0` logged to
+`https://wandb.ai/orion8/syncorsink-core-training/runs/duosomim` but regressed
+the independent audits to 84/100 at 16x16 and 49/100 at 32x32; this suggests
+the next fix should be teammate routing/role assignment after target evidence
+rather than simply larger scan-action weights.
+The opt-in `--recurrent-bc-signal-target-pursuit-trust-exact-memory` ablation
+lets target-pursuit action labels consume trusted exact target messages retained
+by the Signal scan state, so DAgger rows can teach agents to keep moving toward
+a teammate-broadcast target after the raw inbox message expires. It is not part
+of the default specialist preset after the first 16x16 run landed below the
+current rolefix-handoff baseline. The sweep-level
+`--recurrent-bc-signal-target-pursuit-max-agents` flag forwards the optional
+nearest-responder cap; the 16/32 cap-1 run
+`recurrent_signal_multisize_16_32_large_map_targetmemory_cap1_seed0` logged to
+`https://wandb.ai/orion8/syncorsink-core-training/runs/zw2fadn1` but reached
+only 62.5% mixed eval, so it is diagnostic rather than a default.
+The exploration-age ablation `recurrent_signal_multisize_16_32_large_map_age_seed0`
+logged to `https://wandb.ai/orion8/syncorsink-core-training/runs/ekvcpsb2`; it
+raised 32x32 clue count but lowered 32x32 success to 40%, so it is also
+diagnostic rather than a large-map preset default.
+Constraint-compatible frontier labels
+(`recurrent_signal_multisize_16_32_large_map_constraintfrontier_seed0`,
+`https://wandb.ai/orion8/syncorsink-core-training/runs/bs4stt2m`) reached only
+60% mixed eval and 45% 32x32 split success, so
+`--recurrent-bc-signal-constraint-frontier-bias` stays opt-in; the current
+implementation now gates the bias through the same bounded inferred-target
+candidate rule as target decoding. The tightened rerun
+(`recurrent_signal_multisize_16_32_large_map_constraintfrontier_tight_seed0`,
+`https://wandb.ai/orion8/syncorsink-core-training/runs/xy4w9cpc`) improved mixed
+eval to 67.5% but left the 32x32 split at 45%, so the flag is still diagnostic
+rather than a large-map default. The matched Signal-anchor fallback isolation run
+(`recurrent_signal_multisize_16_32_large_map_signalfrontier_seed0`,
+`https://wandb.ai/orion8/syncorsink-core-training/runs/fil29d02`) reached 62.5%
+mixed eval but only 30% on the 32x32 split with many decoy target visits. The
+default frontier fallback therefore remains the conservative anchored behavior
+unless the constraint-frontier flag is explicitly enabled.
+The opt-in `--recurrent-eval-signal-frontier-exploration-assist` ablation
+forwards `--eval-signal-frontier-exploration-assist`, reusing the same
+coordinated frontier policy as the large-map search labels during eval/rollout
+decoding. Its first rolefix-handoff checkpoint audit was essentially flat
+negative (56/100 versus 57/100 baseline), so it is diagnostic rather than
+promoted.
+Visible-clue pursuit/replay remains available as an explicit ablation flag, but
+is not promoted by default. The `--recurrent-eval-signal-target-scan-lock` sweep
+flag forwards `--eval-signal-target-scan-lock`, preserving target-scan actions
+against learned scan/validity/decision suppressors; it remains opt-in because
+the first 16x16 audit kept success flat while increasing decoy-scan events. Set
+any aux weight to `0.0` for ablations, pass
+`--no-recurrent-obs-agent-id-features` to remove role cues, or set the scan
+threshold to `-1` to disable this narrow decode correction. The
+`--recurrent-dagger-target-handoff-requires-exact-target` ablation forwards
+`--dagger-target-handoff-requires-exact-target`, which keeps target-handoff
+labels only when the responder has trusted exact target evidence rather than a
+merely compatible visible target. It remains opt-in: the first 16x16 audit
+reduced success from 57/100 to 53/100 and shifted failures toward missed
+discovery/no-scan cases.
+`--recurrent-eval-signal-compatible-target-scan-assist` is available as an
+opt-in diagnostic for visible target tiles that satisfy non-unique clue
+constraints, but it did not improve the first 16x16 rolefix-handoff audit once
+constraint-message copy was enabled.
 Use `--recurrent-backbone mlp` for the legacy two-layer flat encoder or
 `--recurrent-backbone residual_mlp` for the LayerNorm residual flat encoder.
 Use `--recurrent-backbone local_cnn` to encode the local grid/resource/node/
@@ -711,6 +930,33 @@ python examples/core_training_sweep.py \
   --wandb \
   --wandb-mode offline
 ```
+
+To run a fixed official benchmark case through the same sweep/W&B workbench,
+use `--benchmark-spec` and `--benchmark-cases`. This bypasses the built-in
+8x8 scenario defaults and uses the manifest's map size, agent count, FOV preset,
+and horizon:
+
+```bash
+python examples/core_training_sweep.py \
+  --algorithms recurrent_bc_rl \
+  --benchmark-spec benchmarks/syncorsink_v0_1.json \
+  --benchmark-cases signal_hunt_16x16_scaled_search \
+  --seeds 0 \
+  --recurrent-demo-episodes 30 \
+  --recurrent-bc-epochs 4 \
+  --recurrent-dagger-rounds 2 \
+  --recurrent-dagger-episodes 30 \
+  --recurrent-rl-updates 0 \
+  --recurrent-eval-episodes 100 \
+  --wandb \
+  --wandb-mode online
+```
+
+Trajectory audit summaries include each policy's actual evaluated `env_config`
+and a quick `config.policy_envs` index. This matters for recurrent checkpoints:
+the audit wrapper may inherit checkpoint-required observation settings such as
+agent count or FOV while preserving requested compatible fields such as map size
+and max steps.
 
 The transformer preset expects local checkpoint artifacts:
 

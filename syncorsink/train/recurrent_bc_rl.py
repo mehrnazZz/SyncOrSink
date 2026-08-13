@@ -19,7 +19,7 @@ import os
 import warnings
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Any, Iterable, Mapping, MutableMapping, Optional
+from typing import Any, Iterable, Mapping, MutableMapping, Optional, Sequence
 
 import numpy as np
 import torch
@@ -81,8 +81,8 @@ RECURRENT_BACKBONES = ("mlp", "residual_mlp", "local_cnn")
 DEFAULT_DAGGER_FOCUS_EVENTS = (
     "decoy_scan,solo_target_scan,rejected_target_scan,"
     "bad_redundant_target_scan,target_interact_miss,target_pursuit_miss,"
-    "target_decoy_drift_miss,target_discovery_miss,target_handoff_miss,"
-    "movement_stall_miss,pipeline_wrong_delivery,pipeline_dependency_blocked,"
+    "target_decoy_drift_miss,target_discovery_miss,frontier_exploration_miss,"
+    "target_handoff_miss,movement_stall_miss,pipeline_wrong_delivery,pipeline_dependency_blocked,"
     "pipeline_sync_wait,pipeline_pickup_miss,pipeline_delivery_miss,"
     "pipeline_station_stall_miss,pipeline_drop_miss,pipeline_bad_pickup,"
     f"{PIPELINE_WRONG_DELIVERY_ROOT_PICKUP_EVENT}"
@@ -108,6 +108,7 @@ RECURRENT_INIT_OBSERVATION_CONFIG_FIELDS = (
     "obs_signal_negative_memory_window",
     "obs_signal_inferred_target_features",
     "obs_signal_target_match_features",
+    "obs_agent_id_features",
 )
 
 
@@ -143,6 +144,7 @@ class RecurrentConfig:
     obs_signal_negative_memory_window: int = 64
     obs_signal_inferred_target_features: bool = False
     obs_signal_target_match_features: bool = False
+    obs_agent_id_features: bool = False
     signal_decoy_count: Optional[int] = None
     decoy_penalty: float = 0.5
     scan_window: int = 3
@@ -209,6 +211,10 @@ class RecurrentConfig:
     bc_signal_redundant_target_interact_weight: float = 1.0
     bc_signal_target_pursuit_weight: float = 1.0
     bc_signal_target_pursuit_action_weight: float = 0.0
+    bc_signal_target_pursuit_trust_exact_memory: bool = False
+    bc_signal_target_pursuit_max_agents: int = 0
+    bc_signal_initial_message_weight: float = 1.0
+    bc_signal_initial_message_loss_weight: float = 0.0
     bc_signal_sync_response_weight: float = 1.0
     bc_signal_sync_response_action_loss_weight: float = 0.0
     bc_signal_target_match_action_weight: float = 0.0
@@ -229,6 +235,8 @@ class RecurrentConfig:
     bc_signal_target_decision_loss_weight: float = 0.0
     bc_signal_target_decision_pos_weight: float = 1.0
     bc_signal_target_decision_neg_weight: float = 1.0
+    bc_signal_ambiguous_target_decision_negatives: bool = False
+    bc_signal_ambiguous_target_decision_min_map_size: int = 16
     bc_signal_target_aux_weight: float = 0.0
     bc_signal_rejected_target_interact_loss_weight: float = 0.0
     bc_signal_rejected_target_interact_action_loss_weight: float = 0.0
@@ -236,8 +244,11 @@ class RecurrentConfig:
     bc_signal_decoy_drift_action_loss_weight: float = 0.0
     bc_signal_decoy_scan_action_loss_weight: float = 0.0
     bc_signal_rejected_target_drift_action_loss_weight: float = 0.0
+    bc_signal_visible_clue_action_weight: float = 0.0
+    bc_signal_visible_clue_min_map_size: int = 16
     bc_signal_frontier_exploration_action_weight: float = 0.0
     bc_signal_frontier_exploration_min_map_size: int = 16
+    bc_signal_constraint_frontier_bias: bool = False
     bc_pipeline_frontier_exploration_action_loss_weight: float = 0.0
     bc_pipeline_frontier_exploration_min_map_size: int = 8
     bc_pipeline_pickup_action_loss_weight: float = 0.0
@@ -312,7 +323,12 @@ class RecurrentConfig:
     dagger_solo_target_team_success_only: bool = False
     dagger_positive_target_pursuit_min_map_size: int = 16
     dagger_redundant_target_wait_labels: bool = False
+    dagger_initial_target_broadcast_labels: bool = False
     dagger_target_scan_broadcast_labels: bool = False
+    dagger_target_handoff_requires_exact_target: bool = False
+    dagger_signal_target_rendezvous_labels: bool = False
+    dagger_signal_target_rendezvous_min_map_size: int = 16
+    dagger_signal_target_rendezvous_max_agents: int = 2
     dagger_oracle_message_rollin_rate: float = 0.0
     dagger_oracle_action_rollin_rate: float = 0.0
     pipeline_assisted_rollout_episodes: int = 0
@@ -398,14 +414,21 @@ class RecurrentConfig:
     eval_signal_target_validity_threshold: float = -1.0
     eval_signal_target_decision_threshold: float = -1.0
     eval_signal_target_decision_suppress: bool = True
+    eval_signal_target_scan_lock: bool = False
+    eval_signal_exact_target_scan_lock: bool = False
+    eval_signal_compatible_target_scan_assist: bool = False
+    eval_signal_compatible_target_scan_min_strength: int = 3
     eval_signal_scan_sync_assist: bool = False
     eval_signal_scan_sync_force_first: bool = False
     eval_signal_scan_broadcast_assist: bool = False
+    eval_signal_constraint_message_copy_assist: bool = False
     eval_signal_exact_target_message_guard: bool = False
+    eval_signal_initial_exact_message_copy_assist: bool = False
     eval_signal_exact_target_navigation_assist: bool = False
     eval_signal_exact_target_memory_steps: int = 0
     eval_signal_scan_refresh_assist: bool = False
     eval_signal_scan_refresh_threshold: float = 0.5
+    eval_signal_frontier_exploration_assist: bool = False
     eval_pipeline_navigation_assist: bool = False
     eval_pipeline_navigation_assist_trust_messages: bool = False
     eval_pipeline_station_interact_guard: bool = False
@@ -2941,6 +2964,25 @@ def _pipeline_trusted_plan_for_label(
 
 
 _SIGNAL_SEGMENT_LENGTHS = {21: 5, 22: 6, 23: 4, 24: 2, 25: 2, 26: 3}
+_SIGNAL_CONSTRAINT_CODES = {21, 23, 24, 25}
+_SIGNAL_TARGET_INFO_CODES = {21, 22, 23, 24, 25, 26}
+
+
+@dataclass(frozen=True)
+class _SignalConstraintState:
+    own_segments: tuple[tuple[int, ...], ...]
+    message_segments: tuple[tuple[int, ...], ...]
+    segments: tuple[tuple[int, ...], ...]
+    exact_targets: frozenset[tuple[int, int]]
+    has_constraint: bool
+    near_constraints: tuple[tuple[int, int, int], ...]
+    parity: int | None
+    quadrant: int | None
+    quadrant_size: int | None
+    x_parity: int | None
+    y_parity: int | None
+    strength: int
+    has_target_information: bool
 
 
 def _signal_segments(raw) -> list[list[int]]:
@@ -2968,7 +3010,7 @@ def _signal_segments(raw) -> list[list[int]]:
 
 
 def _signal_targets_from_segments(
-    segments: list[list[int]],
+    segments: Sequence[Sequence[int]],
     observed_map_size: int,
 ) -> list[tuple[int, int]]:
     targets: list[tuple[int, int]] = []
@@ -3009,6 +3051,87 @@ def _signal_segments_from_observation(obs_agent: dict) -> tuple[list[list[int]],
     return own_segments, message_segments
 
 
+def _signal_constraint_state_from_segments(
+    own_segments: Sequence[Sequence[int]],
+    message_segments: Sequence[Sequence[int]],
+    observed_map_size: int,
+) -> _SignalConstraintState:
+    own_tuple = tuple(tuple(int(token) for token in segment) for segment in own_segments)
+    message_tuple = tuple(tuple(int(token) for token in segment) for segment in message_segments)
+    segments = (*own_tuple, *message_tuple)
+
+    near_constraints: list[tuple[int, int, int]] = []
+    parity: int | None = None
+    quadrant: int | None = None
+    quadrant_size: int | None = None
+    x_parity: int | None = None
+    y_parity: int | None = None
+    strength = 0
+    has_near = False
+    has_constraint = False
+    has_target_information = False
+
+    for segment in segments:
+        if not segment:
+            continue
+        code = int(segment[0])
+        if code in _SIGNAL_TARGET_INFO_CODES:
+            has_target_information = True
+        if code == 21:
+            ox, oy = int(segment[2]), int(segment[3])
+            dist = max(0, int(segment[4]))
+            has_near = True
+            if 0 <= ox < observed_map_size and 0 <= oy < observed_map_size:
+                near_constraints.append((ox, oy, dist))
+                has_constraint = True
+        elif code == 23:
+            parity = int(segment[1]) if int(segment[1]) in (0, 1) else None
+            quadrant = int(segment[2]) if 0 <= int(segment[2]) <= 3 else None
+            quadrant_size = max(1, int(segment[3]))
+            has_constraint = True
+            if parity is not None:
+                strength += 1
+            if quadrant is not None:
+                strength += 1
+        elif code == 24:
+            x_parity = int(segment[1]) if int(segment[1]) in (0, 1) else None
+            has_constraint = True
+            if x_parity is not None:
+                strength += 1
+        elif code == 25:
+            y_parity = int(segment[1]) if int(segment[1]) in (0, 1) else None
+            has_constraint = True
+            if y_parity is not None:
+                strength += 1
+
+    if has_near:
+        strength += 1
+
+    return _SignalConstraintState(
+        own_segments=own_tuple,
+        message_segments=message_tuple,
+        segments=segments,
+        exact_targets=frozenset(_signal_targets_from_segments(segments, observed_map_size)),
+        has_constraint=has_constraint,
+        near_constraints=tuple(near_constraints),
+        parity=parity,
+        quadrant=quadrant,
+        quadrant_size=quadrant_size,
+        x_parity=x_parity,
+        y_parity=y_parity,
+        strength=int(strength),
+        has_target_information=has_target_information,
+    )
+
+
+def _signal_constraint_state_from_observation(
+    obs_agent: dict,
+    observed_map_size: int,
+) -> _SignalConstraintState:
+    own_segments, message_segments = _signal_segments_from_observation(obs_agent)
+    return _signal_constraint_state_from_segments(own_segments, message_segments, observed_map_size)
+
+
 def _signal_targets_from_observation(
     obs_agent: dict,
     observed_map_size: int,
@@ -3025,60 +3148,38 @@ def _signal_observation_allows_target(
     target: tuple[int, int],
     observed_map_size: int,
 ) -> bool:
-    own_segments, message_segments = _signal_segments_from_observation(obs_agent)
-    segments = [*own_segments, *message_segments]
-    exact_targets = set(_signal_targets_from_segments(segments, observed_map_size))
-    if exact_targets:
-        return target in exact_targets
+    state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    return _signal_constraint_state_allows_target(state, target)
 
-    has_constraint = False
-    near_constraints: list[tuple[int, int, int]] = []
-    parity: int | None = None
-    quadrant: int | None = None
-    quadrant_size: int | None = None
-    x_parity: int | None = None
-    y_parity: int | None = None
-    for segment in segments:
-        code = int(segment[0])
-        if code == 21:
-            ox, oy = int(segment[2]), int(segment[3])
-            dist = max(0, int(segment[4]))
-            if 0 <= ox < observed_map_size and 0 <= oy < observed_map_size:
-                near_constraints.append((ox, oy, dist))
-                has_constraint = True
-        elif code == 23:
-            parity = int(segment[1]) if int(segment[1]) in (0, 1) else None
-            quadrant = int(segment[2]) if 0 <= int(segment[2]) <= 3 else None
-            quadrant_size = max(1, int(segment[3]))
-            has_constraint = True
-        elif code == 24:
-            x_parity = int(segment[1]) if int(segment[1]) in (0, 1) else None
-            has_constraint = True
-        elif code == 25:
-            y_parity = int(segment[1]) if int(segment[1]) in (0, 1) else None
-            has_constraint = True
 
-    if not has_constraint:
+def _signal_constraint_state_allows_target(
+    state: _SignalConstraintState,
+    target: tuple[int, int],
+) -> bool:
+    if state.exact_targets:
+        return tuple(int(v) for v in target) in state.exact_targets
+
+    if not state.has_constraint:
         return False
 
     tx, ty = int(target[0]), int(target[1])
-    if parity is not None and (tx + ty) % 2 != parity:
+    if state.parity is not None and (tx + ty) % 2 != state.parity:
         return False
-    if x_parity is not None and tx % 2 != x_parity:
+    if state.x_parity is not None and tx % 2 != state.x_parity:
         return False
-    if y_parity is not None and ty % 2 != y_parity:
+    if state.y_parity is not None and ty % 2 != state.y_parity:
         return False
-    if quadrant is not None:
-        half = float(quadrant_size or observed_map_size) / 2.0
+    if state.quadrant is not None:
+        half = float(state.quadrant_size or 0) / 2.0
         in_quadrant = (
-            (quadrant == 0 and tx < half and ty < half)
-            or (quadrant == 1 and tx >= half and ty < half)
-            or (quadrant == 2 and tx < half and ty >= half)
-            or (quadrant == 3 and tx >= half and ty >= half)
+            (state.quadrant == 0 and tx < half and ty < half)
+            or (state.quadrant == 1 and tx >= half and ty < half)
+            or (state.quadrant == 2 and tx < half and ty >= half)
+            or (state.quadrant == 3 and tx >= half and ty >= half)
         )
         if not in_quadrant:
             return False
-    for ox, oy, dist in near_constraints:
+    for ox, oy, dist in state.near_constraints:
         if abs(tx - ox) + abs(ty - oy) > dist:
             return False
     return True
@@ -3088,21 +3189,17 @@ def _signal_constraint_features(
     obs_agent: dict,
     self_pos: np.ndarray,
     observed_map_size: int,
+    constraint_state: _SignalConstraintState | None = None,
 ) -> np.ndarray:
-    own_segments, message_segments = _signal_segments_from_observation(obs_agent)
-    segments = [*own_segments, *message_segments]
-    constraint_codes = {21, 23, 24, 25}
-    own_has_constraint = any(segment and int(segment[0]) in constraint_codes for segment in own_segments)
-    message_has_constraint = any(segment and int(segment[0]) in constraint_codes for segment in message_segments)
+    state = constraint_state or _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    own_has_constraint = any(segment and int(segment[0]) in _SIGNAL_CONSTRAINT_CODES for segment in state.own_segments)
+    message_has_constraint = any(
+        segment and int(segment[0]) in _SIGNAL_CONSTRAINT_CODES for segment in state.message_segments
+    )
 
     near_constraints: list[tuple[int, int, int, int]] = []
-    parity: int | None = None
-    quadrant: int | None = None
-    quadrant_size: int | None = None
-    x_parity: int | None = None
-    y_parity: int | None = None
 
-    for segment in segments:
+    for segment in state.segments:
         code = int(segment[0])
         if code == 21:
             obj = int(segment[1])
@@ -3110,14 +3207,6 @@ def _signal_constraint_features(
             dist = max(0, int(segment[4]))
             if 0 <= ox < observed_map_size and 0 <= oy < observed_map_size:
                 near_constraints.append((obj, ox, oy, dist))
-        elif code == 23:
-            parity = int(segment[1]) if int(segment[1]) in (0, 1) else None
-            quadrant = int(segment[2]) if 0 <= int(segment[2]) <= 3 else None
-            quadrant_size = max(1, int(segment[3]))
-        elif code == 24:
-            x_parity = int(segment[1]) if int(segment[1]) in (0, 1) else None
-        elif code == 25:
-            y_parity = int(segment[1]) if int(segment[1]) in (0, 1) else None
 
     sx, sy = int(self_pos[0]), int(self_pos[1])
     nearest_near = None
@@ -3142,72 +3231,97 @@ def _signal_constraint_features(
         ])
 
     parts.extend([
-        1.0 if parity is not None else 0.0,
-        float(parity) if parity is not None else 0.0,
-        1.0 if quadrant is not None else 0.0,
+        1.0 if state.parity is not None else 0.0,
+        float(state.parity) if state.parity is not None else 0.0,
+        1.0 if state.quadrant is not None else 0.0,
     ])
     for q in range(4):
-        parts.append(1.0 if quadrant == q else 0.0)
-    parts.append(min(1.0, float(quadrant_size or 0) / max(1.0, float(observed_map_size))))
+        parts.append(1.0 if state.quadrant == q else 0.0)
+    parts.append(min(1.0, float(state.quadrant_size or 0) / max(1.0, float(observed_map_size))))
     parts.extend([
-        1.0 if x_parity is not None else 0.0,
-        float(x_parity) if x_parity is not None else 0.0,
-        1.0 if y_parity is not None else 0.0,
-        float(y_parity) if y_parity is not None else 0.0,
+        1.0 if state.x_parity is not None else 0.0,
+        float(state.x_parity) if state.x_parity is not None else 0.0,
+        1.0 if state.y_parity is not None else 0.0,
+        float(state.y_parity) if state.y_parity is not None else 0.0,
         1.0 if own_has_constraint else 0.0,
         1.0 if message_has_constraint else 0.0,
     ])
     return np.asarray(parts, dtype=np.float32)
 
 
-def _signal_constraint_strength_from_segments(segments: list[list[int]]) -> int:
-    strength = 0
-    has_near = False
-    for segment in segments:
-        if not segment:
-            continue
-        code = int(segment[0])
-        if code == 21:
-            has_near = True
-        elif code == 23:
-            if len(segment) >= 2 and int(segment[1]) in (0, 1):
-                strength += 1
-            if len(segment) >= 3 and 0 <= int(segment[2]) <= 3:
-                strength += 1
-        elif code == 24 and len(segment) >= 2 and int(segment[1]) in (0, 1):
-            strength += 1
-        elif code == 25 and len(segment) >= 2 and int(segment[1]) in (0, 1):
-            strength += 1
-    return strength + (1 if has_near else 0)
+def _signal_constraint_strength_from_segments(segments: Sequence[Sequence[int]]) -> int:
+    return _signal_constraint_state_from_segments((), segments, observed_map_size=10**9).strength
+
+
+def _signal_candidate_bounds_from_constraint_state(
+    state: _SignalConstraintState,
+    observed_map_size: int,
+) -> tuple[range, range] | None:
+    max_coord = int(observed_map_size) - 1
+    min_x, max_x = 0, max_coord
+    min_y, max_y = 0, max_coord
+
+    if state.quadrant is not None:
+        half = float(state.quadrant_size or observed_map_size) / 2.0
+        low = max(0, min(int(observed_map_size), int(math.ceil(half))))
+        high = max(0, min(max_coord, int(math.ceil(half)) - 1))
+        if state.quadrant in (0, 2):
+            max_x = min(max_x, high)
+        else:
+            min_x = max(min_x, low)
+        if state.quadrant in (0, 1):
+            max_y = min(max_y, high)
+        else:
+            min_y = max(min_y, low)
+
+    for ox, oy, dist in state.near_constraints:
+        min_x = max(min_x, int(ox) - int(dist))
+        max_x = min(max_x, int(ox) + int(dist))
+        min_y = max(min_y, int(oy) - int(dist))
+        max_y = min(max_y, int(oy) + int(dist))
+
+    min_x = max(0, int(min_x))
+    min_y = max(0, int(min_y))
+    max_x = min(max_coord, int(max_x))
+    max_y = min(max_coord, int(max_y))
+    if min_x > max_x or min_y > max_y:
+        return None
+    return range(min_x, max_x + 1), range(min_y, max_y + 1)
 
 
 def _signal_inferred_constraint_targets(
     obs_agent: dict,
     observed_map_size: int,
+    constraint_state: _SignalConstraintState | None = None,
 ) -> list[tuple[int, int]]:
-    own_segments, message_segments = _signal_segments_from_observation(obs_agent)
-    segments = [*own_segments, *message_segments]
-    if _signal_targets_from_segments(segments, observed_map_size):
+    state = constraint_state or _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    if state.exact_targets:
         return []
-    if _signal_constraint_strength_from_segments(segments) < 3:
+    if state.strength < 3:
         return []
-    candidates = [
-        (x, y)
-        for y in range(int(observed_map_size))
-        for x in range(int(observed_map_size))
-        if _signal_observation_allows_target(obs_agent, (x, y), observed_map_size)
-    ]
-    if len(candidates) <= max(8, int(observed_map_size) * 4):
-        return candidates
-    return []
+    bounds = _signal_candidate_bounds_from_constraint_state(state, observed_map_size)
+    if bounds is None:
+        return []
+    x_range, y_range = bounds
+    limit = max(8, int(observed_map_size) * 4)
+    candidates: list[tuple[int, int]] = []
+    for y in y_range:
+        for x in x_range:
+            if not _signal_constraint_state_allows_target(state, (x, y)):
+                continue
+            candidates.append((int(x), int(y)))
+            if len(candidates) > limit:
+                return []
+    return candidates
 
 
 def _signal_inferred_target_features(
     obs_agent: dict,
     self_pos: np.ndarray,
     observed_map_size: int,
+    constraint_state: _SignalConstraintState | None = None,
 ) -> np.ndarray:
-    candidates = _signal_inferred_constraint_targets(obs_agent, observed_map_size)
+    candidates = _signal_inferred_constraint_targets(obs_agent, observed_map_size, constraint_state)
     nearest = _nearest_signal_target(candidates, self_pos)
     parts = _target_direction_group(nearest, self_pos, observed_map_size)
     count_scale = max(1.0, float(int(observed_map_size) * 4))
@@ -3267,21 +3381,50 @@ def _visible_signal_targets(
     return targets
 
 
-def _signal_observation_has_target_information(obs_agent: dict) -> bool:
+def _visible_signal_clues(
+    obs_agent: dict,
+    self_pos: np.ndarray,
+    observed_map_size: int,
+) -> list[tuple[int, int]]:
+    local_ids = _recurrent_local_grid_ids(obs_agent.get("local_grid", np.zeros((1, 1), dtype=np.int16)))
+    if local_ids.ndim != 2:
+        return []
+    sx, sy = int(self_pos[0]), int(self_pos[1])
+    h, w = local_ids.shape
+    cx, cy = w // 2, h // 2
+    clues: list[tuple[int, int]] = []
+    for y in range(h):
+        for x in range(w):
+            if int(local_ids[y, x]) != TILE_CLUE:
+                continue
+            gx, gy = sx + (x - cx), sy + (y - cy)
+            if 0 <= gx < observed_map_size and 0 <= gy < observed_map_size:
+                clues.append((gx, gy))
+    return clues
+
+
+def _signal_observation_has_target_information(
+    obs_agent: dict,
+    constraint_state: _SignalConstraintState | None = None,
+) -> bool:
+    if constraint_state is not None:
+        return bool(constraint_state.has_target_information)
     own_segments, message_segments = _signal_segments_from_observation(obs_agent)
-    return any(segment and 21 <= int(segment[0]) <= 26 for segment in [*own_segments, *message_segments])
+    return any(segment and int(segment[0]) in _SIGNAL_TARGET_INFO_CODES for segment in [*own_segments, *message_segments])
 
 
 def _signal_visible_target_match_features(
     obs_agent: dict,
     self_pos: np.ndarray,
     observed_map_size: int,
+    constraint_state: _SignalConstraintState | None = None,
 ) -> np.ndarray:
+    state = constraint_state or _signal_constraint_state_from_observation(obs_agent, observed_map_size)
     visible_targets = _visible_signal_targets(obs_agent, self_pos, observed_map_size)
-    has_target_info = _signal_observation_has_target_information(obs_agent)
+    has_target_info = _signal_observation_has_target_information(obs_agent, state)
     allowed = [
         target for target in visible_targets
-        if _signal_observation_allows_target(obs_agent, target, observed_map_size)
+        if _signal_constraint_state_allows_target(state, target)
     ]
     rejected = [
         target for target in visible_targets
@@ -3308,8 +3451,13 @@ def _signal_visible_target_match_features(
     return np.asarray(parts, dtype=np.float32)
 
 
-def _signal_center_rejected_target(obs_agent: dict, observed_map_size: int) -> bool:
-    if not _signal_observation_has_target_information(obs_agent):
+def _signal_center_rejected_target(
+    obs_agent: dict,
+    observed_map_size: int,
+    constraint_state: _SignalConstraintState | None = None,
+) -> bool:
+    state = constraint_state or _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    if not _signal_observation_has_target_information(obs_agent, state):
         return False
     local_ids = _recurrent_local_grid_ids(obs_agent.get("local_grid", np.zeros((1, 1), dtype=np.int16)))
     if local_ids.ndim != 2 or local_ids.size == 0:
@@ -3321,7 +3469,7 @@ def _signal_center_rejected_target(obs_agent: dict, observed_map_size: int) -> b
     if self_pos.size < 2:
         return False
     pos = (int(self_pos[0]), int(self_pos[1]))
-    return not _signal_observation_allows_target(obs_agent, pos, observed_map_size)
+    return not _signal_constraint_state_allows_target(state, pos)
 
 
 def _signal_rejected_target_mask(obs: dict, observed_map_size: int, num_agents: int) -> np.ndarray:
@@ -3416,11 +3564,18 @@ def _signal_coordination_features(obs_agent: dict, cfg: RecurrentConfig, observe
     pos = np.asarray(obs_agent.get("self_pos", np.zeros((2,), dtype=np.int16)), dtype=np.int64).reshape(-1)
     if pos.size < 2:
         pos = np.zeros((2,), dtype=np.int64)
-    own_targets, message_targets = _signal_targets_from_observation(obs_agent, observed_map_size)
+    constraint_state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    own_targets = _signal_targets_from_segments(constraint_state.own_segments, observed_map_size)
+    message_targets = _signal_targets_from_segments(constraint_state.message_segments, observed_map_size)
     own_target = _nearest_signal_target(own_targets, pos)
     message_target = _nearest_signal_target(message_targets, pos)
     combined_target = _nearest_signal_target([*own_targets, *message_targets], pos)
-    constraint_features = _signal_constraint_features(obs_agent, pos, observed_map_size)
+    constraint_features = _signal_constraint_features(
+        obs_agent,
+        pos,
+        observed_map_size,
+        constraint_state,
+    )
 
     local_ids = _recurrent_local_grid_ids(obs_agent.get("local_grid", np.zeros((1, 1), dtype=np.int16)))
     center_is_target = 0.0
@@ -3443,12 +3598,57 @@ def _signal_coordination_features(obs_agent: dict, cfg: RecurrentConfig, observe
     parts.extend(constraint_features.tolist())
     if cfg.obs_signal_inferred_target_features:
         parts.extend(
-            _signal_inferred_target_features(obs_agent, pos, observed_map_size).tolist()
+            _signal_inferred_target_features(obs_agent, pos, observed_map_size, constraint_state).tolist()
         )
     if cfg.obs_signal_target_match_features:
         parts.extend(
-            _signal_visible_target_match_features(obs_agent, pos, observed_map_size).tolist()
+            _signal_visible_target_match_features(obs_agent, pos, observed_map_size, constraint_state).tolist()
         )
+    return np.asarray(parts, dtype=np.float32)
+
+
+def _agent_role_features(
+    obs_agent: dict,
+    cfg: RecurrentConfig,
+    observed_map_size: int,
+    agent_id: int | None,
+) -> np.ndarray:
+    if not bool(getattr(cfg, "obs_agent_id_features", False)):
+        return np.zeros((0,), dtype=np.float32)
+    num_agents = max(1, int(cfg.agents))
+    parts = [0.0 for _ in range(num_agents)]
+    if agent_id is not None and 0 <= int(agent_id) < num_agents:
+        parts[int(agent_id)] = 1.0
+        id_value = float(agent_id) / max(1.0, float(num_agents - 1))
+    else:
+        id_value = 0.0
+    parts.append(id_value)
+
+    pos = np.asarray(
+        obs_agent.get("self_pos", np.zeros((2,), dtype=np.int16)),
+        dtype=np.float32,
+    ).reshape(-1)
+    if (
+        cfg.scenario == "signal_hunt"
+        and pos.size >= 2
+        and _pipeline_use_coordinated_frontier(observed_map_size, num_agents)
+        and agent_id is not None
+    ):
+        anchors = _signal_frontier_anchors(observed_map_size, observed_map_size, num_agents)
+        if anchors:
+            anchor = anchors[int(agent_id) % len(anchors)]
+            parts.extend(
+                _direction_features(
+                    float(anchor[0]) - float(pos[0]),
+                    float(anchor[1]) - float(pos[1]),
+                    max(1.0, float(observed_map_size - 1)),
+                    True,
+                )
+            )
+        else:
+            parts.extend(_direction_features(0.0, 0.0, 1.0, False))
+    else:
+        parts.extend(_direction_features(0.0, 0.0, 1.0, False))
     return np.asarray(parts, dtype=np.float32)
 
 
@@ -3542,8 +3742,10 @@ def _flatten_recurrent_obs(
     cfg: RecurrentConfig,
     feedback: np.ndarray | None = None,
     pipeline_state: Mapping[str, Any] | None = None,
+    agent_id: int | None = None,
 ) -> np.ndarray:
     observed_map_size = _observed_map_size(obs_agent, cfg)
+    role_features = _agent_role_features(obs_agent, cfg, observed_map_size, agent_id)
     navigation = _navigation_features(obs_agent, cfg, observed_map_size)
     pipeline_features = _pipeline_coordination_features(
         obs_agent,
@@ -3569,6 +3771,8 @@ def _flatten_recurrent_obs(
             feedback = np.zeros((_feedback_dim(cfg),), dtype=np.float32)
         feedback = np.asarray(feedback, dtype=np.float32).reshape(-1)
         extras.append(feedback)
+    if role_features.size > 0:
+        extras.append(role_features)
     if navigation.size > 0:
         extras.append(navigation)
     if pipeline_features.size > 0:
@@ -3597,6 +3801,7 @@ def _build_recurrent_obs_batch(
             cfg,
             feedback=feedback[aid] if feedback is not None else None,
             pipeline_state=pipeline_state,
+            agent_id=aid,
         )
         for aid in range(num_agents)
     ]).astype(np.float32)
@@ -4552,7 +4757,10 @@ def _signal_target_scan_opportunity_label_mask(
     if target is None:
         return mask, kind_ids
     true_target = (int(target[0]), int(target[1]))
+    rendezvous_wait_agents = set(_signal_target_rendezvous_wait_agents(cfg, env, obs))
     for aid in range(env.num_agents):
+        if int(aid) in rendezvous_wait_agents:
+            continue
         obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
         if not isinstance(obs_agent, dict):
             continue
@@ -4894,11 +5102,11 @@ def _signal_target_decoding_candidate(
         return False
     observed_map_size = _observed_map_size(obs_agent, cfg)
     target = (int(target[0]), int(target[1]))
-    if not _signal_observation_allows_target(obs_agent, target, observed_map_size):
+    constraint_state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    if not _signal_constraint_state_allows_target(constraint_state, target):
         return False
 
-    own_segments, message_segments = _signal_segments_from_observation(obs_agent)
-    exact_targets = set(_signal_targets_from_segments([*own_segments, *message_segments], observed_map_size))
+    exact_targets = set(constraint_state.exact_targets)
     if target in exact_targets:
         return True
 
@@ -4907,12 +5115,12 @@ def _signal_target_decoding_candidate(
         allowed_visible_targets = {
             visible_target
             for visible_target in visible_targets
-            if _signal_observation_allows_target(obs_agent, visible_target, observed_map_size)
+            if _signal_constraint_state_allows_target(constraint_state, visible_target)
         }
         if allowed_visible_targets == {target}:
             return True
 
-    inferred_targets = set(_signal_inferred_constraint_targets(obs_agent, observed_map_size))
+    inferred_targets = set(_signal_inferred_constraint_targets(obs_agent, observed_map_size, constraint_state))
     return inferred_targets == {target}
 
 
@@ -4920,6 +5128,7 @@ def _signal_target_pursuit_action_label_mask(
     env: SyncOrSinkEnv,
     obs: dict,
     cfg: RecurrentConfig,
+    scan_state: Mapping[str, Any] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     mask = np.zeros((env.num_agents,), dtype=np.float32)
     action_ids = np.full((env.num_agents,), -1, dtype=np.int64)
@@ -4930,6 +5139,10 @@ def _signal_target_pursuit_action_label_mask(
         return mask, action_ids
     true_target = (int(target[0]), int(target[1]))
     observed_map_size = int(env.map_size)
+    trust_exact_memory = bool(getattr(cfg, "bc_signal_target_pursuit_trust_exact_memory", False))
+    if trust_exact_memory:
+        _update_signal_exact_target_memory(cfg, obs, scan_state)
+    candidates: list[tuple[int, int, int]] = []
     for aid in range(env.num_agents):
         obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
         if not isinstance(obs_agent, dict):
@@ -4943,14 +5156,27 @@ def _signal_target_pursuit_action_label_mask(
         pos = (int(pos_arr[0]), int(pos_arr[1]))
         if pos == true_target:
             continue
-        if not _signal_target_decoding_candidate(obs_agent, cfg, true_target):
+        has_target_evidence = _signal_target_decoding_candidate(obs_agent, cfg, true_target)
+        if not has_target_evidence:
+            if trust_exact_memory:
+                exact_targets = _signal_exact_targets_from_observation(obs_agent, observed_map_size)
+                exact_targets.update(_signal_exact_target_memory_targets(cfg, scan_state, int(aid)))
+                trusted_targets = _signal_trusted_exact_message_targets(
+                    cfg,
+                    obs_agent,
+                    scan_state,
+                    agent_id=int(aid),
+                )
+                has_target_evidence = true_target in (exact_targets & trusted_targets)
+        if not has_target_evidence:
             continue
+        constraint_state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
         visible_targets = _visible_signal_targets(obs_agent, pos_arr, observed_map_size)
         rejected_targets = {
             visible_target
             for visible_target in visible_targets
             if visible_target != true_target
-            and not _signal_observation_allows_target(obs_agent, visible_target, observed_map_size)
+            and not _signal_constraint_state_allows_target(constraint_state, visible_target)
         }
         dx, dy, path_target = shortest_path(
             env.grid,
@@ -4965,6 +5191,12 @@ def _signal_target_pursuit_action_label_mask(
             continue
         if not _action_allowed_from_obs(obs_agent, action_id):
             continue
+        dist = abs(int(true_target[0]) - int(pos[0])) + abs(int(true_target[1]) - int(pos[1]))
+        candidates.append((dist, int(aid), action_id))
+    max_agents = int(getattr(cfg, "bc_signal_target_pursuit_max_agents", 0))
+    if max_agents > 0:
+        candidates = sorted(candidates)[:max_agents]
+    for _dist, aid, action_id in candidates:
         mask[aid] = 1.0
         action_ids[aid] = action_id
     return mask, action_ids
@@ -4995,13 +5227,14 @@ def _signal_target_match_action_label_mask(
         visible_targets = _visible_signal_targets(obs_agent, pos_arr, observed_map_size)
         if true_target not in visible_targets:
             continue
-        if not _signal_observation_allows_target(obs_agent, true_target, observed_map_size):
+        constraint_state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+        if not _signal_constraint_state_allows_target(constraint_state, true_target):
             continue
         rejected_targets = [
             visible_target
             for visible_target in visible_targets
             if visible_target != true_target
-            and not _signal_observation_allows_target(obs_agent, visible_target, observed_map_size)
+            and not _signal_constraint_state_allows_target(constraint_state, visible_target)
         ]
         if not rejected_targets:
             continue
@@ -5039,11 +5272,8 @@ def _signal_target_pursuit_agents(
         obs_agent = obs.get(aid)
         if obs_agent is None:
             continue
-        if not _signal_observation_allows_target(
-            obs_agent,
-            target,
-            observed_map_size=int(env.map_size),
-        ):
+        constraint_state = _signal_constraint_state_from_observation(obs_agent, int(env.map_size))
+        if not _signal_constraint_state_allows_target(constraint_state, target):
             continue
         x, y = env.agent_positions[aid]
         nx, ny = x + delta[0], y + delta[1]
@@ -6125,13 +6355,15 @@ def _signal_rejected_target_drift_agents(
             continue
         if int(env.grid[ny, nx]) in (1, TILE_DOOR):
             continue
-        visible_targets = _visible_signal_targets(obs_agent, pos_arr, int(env.map_size))
+        observed_map_size = int(env.map_size)
+        constraint_state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+        visible_targets = _visible_signal_targets(obs_agent, pos_arr, observed_map_size)
         if not visible_targets:
             continue
         allowed_targets = [
             target
             for target in visible_targets
-            if _signal_observation_allows_target(obs_agent, target, int(env.map_size))
+            if _signal_constraint_state_allows_target(constraint_state, target)
         ]
         allowed_set = set(allowed_targets)
         rejected_targets = [target for target in visible_targets if target not in allowed_set]
@@ -6367,11 +6599,159 @@ def _signal_target_join_action(env: SyncOrSinkEnv, agent_id: int) -> int:
     return move_action_from_delta(dx, dy, env)
 
 
+def _signal_target_rendezvous_candidates(
+    cfg: RecurrentConfig,
+    env: SyncOrSinkEnv,
+    obs: dict,
+    *,
+    scan_state: Mapping[str, Any] | None = None,
+) -> list[tuple[int, int]]:
+    if (
+        getattr(env.config, "scenario", None) != "signal_hunt"
+        or int(env.map_size) < int(getattr(cfg, "dagger_signal_target_rendezvous_min_map_size", 16))
+    ):
+        return []
+    target = env.scenario_state.data.get("target") if env.scenario_state is not None else None
+    if target is None:
+        return []
+    true_target = (int(target[0]), int(target[1]))
+    candidates: list[tuple[int, int]] = []
+    for aid in range(env.num_agents):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        has_target_evidence = _signal_target_decoding_candidate(obs_agent, cfg, true_target)
+        if not has_target_evidence:
+            has_target_evidence = _signal_exact_target_handoff_candidate(
+                obs_agent,
+                cfg,
+                true_target,
+                scan_state=scan_state,
+                agent_id=int(aid),
+            )
+        if not has_target_evidence:
+            continue
+        pos = tuple(env.agent_positions[int(aid)])
+        dist = abs(int(true_target[0]) - int(pos[0])) + abs(int(true_target[1]) - int(pos[1]))
+        candidates.append((int(dist), int(aid)))
+    return sorted(candidates)
+
+
+def _signal_target_rendezvous_selected_agents(
+    cfg: RecurrentConfig,
+    env: SyncOrSinkEnv,
+    obs: dict,
+    *,
+    scan_state: Mapping[str, Any] | None = None,
+) -> list[int]:
+    if not bool(getattr(cfg, "dagger_signal_target_rendezvous_labels", False)):
+        return []
+    candidates = _signal_target_rendezvous_candidates(
+        cfg,
+        env,
+        obs,
+        scan_state=scan_state,
+    )
+    if len(candidates) < 2:
+        return []
+    max_agents = max(2, int(getattr(cfg, "dagger_signal_target_rendezvous_max_agents", 2)))
+    return [int(aid) for _dist, aid in candidates[:max_agents]]
+
+
+def _signal_rendezvous_partner_can_complete(
+    env: SyncOrSinkEnv,
+    *,
+    agent_id: int,
+    selected_agents: Sequence[int],
+    target: tuple[int, int],
+) -> bool:
+    scan_window = int(env.scenario_state.data.get("scan_window", getattr(env.config, "scan_window", 3)))
+    next_step = int(env.steps) + 1
+    for other_id in selected_agents:
+        other_id = int(other_id)
+        if other_id == int(agent_id):
+            continue
+        other_age = _recent_signal_scan_age(env, other_id, next_step=next_step)
+        if other_age is not None and 0 <= int(other_age) <= scan_window:
+            return True
+        other_pos = tuple(env.agent_positions[other_id])
+        if other_pos == tuple(target):
+            return True
+        dist = abs(int(target[0]) - int(other_pos[0])) + abs(int(target[1]) - int(other_pos[1]))
+        if dist + 1 <= scan_window:
+            return True
+    return False
+
+
+def _signal_target_rendezvous_wait_agents(
+    cfg: RecurrentConfig,
+    env: SyncOrSinkEnv,
+    obs: dict,
+    *,
+    scan_state: Mapping[str, Any] | None = None,
+) -> list[int]:
+    target = env.scenario_state.data.get("target") if env.scenario_state is not None else None
+    if target is None:
+        return []
+    true_target = (int(target[0]), int(target[1]))
+    selected_agents = _signal_target_rendezvous_selected_agents(
+        cfg,
+        env,
+        obs,
+        scan_state=scan_state,
+    )
+    wait_agents: list[int] = []
+    for aid in selected_agents:
+        if tuple(env.agent_positions[int(aid)]) != true_target:
+            continue
+        if _signal_rendezvous_partner_can_complete(
+            env,
+            agent_id=int(aid),
+            selected_agents=selected_agents,
+            target=true_target,
+        ):
+            continue
+        wait_agents.append(int(aid))
+    return wait_agents
+
+
+def _apply_signal_target_rendezvous_overrides(
+    cfg: RecurrentConfig,
+    env: SyncOrSinkEnv,
+    obs: dict,
+    actions: dict[int, dict],
+    *,
+    scan_state: Mapping[str, Any] | None = None,
+) -> tuple[dict[int, dict], list[int], list[int]]:
+    selected_agents = _signal_target_rendezvous_selected_agents(
+        cfg,
+        env,
+        obs,
+        scan_state=scan_state,
+    )
+    if not selected_agents:
+        return actions, [], []
+    wait_agents = set(_signal_target_rendezvous_wait_agents(cfg, env, obs, scan_state=scan_state))
+    corrected = {int(aid): dict(action) for aid, action in actions.items()}
+    labeled_agents: list[int] = []
+    for aid in selected_agents:
+        action_id = int(env.ACTION_STAY) if int(aid) in wait_agents else _signal_target_join_action(env, int(aid))
+        obs_agent = obs.get(int(aid), obs.get(str(int(aid)))) if isinstance(obs, dict) else None
+        if isinstance(obs_agent, dict) and not _action_allowed_from_obs(obs_agent, int(action_id)):
+            continue
+        action = corrected.setdefault(int(aid), {"message_tokens": []})
+        action["action"] = int(action_id)
+        action.setdefault("message_tokens", [])
+        labeled_agents.append(int(aid))
+    return corrected, labeled_agents, sorted(int(aid) for aid in wait_agents if int(aid) in labeled_agents)
+
+
 def _signal_feedback_target_handoff_agents(
     cfg: RecurrentConfig,
     env: SyncOrSinkEnv,
     feedback: np.ndarray | None,
     obs: dict | None = None,
+    scan_state: Mapping[str, Any] | None = None,
 ) -> list[int]:
     if getattr(env.config, "scenario", None) != "signal_hunt":
         return []
@@ -6402,10 +6782,47 @@ def _signal_feedback_target_handoff_agents(
                 obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
                 if not isinstance(obs_agent, dict) or true_target is None:
                     continue
-                if not _signal_target_decoding_candidate(obs_agent, cfg, true_target):
+                if bool(getattr(cfg, "dagger_target_handoff_requires_exact_target", False)):
+                    candidate = _signal_exact_target_handoff_candidate(
+                        obs_agent,
+                        cfg,
+                        true_target,
+                        scan_state=scan_state,
+                        agent_id=int(aid),
+                    )
+                else:
+                    candidate = _signal_target_decoding_candidate(obs_agent, cfg, true_target)
+                if not candidate:
                     continue
             agents.append(int(aid))
     return agents
+
+
+def _signal_exact_target_handoff_candidate(
+    obs_agent: dict,
+    cfg: RecurrentConfig,
+    target: tuple[int, int],
+    *,
+    scan_state: Mapping[str, Any] | None = None,
+    agent_id: int | None = None,
+) -> bool:
+    if cfg.scenario != "signal_hunt" or not isinstance(obs_agent, dict):
+        return False
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    target = (int(target[0]), int(target[1]))
+    constraint_state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    if not _signal_constraint_state_allows_target(constraint_state, target):
+        return False
+    exact_targets = _signal_exact_targets_from_observation(obs_agent, observed_map_size)
+    if agent_id is not None:
+        exact_targets.update(_signal_exact_target_memory_targets(cfg, scan_state, int(agent_id)))
+    trusted_targets = _signal_trusted_exact_message_targets(
+        cfg,
+        obs_agent,
+        scan_state,
+        agent_id=agent_id,
+    )
+    return target in (exact_targets & trusted_targets)
 
 
 def _apply_signal_target_handoff_overrides(
@@ -6414,8 +6831,15 @@ def _apply_signal_target_handoff_overrides(
     actions: dict[int, dict],
     feedback: np.ndarray | None,
     obs: dict | None = None,
+    scan_state: Mapping[str, Any] | None = None,
 ) -> tuple[dict[int, dict], list[int]]:
-    handoff_agents = _signal_feedback_target_handoff_agents(cfg, env, feedback, obs=obs)
+    handoff_agents = _signal_feedback_target_handoff_agents(
+        cfg,
+        env,
+        feedback,
+        obs=obs,
+        scan_state=scan_state,
+    )
     if not handoff_agents:
         return actions, []
     corrected = {int(aid): dict(action) for aid, action in actions.items()}
@@ -6443,6 +6867,171 @@ def _signal_exact_target_message_for_pos(
     if not (0 <= tx < int(cfg.comm_vocab_size) and 0 <= ty < int(cfg.comm_vocab_size)):
         return []
     return [26, tx, ty]
+
+
+def _signal_initial_exact_target_from_observation(
+    cfg: RecurrentConfig,
+    obs_agent: dict,
+) -> tuple[int, int] | None:
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    own_segments, _message_segments = _signal_segments_from_observation(obs_agent)
+    exact_segments = [
+        segment
+        for segment in own_segments
+        if segment and int(segment[0]) in (22, 26)
+    ]
+    targets = set(_signal_targets_from_segments(exact_segments, observed_map_size))
+    if len(targets) != 1:
+        return None
+    target = next(iter(targets))
+    if not _signal_exact_target_message_for_pos(cfg, target):
+        return None
+    return target
+
+
+def _signal_initial_target_broadcaster_targets(
+    cfg: RecurrentConfig,
+    obs: dict | None,
+    *,
+    current_step: int,
+) -> dict[int, tuple[int, int]]:
+    if (
+        not bool(getattr(cfg, "dagger_initial_target_broadcast_labels", False))
+        or getattr(cfg, "scenario", None) != "signal_hunt"
+        or not cfg.comm
+        or int(current_step) != 0
+        or not isinstance(obs, dict)
+    ):
+        return {}
+    targets: dict[int, tuple[int, int]] = {}
+    for raw_aid, obs_agent in obs.items():
+        if not isinstance(obs_agent, dict):
+            continue
+        try:
+            aid = int(raw_aid)
+        except (TypeError, ValueError):
+            continue
+        target = _signal_initial_exact_target_from_observation(cfg, obs_agent)
+        if target is not None:
+            targets[aid] = target
+    return targets
+
+
+def _apply_signal_initial_target_broadcast_overrides(
+    cfg: RecurrentConfig,
+    obs: dict | None,
+    actions: dict[int, dict],
+    *,
+    current_step: int,
+) -> tuple[dict[int, dict], list[int]]:
+    broadcaster_targets = _signal_initial_target_broadcaster_targets(
+        cfg,
+        obs,
+        current_step=current_step,
+    )
+    if not broadcaster_targets:
+        return actions, []
+    corrected = {int(aid): dict(action) for aid, action in actions.items()}
+    broadcasters: list[int] = []
+    for aid, target in sorted(broadcaster_targets.items()):
+        message = _signal_exact_target_message_for_pos(cfg, target)
+        if not message:
+            continue
+        action = corrected.setdefault(int(aid), {"action": int(SyncOrSinkEnv.ACTION_STAY)})
+        action["message_tokens"] = list(message)
+        broadcasters.append(int(aid))
+    return corrected, broadcasters
+
+
+def _apply_signal_initial_exact_message_copy_assist(
+    cfg: RecurrentConfig,
+    obs: dict | None,
+    actions: dict[int, dict],
+    *,
+    current_step: int,
+) -> dict[int, dict]:
+    if (
+        not bool(getattr(cfg, "eval_signal_initial_exact_message_copy_assist", False))
+        or getattr(cfg, "scenario", None) != "signal_hunt"
+        or not cfg.comm
+        or int(current_step) != 0
+        or not isinstance(obs, dict)
+    ):
+        return actions
+    corrected = {int(aid): dict(action) for aid, action in actions.items()}
+    for raw_aid, obs_agent in obs.items():
+        if not isinstance(obs_agent, dict):
+            continue
+        try:
+            aid = int(raw_aid)
+        except (TypeError, ValueError):
+            continue
+        action = corrected.get(aid)
+        if not isinstance(action, dict) or not action.get("message_tokens"):
+            continue
+        target = _signal_initial_exact_target_from_observation(cfg, obs_agent)
+        message = _signal_exact_target_message_for_pos(cfg, target)
+        if message:
+            action["message_tokens"] = list(message)
+    return corrected
+
+
+def _signal_constraint_message_from_observation(
+    cfg: RecurrentConfig,
+    obs_agent: dict,
+) -> list[int]:
+    if (
+        getattr(cfg, "scenario", None) != "signal_hunt"
+        or not cfg.comm
+        or int(cfg.comm_token_limit) <= 0
+    ):
+        return []
+    own_segments, _message_segments = _signal_segments_from_observation(obs_agent)
+    tokens: list[int] = []
+    seen: set[tuple[int, ...]] = set()
+    for segment in own_segments:
+        if not segment or int(segment[0]) not in {21, 22, 23, 24, 25}:
+            continue
+        key = tuple(int(token) for token in segment)
+        if key in seen:
+            continue
+        if len(tokens) + len(key) > int(cfg.comm_token_limit):
+            continue
+        tokens.extend(key)
+        seen.add(key)
+    vocab = int(cfg.comm_vocab_size)
+    if vocab > 0 and any(int(token) < 0 or int(token) >= vocab for token in tokens):
+        return []
+    return [int(token) for token in tokens[: int(cfg.comm_token_limit)]]
+
+
+def _apply_signal_constraint_message_copy_assist(
+    cfg: RecurrentConfig,
+    obs: dict | None,
+    actions: dict[int, dict],
+) -> dict[int, dict]:
+    if (
+        not bool(getattr(cfg, "eval_signal_constraint_message_copy_assist", False))
+        or getattr(cfg, "scenario", None) != "signal_hunt"
+        or not cfg.comm
+        or not isinstance(obs, dict)
+    ):
+        return actions
+    corrected = {int(aid): dict(action) for aid, action in actions.items()}
+    for raw_aid, obs_agent in obs.items():
+        if not isinstance(obs_agent, dict):
+            continue
+        try:
+            aid = int(raw_aid)
+        except (TypeError, ValueError):
+            continue
+        action = corrected.get(aid)
+        if not isinstance(action, dict) or not action.get("message_tokens"):
+            continue
+        message = _signal_constraint_message_from_observation(cfg, obs_agent)
+        if message:
+            action["message_tokens"] = list(message)
+    return corrected
 
 
 def _signal_target_scan_broadcaster_agents(
@@ -6512,6 +7101,34 @@ def _apply_signal_redundant_target_wait_overrides(
         action.setdefault("message_tokens", [])
         label_agents.append(int(aid))
     return corrected, label_agents
+
+
+def _apply_signal_initial_message_weight(
+    weights: np.ndarray,
+    *,
+    cfg: RecurrentConfig,
+    actions: dict[int, dict],
+    current_step: int,
+) -> np.ndarray:
+    if (
+        getattr(cfg, "scenario", None) != "signal_hunt"
+        or int(current_step) != 0
+        or float(getattr(cfg, "bc_signal_initial_message_weight", 1.0)) <= 1.0
+        or not cfg.comm
+    ):
+        return weights
+    adjusted = np.asarray(weights, dtype=np.float32).copy()
+    message_weight = float(cfg.bc_signal_initial_message_weight)
+    for raw_aid, action in actions.items():
+        try:
+            aid = int(raw_aid)
+        except (TypeError, ValueError):
+            continue
+        if aid < 0 or aid >= adjusted.shape[0]:
+            continue
+        if action.get("message_tokens"):
+            adjusted[aid] = max(float(adjusted[aid]), message_weight)
+    return adjusted
 
 
 def _signal_redundant_target_wait_action_label_mask(
@@ -6597,6 +7214,7 @@ def _new_episode_sequence() -> dict:
         "msg_tokens": [],
         "msg_lens": [],
         "step_weights": [],
+        "signal_initial_message_mask": [],
         "signal_rejected_target_mask": [],
         "signal_bad_redundant_target_mask": [],
         "signal_target_scan_action_mask": [],
@@ -6623,6 +7241,8 @@ def _new_episode_sequence() -> dict:
         "signal_decoy_scan_action_id": [],
         "signal_rejected_target_drift_action_mask": [],
         "signal_rejected_target_drift_action_id": [],
+        "signal_visible_clue_action_mask": [],
+        "signal_visible_clue_action_id": [],
         "signal_frontier_exploration_action_mask": [],
         "signal_frontier_exploration_action_id": [],
         "pipeline_pickup_action_mask": [],
@@ -6757,12 +7377,23 @@ def _signal_target_decision_label_mask(
 
         scan_kind = int(target_scan_kind_id[int(aid)])
         opportunity_kind = int(target_opportunity_kind_id[int(aid)])
+        opportunity_positive = (
+            float(target_opportunity_mask[int(aid)]) > 0.0
+            and opportunity_kind in positive_kinds
+        )
+        if (
+            bool(getattr(cfg, "bc_signal_ambiguous_target_decision_negatives", False))
+            and int(env.map_size)
+            >= int(getattr(cfg, "bc_signal_ambiguous_target_decision_min_map_size", 16))
+            and not opportunity_positive
+            and _signal_center_ambiguous_target_scan_candidate(obs_agent, cfg)
+        ):
+            mask[int(aid)] = 1.0
+            labels[int(aid)] = 0.0
+            continue
         positive = (
             (float(target_scan_mask[int(aid)]) > 0.0 and scan_kind in positive_kinds)
-            or (
-                float(target_opportunity_mask[int(aid)]) > 0.0
-                and opportunity_kind in positive_kinds
-            )
+            or opportunity_positive
         )
         if positive:
             mask[int(aid)] = 1.0
@@ -6792,8 +7423,92 @@ def _signal_unique_known_target(obs_agent: dict, cfg: RecurrentConfig, observed_
     exact_targets = _signal_exact_targets_from_observation(obs_agent, observed_map_size)
     if len(exact_targets) == 1:
         return True
-    inferred_targets = set(_signal_inferred_constraint_targets(obs_agent, observed_map_size))
+    constraint_state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    inferred_targets = set(_signal_inferred_constraint_targets(obs_agent, observed_map_size, constraint_state))
     return len(inferred_targets) == 1
+
+
+def _signal_visible_clue_action_label_mask(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    cfg: RecurrentConfig,
+) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    action_ids = np.full((env.num_agents,), -1, dtype=np.int64)
+    if (
+        getattr(env.config, "scenario", None) != "signal_hunt"
+        or int(env.map_size) < int(getattr(cfg, "bc_signal_visible_clue_min_map_size", 16))
+    ):
+        return mask, action_ids
+
+    claimed_raw = env.scenario_state.data.get("clue_claimed", set()) if env.scenario_state is not None else set()
+    claimed_clues = {(int(x), int(y)) for x, y in claimed_raw}
+    move_or_interact = {
+        int(SyncOrSinkEnv.ACTION_UP),
+        int(SyncOrSinkEnv.ACTION_DOWN),
+        int(SyncOrSinkEnv.ACTION_LEFT),
+        int(SyncOrSinkEnv.ACTION_RIGHT),
+        int(SyncOrSinkEnv.ACTION_INTERACT),
+    }
+    for aid in range(env.num_agents):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        pos_arr = np.asarray(
+            obs_agent.get("self_pos", env.agent_positions[aid]),
+            dtype=np.int64,
+        ).reshape(-1)
+        if pos_arr.size < 2:
+            continue
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        if _signal_unique_known_target(obs_agent, cfg, observed_map_size):
+            continue
+        if _signal_center_visible_target_tile(obs_agent, cfg):
+            continue
+        pos = (int(pos_arr[0]), int(pos_arr[1]))
+        clues = [
+            clue
+            for clue in _visible_signal_clues(obs_agent, pos_arr, observed_map_size)
+            if tuple(clue) not in claimed_clues
+        ]
+        if not clues:
+            continue
+        clue = min(
+            clues,
+            key=lambda xy: (
+                abs(int(xy[0]) - pos[0]) + abs(int(xy[1]) - pos[1]),
+                int(xy[1]),
+                int(xy[0]),
+            ),
+        )
+        action_id = _signal_navigation_action_from_obs(obs_agent, clue)
+        if action_id is None or int(action_id) not in move_or_interact:
+            continue
+        if not _action_allowed_from_obs(obs_agent, int(action_id)):
+            continue
+        mask[int(aid)] = 1.0
+        action_ids[int(aid)] = int(action_id)
+    return mask, action_ids
+
+
+def _signal_visible_clue_miss_agents(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    model_actions: dict[int, dict],
+    cfg: RecurrentConfig,
+) -> list[int]:
+    mask, action_ids = _signal_visible_clue_action_label_mask(env, obs, cfg)
+    missed: list[int] = []
+    for aid in range(env.num_agents):
+        if float(mask[int(aid)]) <= 0.0:
+            continue
+        expected = int(action_ids[int(aid)])
+        if expected < 0:
+            continue
+        actual = _action_id_from_actions(model_actions, int(aid), default=-1)
+        if int(actual) != expected:
+            missed.append(int(aid))
+    return missed
 
 
 def _signal_nearest_frontier_cell(
@@ -6826,7 +7541,7 @@ def _signal_nearest_frontier_cell(
             score = (abs(x - sx) + abs(y - sy), y, x)
             if best_score is None or score < best_score:
                 best_score = score
-            best = (x, y)
+                best = (x, y)
     return best
 
 
@@ -6859,6 +7574,95 @@ def _pipeline_use_coordinated_frontier(observed_map_size: int, num_agents: int) 
     return int(observed_map_size) >= 16 and int(num_agents) > 1
 
 
+def _signal_frontier_anchors(
+    width: int,
+    height: int,
+    num_agents: int,
+) -> tuple[tuple[int, int], ...]:
+    max_x, max_y = max(0, int(width) - 1), max(0, int(height) - 1)
+    center_x, center_y = max_x // 2, max_y // 2
+    if int(num_agents) <= 1:
+        return ()
+    if int(num_agents) == 2:
+        return ((0, center_y), (max_x, center_y))
+    if int(num_agents) == 3:
+        return ((center_x, 0), (max_x, max_y), (0, max_y))
+    return (
+        (center_x, 0),
+        (max_x, center_y),
+        (center_x, max_y),
+        (0, center_y),
+        (0, 0),
+        (max_x, 0),
+        (max_x, max_y),
+        (0, max_y),
+    )
+
+
+def _signal_frontier_cell_score(
+    cell: tuple[int, int],
+    pos: tuple[int, int],
+    *,
+    agent_id: int | None,
+    num_agents: int,
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int, int]:
+    x, y = int(cell[0]), int(cell[1])
+    sx, sy = int(pos[0]), int(pos[1])
+    travel_dist = abs(x - sx) + abs(y - sy)
+    anchors = _signal_frontier_anchors(width, height, num_agents)
+    if agent_id is None or not anchors:
+        return (0, 0, travel_dist, y, x)
+
+    anchor = anchors[int(agent_id) % len(anchors)]
+    anchor_dx, anchor_dy = int(anchor[0]) - sx, int(anchor[1]) - sy
+    cell_dx, cell_dy = x - sx, y - sy
+    primary_horizontal = abs(anchor_dx) >= abs(anchor_dy)
+    primary_rank = 2
+    if primary_horizontal and anchor_dx != 0 and cell_dx != 0 and (cell_dx > 0) == (anchor_dx > 0):
+        primary_rank = 0
+    elif (
+        not primary_horizontal
+        and anchor_dy != 0
+        and cell_dy != 0
+        and (cell_dy > 0) == (anchor_dy > 0)
+    ):
+        primary_rank = 0
+    else:
+        current_anchor_dist = abs(anchor_dx) + abs(anchor_dy)
+        next_anchor_dist = abs(int(anchor[0]) - x) + abs(int(anchor[1]) - y)
+        if next_anchor_dist < current_anchor_dist:
+            primary_rank = 1
+    anchor_dist = abs(x - int(anchor[0])) + abs(y - int(anchor[1]))
+    return (primary_rank, anchor_dist, travel_dist, y, x)
+
+
+def _signal_constraint_frontier_targets(
+    obs_agent: dict,
+    cfg: RecurrentConfig,
+    observed_map_size: int,
+) -> tuple[tuple[int, int], ...]:
+    if not bool(getattr(cfg, "bc_signal_constraint_frontier_bias", False)):
+        return ()
+    state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    if state.exact_targets:
+        return ()
+    return tuple(_signal_inferred_constraint_targets(obs_agent, observed_map_size, state))
+
+
+def _signal_constraint_frontier_score(
+    cell: tuple[int, int],
+    constraint_targets: Sequence[tuple[int, int]],
+) -> tuple[int, int]:
+    if not constraint_targets:
+        return (0, 0)
+    x, y = int(cell[0]), int(cell[1])
+    best_dist = min(abs(x - int(tx)) + abs(y - int(ty)) for tx, ty in constraint_targets)
+    on_candidate = 0 if any(x == int(tx) and y == int(ty) for tx, ty in constraint_targets) else 1
+    return (best_dist, on_candidate)
+
+
 def _pipeline_frontier_cell_score(
     cell: tuple[int, int],
     pos: tuple[int, int],
@@ -6877,6 +7681,54 @@ def _pipeline_frontier_cell_score(
     anchor = anchors[int(agent_id) % len(anchors)]
     anchor_dist = abs(x - anchor[0]) + abs(y - anchor[1])
     return (0, anchor_dist, travel_dist, y, x)
+
+
+def _signal_assigned_frontier_cell(
+    explored_mask: np.ndarray,
+    pos: tuple[int, int],
+    *,
+    agent_id: int | None,
+    num_agents: int,
+    constraint_targets: Sequence[tuple[int, int]] = (),
+    exclude_self: bool = True,
+) -> tuple[int, int] | None:
+    mask = np.asarray(explored_mask).astype(bool)
+    if mask.ndim != 2 or mask.size == 0:
+        return None
+    sx, sy = int(pos[0]), int(pos[1])
+    height, width = int(mask.shape[0]), int(mask.shape[1])
+    best: tuple[int, int] | None = None
+    best_score: tuple[int, ...] | None = None
+    for y in range(height):
+        for x in range(width):
+            if not mask[y, x]:
+                continue
+            if exclude_self and (x, y) == (sx, sy):
+                continue
+            is_frontier = False
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < width and 0 <= ny < height and not mask[ny, nx]:
+                    is_frontier = True
+                    break
+            if not is_frontier:
+                continue
+            base_score = _signal_frontier_cell_score(
+                (x, y),
+                (sx, sy),
+                agent_id=agent_id,
+                num_agents=num_agents,
+                width=width,
+                height=height,
+            )
+            if constraint_targets:
+                score = (*_signal_constraint_frontier_score((x, y), constraint_targets), *base_score)
+            else:
+                score = base_score
+            if best_score is None or score < best_score:
+                best_score = score
+                best = (x, y)
+    return best
 
 
 def _pipeline_assigned_frontier_cell(
@@ -6944,6 +7796,215 @@ def _pipeline_greedy_frontier_step_from_obs(
     return None
 
 
+def _signal_frontier_memory_adjusted_navigation_action(
+    obs_agent: dict,
+    target: tuple[int, int],
+    action_id: int,
+    scan_state: Mapping[str, Any] | None,
+    agent_id: int | None,
+) -> int:
+    if agent_id is None or not isinstance(scan_state, MutableMapping):
+        return int(action_id)
+    pos = _signal_xy(obs_agent.get("self_pos"))
+    if pos is None:
+        return int(action_id)
+    target = (int(target[0]), int(target[1]))
+    nav_memory = scan_state.get("frontier_navigation")
+    if not isinstance(nav_memory, MutableMapping):
+        nav_memory = {}
+        scan_state["frontier_navigation"] = nav_memory
+    row = nav_memory.get(int(agent_id), nav_memory.get(str(int(agent_id))))
+    adjusted = int(action_id)
+    dest = _signal_navigation_destination(pos, int(action_id))
+    previous_pos = None
+    if dest is not None and isinstance(row, Mapping):
+        previous_target = _signal_xy(row.get("target"))
+        row_previous_pos = _signal_xy(row.get("pos"))
+        if previous_target == target and row_previous_pos is not None:
+            previous_pos = row_previous_pos
+    if previous_pos is None:
+        prev_positions = scan_state.get("prev_positions")
+        if isinstance(prev_positions, Mapping):
+            previous_pos = _signal_xy(prev_positions.get(int(agent_id), prev_positions.get(str(int(agent_id)))))
+    if dest is not None and previous_pos == dest and dest != target:
+        alternative = _signal_navigation_action_from_obs(
+            obs_agent,
+            target,
+            blocked_actions={int(action_id)},
+        )
+        move_actions = {
+            int(SyncOrSinkEnv.ACTION_UP),
+            int(SyncOrSinkEnv.ACTION_DOWN),
+            int(SyncOrSinkEnv.ACTION_LEFT),
+            int(SyncOrSinkEnv.ACTION_RIGHT),
+        }
+        if alternative is not None and int(alternative) in move_actions:
+            adjusted = int(alternative)
+    nav_memory[int(agent_id)] = {
+        "target": [int(target[0]), int(target[1])],
+        "pos": [int(pos[0]), int(pos[1])],
+        "action": int(adjusted),
+        "step": int(scan_state.get("step", 0)),
+    }
+    return int(adjusted)
+
+
+def _signal_frontier_exploration_action_from_obs(
+    cfg: RecurrentConfig,
+    obs_agent: dict,
+    *,
+    agent_id: int | None = None,
+    num_agents: int | None = None,
+    true_target: tuple[int, int] | None = None,
+    scan_state: Mapping[str, Any] | None = None,
+    require_eval_assist: bool = False,
+) -> int | None:
+    if (
+        cfg.scenario != "signal_hunt"
+        or not bool(getattr(cfg, "obs_exploration_memory", False))
+        or not isinstance(obs_agent, dict)
+    ):
+        return None
+    if require_eval_assist and not bool(getattr(cfg, "eval_signal_frontier_exploration_assist", False)):
+        return None
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    if int(observed_map_size) < int(getattr(cfg, "bc_signal_frontier_exploration_min_map_size", 16)):
+        return None
+    if _signal_visible_search_goal(obs_agent):
+        return None
+    if _signal_unique_known_target(obs_agent, cfg, observed_map_size):
+        return None
+    if true_target is not None and _signal_target_decoding_candidate(
+        obs_agent,
+        cfg,
+        (int(true_target[0]), int(true_target[1])),
+    ):
+        return None
+
+    explored = obs_agent.get("explored_mask")
+    if explored is None:
+        return None
+    explored_mask = np.asarray(explored).astype(bool)
+    if explored_mask.ndim != 2 or explored_mask.size == 0:
+        return None
+    pos = _signal_xy(obs_agent.get("self_pos"))
+    if pos is None:
+        return None
+    sx, sy = int(pos[0]), int(pos[1])
+    height, width = int(explored_mask.shape[0]), int(explored_mask.shape[1])
+    if not (0 <= sx < width and 0 <= sy < height):
+        return None
+    agent_count = int(num_agents if num_agents is not None else getattr(cfg, "agents", 1))
+    use_coordinated_frontier = _pipeline_use_coordinated_frontier(
+        observed_map_size,
+        agent_count,
+    )
+    constraint_targets = _signal_constraint_frontier_targets(
+        obs_agent,
+        cfg,
+        observed_map_size,
+    )
+    move_actions = {
+        int(SyncOrSinkEnv.ACTION_UP),
+        int(SyncOrSinkEnv.ACTION_DOWN),
+        int(SyncOrSinkEnv.ACTION_LEFT),
+        int(SyncOrSinkEnv.ACTION_RIGHT),
+    }
+
+    action_id: int | None = None
+    if use_coordinated_frontier:
+        adjacent_candidates: list[tuple[tuple[int, int, int, int, int], int]] = []
+        for candidate_action, dx, dy in _SIGNAL_NAV_ACTION_DELTAS:
+            nx, ny = sx + int(dx), sy + int(dy)
+            if not (0 <= nx < width and 0 <= ny < height):
+                continue
+            if explored_mask[ny, nx]:
+                continue
+            if _action_allowed_from_obs(obs_agent, int(candidate_action)):
+                base_score = _signal_frontier_cell_score(
+                    (nx, ny),
+                    (sx, sy),
+                    agent_id=agent_id,
+                    num_agents=agent_count,
+                    width=width,
+                    height=height,
+                )
+                if constraint_targets:
+                    score = (
+                        *_signal_constraint_frontier_score((nx, ny), constraint_targets),
+                        *base_score,
+                    )
+                else:
+                    score = base_score
+                adjacent_candidates.append((
+                    score,
+                    int(candidate_action),
+                ))
+        if adjacent_candidates:
+            action_id = sorted(adjacent_candidates)[0][1]
+    else:
+        for candidate_action, dx, dy in _SIGNAL_NAV_ACTION_DELTAS:
+            nx, ny = sx + int(dx), sy + int(dy)
+            if not (0 <= nx < width and 0 <= ny < height):
+                continue
+            if explored_mask[ny, nx]:
+                continue
+            if _action_allowed_from_obs(obs_agent, int(candidate_action)):
+                action_id = int(candidate_action)
+                break
+
+    frontier: tuple[int, int] | None = None
+    if action_id is None:
+        if use_coordinated_frontier and constraint_targets:
+            frontier = _signal_assigned_frontier_cell(
+                explored_mask,
+                (sx, sy),
+                agent_id=agent_id,
+                num_agents=agent_count,
+                constraint_targets=constraint_targets,
+                exclude_self=True,
+            )
+        elif use_coordinated_frontier:
+            frontier = _pipeline_assigned_frontier_cell(
+                explored_mask,
+                (sx, sy),
+                agent_id=agent_id,
+                num_agents=agent_count,
+                exclude_self=True,
+            )
+        else:
+            frontier = _signal_nearest_frontier_cell(
+                explored_mask,
+                (sx, sy),
+                exclude_self=True,
+            )
+        if frontier is None:
+            return None
+        action_id = _signal_navigation_action_from_obs(obs_agent, frontier)
+        if use_coordinated_frontier and (action_id is None or int(action_id) not in move_actions):
+            action_id = _pipeline_greedy_frontier_step_from_obs(obs_agent, frontier)
+    else:
+        dest = _signal_navigation_destination((sx, sy), int(action_id))
+        if dest is not None:
+            frontier = dest
+
+    if action_id is None or int(action_id) not in move_actions:
+        return None
+    if not _action_allowed_from_obs(obs_agent, int(action_id)):
+        return None
+    if frontier is not None:
+        action_id = _signal_frontier_memory_adjusted_navigation_action(
+            obs_agent,
+            frontier,
+            int(action_id),
+            scan_state,
+            agent_id,
+        )
+    if int(action_id) not in move_actions or not _action_allowed_from_obs(obs_agent, int(action_id)):
+        return None
+    return int(action_id)
+
+
 def _signal_frontier_exploration_action_label_mask(
     env: SyncOrSinkEnv,
     obs: dict,
@@ -6967,60 +8028,69 @@ def _signal_frontier_exploration_action_label_mask(
         obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
         if not isinstance(obs_agent, dict):
             continue
-        if _signal_visible_search_goal(obs_agent):
-            continue
-        explored = obs_agent.get("explored_mask")
-        if explored is None:
-            continue
-        explored_mask = np.asarray(explored).astype(bool)
-        if explored_mask.ndim != 2 or explored_mask.size == 0:
-            continue
-        pos = _signal_xy(obs_agent.get("self_pos"))
-        if pos is None:
-            continue
-        sx, sy = int(pos[0]), int(pos[1])
-        height, width = int(explored_mask.shape[0]), int(explored_mask.shape[1])
-        if not (0 <= sx < width and 0 <= sy < height):
-            continue
-
-        observed_map_size = _observed_map_size(obs_agent, cfg)
-        if _signal_unique_known_target(obs_agent, cfg, observed_map_size):
-            continue
-        if true_target is not None and _signal_target_decoding_candidate(
-            obs_agent,
+        action_id = _signal_frontier_exploration_action_from_obs(
             cfg,
-            true_target,
-        ):
-            continue
-
-        action_id: int | None = None
-        for candidate_action, dx, dy in _SIGNAL_NAV_ACTION_DELTAS:
-            nx, ny = sx + int(dx), sy + int(dy)
-            if not (0 <= nx < width and 0 <= ny < height):
-                continue
-            if explored_mask[ny, nx]:
-                continue
-            if _action_allowed_from_obs(obs_agent, int(candidate_action)):
-                action_id = int(candidate_action)
-                break
+            obs_agent,
+            agent_id=int(aid),
+            num_agents=int(env.num_agents),
+            true_target=true_target,
+        )
         if action_id is None:
-            frontier = _signal_nearest_frontier_cell(explored_mask, (sx, sy), exclude_self=True)
-            if frontier is None:
-                continue
-            action_id = _signal_navigation_action_from_obs(obs_agent, frontier)
-
-        if action_id is None or int(action_id) not in {
-            int(SyncOrSinkEnv.ACTION_UP),
-            int(SyncOrSinkEnv.ACTION_DOWN),
-            int(SyncOrSinkEnv.ACTION_LEFT),
-            int(SyncOrSinkEnv.ACTION_RIGHT),
-        }:
-            continue
-        if not _action_allowed_from_obs(obs_agent, int(action_id)):
             continue
         mask[int(aid)] = 1.0
         action_ids[int(aid)] = int(action_id)
     return mask, action_ids
+
+
+def _apply_signal_frontier_exploration_assist(
+    cfg: RecurrentConfig,
+    obs: dict,
+    acts: torch.Tensor,
+    scan_state: Mapping[str, Any] | None = None,
+) -> torch.Tensor:
+    if (
+        cfg.scenario != "signal_hunt"
+        or not bool(getattr(cfg, "eval_signal_frontier_exploration_assist", False))
+        or not isinstance(obs, dict)
+    ):
+        return acts
+    corrected = acts.clone()
+    for aid in range(int(acts.shape[0])):
+        obs_agent = obs.get(aid, obs.get(str(aid)))
+        if not isinstance(obs_agent, dict):
+            continue
+        action_id = _signal_frontier_exploration_action_from_obs(
+            cfg,
+            obs_agent,
+            agent_id=int(aid),
+            num_agents=int(acts.shape[0]),
+            scan_state=scan_state,
+            require_eval_assist=True,
+        )
+        if action_id is None:
+            continue
+        corrected[aid] = int(action_id)
+    return corrected
+
+
+def _signal_frontier_exploration_miss_agents(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    model_actions: dict[int, dict],
+    cfg: RecurrentConfig,
+) -> list[int]:
+    mask, action_ids = _signal_frontier_exploration_action_label_mask(env, obs, cfg)
+    missed: list[int] = []
+    for aid in range(env.num_agents):
+        if float(mask[int(aid)]) <= 0.0:
+            continue
+        expected = int(action_ids[int(aid)])
+        if expected < 0:
+            continue
+        actual = _action_id_from_actions(model_actions, int(aid), default=-1)
+        if int(actual) != expected:
+            missed.append(int(aid))
+    return missed
 
 
 def _pipeline_frontier_exploration_action_label_mask(
@@ -7152,6 +8222,7 @@ def _append_labeled_step(
     feedback: np.ndarray | None = None,
     step_weight: float | np.ndarray = 1.0,
     pipeline_state: Mapping[str, Any] | None = None,
+    scan_state: Mapping[str, Any] | None = None,
 ) -> None:
     weights = np.asarray(step_weight, dtype=np.float32)
     if weights.ndim == 0:
@@ -7167,6 +8238,7 @@ def _append_labeled_step(
         actions=actions,
         feedback=feedback,
     )
+    step_idx = len(ep_data["actions"]) // max(1, int(env.num_agents))
     rejected_target_mask = _clear_true_target_rejected_mask(
         env,
         _signal_rejected_target_mask(obs, int(env.map_size), env.num_agents),
@@ -7188,6 +8260,7 @@ def _append_labeled_step(
         env,
         obs,
         cfg,
+        scan_state=scan_state,
     )
     sync_response_action_mask, sync_response_action_id = _signal_sync_response_action_label_mask(
         env,
@@ -7213,6 +8286,11 @@ def _append_labeled_step(
         target_opportunity_kind_id=target_opportunity_kind_id,
     )
     target_aux_mask, target_aux_xy = _signal_target_aux_label(env)
+    visible_clue_action_mask, visible_clue_action_id = _signal_visible_clue_action_label_mask(
+        env,
+        obs,
+        cfg,
+    )
     frontier_exploration_action_mask, frontier_exploration_action_id = (
         _signal_frontier_exploration_action_label_mask(env, obs, cfg)
     )
@@ -7314,6 +8392,7 @@ def _append_labeled_step(
                 cfg,
                 fb,
                 pipeline_state=pipeline_state,
+                agent_id=aid,
             )
         )
         ep_data["actions"].append(int(actions[aid]["action"]))
@@ -7325,6 +8404,14 @@ def _append_labeled_step(
         ep_data["msg_tokens"].append(msg_tokens)
         ep_data["msg_lens"].append(msg_len)
         ep_data["step_weights"].append(float(weights[aid]))
+        is_signal_initial_message = (
+            getattr(env.config, "scenario", None) == "signal_hunt"
+            and step_idx == 0
+            and msg_len > 0
+        )
+        ep_data["signal_initial_message_mask"].append(
+            1.0 if is_signal_initial_message else 0.0
+        )
         ep_data["signal_rejected_target_mask"].append(float(rejected_target_mask[aid]))
         ep_data["signal_bad_redundant_target_mask"].append(float(bad_redundant_target_mask[aid]))
         ep_data["signal_target_scan_action_mask"].append(float(target_scan_mask[aid]))
@@ -7351,6 +8438,12 @@ def _append_labeled_step(
         ep_data["signal_decoy_scan_action_id"].append(-1)
         ep_data["signal_rejected_target_drift_action_mask"].append(0.0)
         ep_data["signal_rejected_target_drift_action_id"].append(-1)
+        ep_data["signal_visible_clue_action_mask"].append(
+            float(visible_clue_action_mask[aid])
+        )
+        ep_data["signal_visible_clue_action_id"].append(
+            int(visible_clue_action_id[aid])
+        )
         ep_data["signal_frontier_exploration_action_mask"].append(
             float(frontier_exploration_action_mask[aid])
         )
@@ -7452,6 +8545,10 @@ def _finalize_episode_sequence(
         "step_weights": np.array(ep_data["step_weights"], dtype=np.float32).reshape(
             -1, env.num_agents
         ),
+        "signal_initial_message_mask": np.array(
+            ep_data.get("signal_initial_message_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
         "signal_rejected_target_mask": np.array(
             ep_data.get("signal_rejected_target_mask", []),
             dtype=np.float32,
@@ -7559,6 +8656,20 @@ def _finalize_episode_sequence(
         ).reshape(-1, env.num_agents),
         "signal_rejected_target_drift_action_id": np.array(
             ep_data.get("signal_rejected_target_drift_action_id", []),
+            dtype=np.int64,
+        ).reshape(-1, env.num_agents),
+        "signal_visible_clue_action_mask": np.array(
+            ep_data.get(
+                "signal_visible_clue_action_mask",
+                [0.0 for _ in ep_data["actions"]],
+            ),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_visible_clue_action_id": np.array(
+            ep_data.get(
+                "signal_visible_clue_action_id",
+                [-1 for _ in ep_data["actions"]],
+            ),
             dtype=np.int64,
         ).reshape(-1, env.num_agents),
         "signal_frontier_exploration_action_mask": np.array(
@@ -7939,6 +9050,15 @@ def _slice_recurrent_episode(episode: dict, start: int, end: int, **metadata) ->
         sliced["step_weights"] = episode["step_weights"][start:end].copy()
     else:
         sliced["step_weights"] = np.ones_like(episode["actions"][start:end], dtype=np.float32)
+    if "signal_initial_message_mask" in episode:
+        sliced["signal_initial_message_mask"] = episode["signal_initial_message_mask"][
+            start:end
+        ].copy()
+    else:
+        sliced["signal_initial_message_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
     if "signal_rejected_target_mask" in episode:
         sliced["signal_rejected_target_mask"] = episode["signal_rejected_target_mask"][start:end].copy()
     else:
@@ -8139,6 +9259,25 @@ def _slice_recurrent_episode(episode: dict, start: int, end: int, **metadata) ->
         ][start:end].copy()
     else:
         sliced["signal_rejected_target_drift_action_id"] = np.full_like(
+            episode["actions"][start:end],
+            -1,
+            dtype=np.int64,
+        )
+    if "signal_visible_clue_action_mask" in episode:
+        sliced["signal_visible_clue_action_mask"] = episode[
+            "signal_visible_clue_action_mask"
+        ][start:end].copy()
+    else:
+        sliced["signal_visible_clue_action_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_visible_clue_action_id" in episode:
+        sliced["signal_visible_clue_action_id"] = episode[
+            "signal_visible_clue_action_id"
+        ][start:end].copy()
+    else:
+        sliced["signal_visible_clue_action_id"] = np.full_like(
             episode["actions"][start:end],
             -1,
             dtype=np.int64,
@@ -9282,9 +10421,20 @@ def collect_episode_demos(cfg: RecurrentConfig):
         prev_actions: dict[int, int] = {}
         prev_msg_lens: dict[int, int] = {}
         prev_info: dict = {}
+        scan_state = _initial_signal_scan_state(episode_cfg)
         pipeline_state = _initial_pipeline_state(episode_cfg)
+        has_policy_step = False
+        prev_positions: dict[int, tuple[int, int]] = {}
         positive_records: list[dict] = []
         while not (done or truncated):
+            has_policy_step = _update_signal_scan_state_from_info(
+                episode_cfg,
+                scan_state,
+                prev_info,
+                env.num_agents,
+                prev_positions,
+                has_policy_step=has_policy_step,
+            )
             pipeline_state = _update_pipeline_state_from_info(
                 episode_cfg,
                 pipeline_state,
@@ -9301,6 +10451,12 @@ def collect_episode_demos(cfg: RecurrentConfig):
                 obs=obs,
             )
             actions = oracle_fn(obs, info, {"step": step})
+            actions, _initial_broadcast_label_agents = _apply_signal_initial_target_broadcast_overrides(
+                episode_cfg,
+                obs,
+                actions,
+                current_step=step,
+            )
             actions, _broadcast_label_agents = _apply_signal_target_scan_broadcast_overrides(
                 episode_cfg,
                 env,
@@ -9314,6 +10470,16 @@ def collect_episode_demos(cfg: RecurrentConfig):
                 actions,
                 feedback,
                 obs=obs,
+                scan_state=scan_state,
+            )
+            actions, rendezvous_label_agents, _rendezvous_wait_agents = (
+                _apply_signal_target_rendezvous_overrides(
+                    episode_cfg,
+                    env,
+                    obs,
+                    actions,
+                    scan_state=scan_state,
+                )
             )
             if episode_cfg.dagger_redundant_target_wait_labels:
                 actions, _redundant_wait_label_agents = _apply_signal_redundant_target_wait_overrides(
@@ -9327,6 +10493,12 @@ def collect_episode_demos(cfg: RecurrentConfig):
                 pipeline_state=pipeline_state,
                 current_step=step,
             )
+            step_weights = _apply_signal_initial_message_weight(
+                np.ones((env.num_agents,), dtype=np.float32),
+                cfg=episode_cfg,
+                actions=actions,
+                current_step=step,
+            )
             _append_labeled_step(
                 ep_data,
                 obs,
@@ -9334,12 +10506,22 @@ def collect_episode_demos(cfg: RecurrentConfig):
                 env,
                 episode_cfg,
                 feedback=feedback,
+                step_weight=step_weights,
                 pipeline_state=pipeline_state,
+                scan_state=scan_state,
             )
             if "target_handoff" in positive_replay_events and handoff_label_agents:
                 for aid in handoff_label_agents:
                     positive_records.append({
                         "event": "target_handoff",
+                        "step": step,
+                        "agents": [aid],
+                        "kind": "positive",
+                    })
+            if "target_rendezvous" in positive_replay_events and rendezvous_label_agents:
+                for aid in rendezvous_label_agents:
+                    positive_records.append({
+                        "event": "target_rendezvous",
                         "step": step,
                         "agents": [aid],
                         "kind": "positive",
@@ -9370,6 +10552,7 @@ def collect_episode_demos(cfg: RecurrentConfig):
                         "agents": [aid],
                         "kind": "positive",
                     })
+            prev_positions = _signal_positions_from_obs(obs)
             obs, rewards, done, truncated, info = env.step(actions)
             event_names = _event_names_by_agent(info or {}, env.num_agents)
             event_updates, event_counts = _scale_latest_bc_event_action_weights(
@@ -10124,6 +11307,12 @@ def train_recurrent_bc(
         comm_label_positive_count = 0
         comm_true_len_sum = 0.0
         comm_pred_len_sum = 0.0
+        signal_initial_message_loss_sum = 0.0
+        signal_initial_message_loss_steps = 0
+        signal_initial_message_count = 0
+        signal_initial_message_exact_count = 0
+        signal_initial_message_token_correct = 0
+        signal_initial_message_token_total = 0
         rejected_target_loss_sum = 0.0
         rejected_target_loss_steps = 0
         rejected_target_action_loss_sum = 0.0
@@ -10166,6 +11355,11 @@ def train_recurrent_bc(
         target_pursuit_action_count = 0
         target_pursuit_pred_action_count = 0
         target_pursuit_action_prob_sum = 0.0
+        visible_clue_action_loss_sum = 0.0
+        visible_clue_action_loss_steps = 0
+        visible_clue_action_count = 0
+        visible_clue_pred_action_count = 0
+        visible_clue_action_prob_sum = 0.0
         sync_response_action_loss_sum = 0.0
         sync_response_action_loss_steps = 0
         sync_response_action_count = 0
@@ -10356,6 +11550,18 @@ def train_recurrent_bc(
                 step_weight_seq = torch.tensor(ep_data["step_weights"], dtype=torch.float32, device=device)
             else:
                 step_weight_seq = torch.ones_like(act_seq, dtype=torch.float32, device=device)
+            if "signal_initial_message_mask" in ep_data:
+                signal_initial_message_mask_seq = torch.tensor(
+                    ep_data["signal_initial_message_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                signal_initial_message_mask_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
             if "signal_rejected_target_mask" in ep_data:
                 rejected_target_seq = torch.tensor(
                     ep_data["signal_rejected_target_mask"],
@@ -10595,6 +11801,31 @@ def train_recurrent_bc(
                 )
             else:
                 rejected_target_drift_action_id_seq = torch.full_like(
+                    act_seq,
+                    -1,
+                    dtype=torch.long,
+                    device=device,
+                )
+            if "signal_visible_clue_action_mask" in ep_data:
+                visible_clue_action_mask_seq = torch.tensor(
+                    ep_data["signal_visible_clue_action_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                visible_clue_action_mask_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "signal_visible_clue_action_id" in ep_data:
+                visible_clue_action_id_seq = torch.tensor(
+                    ep_data["signal_visible_clue_action_id"],
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                visible_clue_action_id_seq = torch.full_like(
                     act_seq,
                     -1,
                     dtype=torch.long,
@@ -11322,6 +12553,36 @@ def train_recurrent_bc(
                             target_pursuit_action_prob_sum += float(
                                 action_probs.gather(1, target_action_ids.unsqueeze(1))
                                 .squeeze(1)[target_pursuit_bool]
+                                .sum()
+                                .item()
+                            )
+                    visible_clue_action_mask = visible_clue_action_mask_seq[t]
+                    visible_clue_action_id = visible_clue_action_id_seq[t]
+                    visible_clue_action_weight = float(cfg.bc_signal_visible_clue_action_weight)
+                    if visible_clue_action_weight > 0.0:
+                        visible_clue_loss = _signal_target_match_action_loss(
+                            logits,
+                            visible_clue_action_id,
+                            visible_clue_action_mask,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + visible_clue_action_weight * visible_clue_loss
+                        visible_clue_action_loss_sum += float(visible_clue_loss.item())
+                        visible_clue_action_loss_steps += 1
+                    with torch.no_grad():
+                        visible_clue_bool = visible_clue_action_mask > 0.0
+                        visible_clue_count = int(visible_clue_bool.sum().item())
+                        if visible_clue_count > 0:
+                            visible_clue_action_count += visible_clue_count
+                            clue_action_ids = visible_clue_action_id.clamp(0, logits.shape[-1] - 1)
+                            visible_clue_pred_action_count += int(
+                                (action_pred == clue_action_ids)[visible_clue_bool]
+                                .sum()
+                                .item()
+                            )
+                            visible_clue_action_prob_sum += float(
+                                action_probs.gather(1, clue_action_ids.unsqueeze(1))
+                                .squeeze(1)[visible_clue_bool]
                                 .sum()
                                 .item()
                             )
@@ -12083,6 +13344,69 @@ def train_recurrent_bc(
                                 pipeline_message_token_correct += int(
                                     ((pred_tokens == msg_seq[t]) & token_label_mask).sum().item()
                                 )
+                    signal_initial_message_mask = signal_initial_message_mask_seq[t]
+                    signal_initial_message_weight = float(
+                        cfg.bc_signal_initial_message_loss_weight
+                    )
+                    signal_initial_message_active = bool(
+                        (signal_initial_message_mask > 0.0).any().item()
+                    )
+                    if cfg.comm and signal_initial_message_weight > 0.0 and signal_initial_message_active:
+                        signal_initial_components = _recurrent_comm_loss_components(
+                            send_logits,
+                            token_logits,
+                            len_logits,
+                            msg_seq[t],
+                            msg_len_seq[t],
+                            send_pos_weight=send_pos_weight,
+                            sample_weight=sample_weight * signal_initial_message_mask,
+                            send_loss_weight=0.0,
+                            length_loss_weight=cfg.bc_comm_length_loss_weight,
+                            token_loss_weight=cfg.bc_comm_token_loss_weight,
+                            send_rate_penalty_weight=0.0,
+                            send_rate_target=-1.0,
+                        )
+                        signal_initial_message_loss = signal_initial_components["total"]
+                        loss = loss + signal_initial_message_weight * signal_initial_message_loss
+                        signal_initial_message_loss_sum += float(
+                            signal_initial_message_loss.item()
+                        )
+                        signal_initial_message_loss_steps += 1
+                    if cfg.comm:
+                        with torch.no_grad():
+                            signal_initial_message_bool = signal_initial_message_mask > 0.0
+                            signal_initial_count = int(signal_initial_message_bool.sum().item())
+                            if signal_initial_count > 0:
+                                signal_initial_message_count += signal_initial_count
+                                pred_send = torch.sigmoid(send_logits.squeeze(-1)) > float(
+                                    cfg.eval_send_threshold
+                                )
+                                pred_len = len_logits.argmax(dim=-1)
+                                pred_tokens = token_logits.argmax(dim=-1)
+                                true_lens = msg_len_seq[t]
+                                len_match = pred_len == true_lens
+                                token_limit = int(token_logits.shape[1])
+                                token_positions = torch.arange(
+                                    token_limit,
+                                    device=msg_len_seq.device,
+                                )[None, :]
+                                token_mask = token_positions < true_lens[:, None]
+                                token_match = (pred_tokens == msg_seq[t]) | ~token_mask
+                                exact = pred_send & len_match & token_match.all(dim=-1)
+                                signal_initial_message_exact_count += int(
+                                    exact[signal_initial_message_bool].sum().item()
+                                )
+                                token_label_mask = (
+                                    token_mask & signal_initial_message_bool[:, None]
+                                )
+                                signal_initial_message_token_total += int(
+                                    token_label_mask.sum().item()
+                                )
+                                signal_initial_message_token_correct += int(
+                                    ((pred_tokens == msg_seq[t]) & token_label_mask)
+                                    .sum()
+                                    .item()
+                                )
                     pipeline_send_gate_mask = pipeline_send_gate_mask_seq[t]
                     pipeline_send_gate_label = pipeline_send_gate_label_seq[t]
                     pipeline_send_gate_weight = float(cfg.bc_pipeline_send_gate_loss_weight)
@@ -12789,6 +14113,15 @@ def train_recurrent_bc(
         comm_mean_send_prob = comm_send_prob_sum / comm_agent_den if cfg.comm else 0.0
         comm_mean_true_len = comm_true_len_sum / comm_agent_den if cfg.comm else 0.0
         comm_mean_pred_len = comm_pred_len_sum / comm_agent_den if cfg.comm else 0.0
+        signal_initial_message_loss_mean = (
+            signal_initial_message_loss_sum / max(signal_initial_message_loss_steps, 1)
+        )
+        signal_initial_message_exact_rate = (
+            signal_initial_message_exact_count / max(signal_initial_message_count, 1)
+        )
+        signal_initial_message_token_acc = (
+            signal_initial_message_token_correct / max(signal_initial_message_token_total, 1)
+        )
         rejected_target_den = max(rejected_target_count, 1)
         rejected_target_pred_interact_rate = rejected_target_pred_interact_count / rejected_target_den
         rejected_target_mean_interact_prob = rejected_target_interact_prob_sum / rejected_target_den
@@ -12861,6 +14194,16 @@ def train_recurrent_bc(
         )
         target_pursuit_action_loss_mean = (
             target_pursuit_action_loss_sum / max(target_pursuit_action_loss_steps, 1)
+        )
+        visible_clue_action_den = max(visible_clue_action_count, 1)
+        visible_clue_pred_action_rate = (
+            visible_clue_pred_action_count / visible_clue_action_den
+        )
+        visible_clue_mean_action_prob = (
+            visible_clue_action_prob_sum / visible_clue_action_den
+        )
+        visible_clue_action_loss_mean = (
+            visible_clue_action_loss_sum / max(visible_clue_action_loss_steps, 1)
         )
         frontier_exploration_action_den = max(frontier_exploration_action_count, 1)
         frontier_exploration_pred_action_rate = (
@@ -13218,6 +14561,7 @@ def train_recurrent_bc(
             f"comm {avg_comm:.4f} | acc {acc:.3f} | "
             f"send {comm_send_label_rate:.3f}->{comm_pred_send_rate:.3f} | "
             f"len+ {comm_pred_positive_len_rate:.3f} | "
+            f"sig_init_msg {signal_initial_message_exact_rate:.3f}/{signal_initial_message_token_acc:.3f} | "
             f"rej_int {rejected_target_pred_interact_rate:.3f} | "
             f"rej_act_loss {rejected_target_action_loss_mean:.3f} | "
             f"bad_red_int {bad_redundant_target_pred_interact_rate:.3f} | "
@@ -13228,6 +14572,7 @@ def train_recurrent_bc(
             f"scan_dec {scan_decision_positive_rate:.3f}/{scan_decision_negative_rate:.3f} | "
             f"scan_gate {scan_gate_positive_rate:.3f}/{scan_gate_negative_rate:.3f} | "
             f"pursuit_act {target_pursuit_pred_action_rate:.3f} | "
+            f"clue_act {visible_clue_pred_action_rate:.3f} | "
             f"frontier_act {frontier_exploration_pred_action_rate:.3f} | "
             f"sync_act {sync_response_pred_action_rate:.3f} | "
             f"match_act {target_match_pred_action_rate:.3f} | "
@@ -13304,6 +14649,21 @@ def train_recurrent_bc(
                         cfg.bc_comm_send_rate_penalty_weight
                     ),
                     f"{log_prefix}/comm_send_rate_target": float(cfg.bc_comm_send_rate_target),
+                    f"{log_prefix}/signal_initial_message_count": int(
+                        signal_initial_message_count
+                    ),
+                    f"{log_prefix}/signal_initial_message_loss": float(
+                        signal_initial_message_loss_mean
+                    ),
+                    f"{log_prefix}/signal_initial_message_exact_rate": float(
+                        signal_initial_message_exact_rate
+                    ),
+                    f"{log_prefix}/signal_initial_message_token_acc": float(
+                        signal_initial_message_token_acc
+                    ),
+                    f"{log_prefix}/signal_initial_message_loss_weight": float(
+                        cfg.bc_signal_initial_message_loss_weight
+                    ),
                     f"{log_prefix}/signal_rejected_target_count": int(rejected_target_count),
                     f"{log_prefix}/signal_rejected_target_interact_loss": float(rejected_target_loss_mean),
                     f"{log_prefix}/signal_rejected_target_interact_action_loss": float(
@@ -13479,6 +14839,24 @@ def train_recurrent_bc(
                     ),
                     f"{log_prefix}/signal_target_pursuit_action_weight": float(
                         cfg.bc_signal_target_pursuit_action_weight
+                    ),
+                    f"{log_prefix}/signal_visible_clue_action_count": int(
+                        visible_clue_action_count
+                    ),
+                    f"{log_prefix}/signal_visible_clue_action_loss": float(
+                        visible_clue_action_loss_mean
+                    ),
+                    f"{log_prefix}/signal_visible_clue_pred_action_rate": float(
+                        visible_clue_pred_action_rate
+                    ),
+                    f"{log_prefix}/signal_visible_clue_mean_action_prob": float(
+                        visible_clue_mean_action_prob
+                    ),
+                    f"{log_prefix}/signal_visible_clue_action_weight": float(
+                        cfg.bc_signal_visible_clue_action_weight
+                    ),
+                    f"{log_prefix}/signal_visible_clue_min_map_size": int(
+                        cfg.bc_signal_visible_clue_min_map_size
                     ),
                     f"{log_prefix}/signal_frontier_exploration_action_count": int(
                         frontier_exploration_action_count
@@ -14179,6 +15557,9 @@ def collect_recurrent_dagger_episodes(
     pipeline_wrong_delivery_root_focus_records = 0
     pipeline_wrong_delivery_root_focus_weight_updates = 0
     target_handoff_action_labels = 0
+    target_rendezvous_action_labels = 0
+    target_rendezvous_wait_labels = 0
+    initial_target_broadcast_labels = 0
     target_scan_broadcast_labels = 0
     redundant_target_wait_action_labels = 0
     oracle_message_rollin_steps = 0
@@ -14245,6 +15626,13 @@ def collect_recurrent_dagger_episodes(
                 obs=obs,
             )
             oracle_actions = oracle_fn(obs, info, {"step": step})
+            oracle_actions, initial_broadcast_label_agents = _apply_signal_initial_target_broadcast_overrides(
+                episode_cfg,
+                obs,
+                oracle_actions,
+                current_step=step,
+            )
+            initial_target_broadcast_labels += len(initial_broadcast_label_agents)
             oracle_actions, broadcast_label_agents = _apply_signal_target_scan_broadcast_overrides(
                 episode_cfg,
                 env,
@@ -14259,6 +15647,7 @@ def collect_recurrent_dagger_episodes(
                 oracle_actions,
                 feedback,
                 obs=obs,
+                scan_state=scan_state,
             )
             target_handoff_action_labels += len(handoff_label_agents)
             if "target_handoff" in positive_replay_events and handoff_label_agents:
@@ -14269,6 +15658,29 @@ def collect_recurrent_dagger_episodes(
                 for aid in handoff_label_agents:
                     focus_records.append({
                         "event": "target_handoff",
+                        "step": step,
+                        "agents": [aid],
+                        "kind": "positive",
+                    })
+            oracle_actions, rendezvous_label_agents, rendezvous_wait_agents = (
+                _apply_signal_target_rendezvous_overrides(
+                    episode_cfg,
+                    env,
+                    obs,
+                    oracle_actions,
+                    scan_state=scan_state,
+                )
+            )
+            target_rendezvous_action_labels += len(rendezvous_label_agents)
+            target_rendezvous_wait_labels += len(rendezvous_wait_agents)
+            if "target_rendezvous" in positive_replay_events and rendezvous_label_agents:
+                positive_replay_event_counts["target_rendezvous"] = (
+                    positive_replay_event_counts.get("target_rendezvous", 0)
+                    + len(rendezvous_label_agents)
+                )
+                for aid in rendezvous_label_agents:
+                    focus_records.append({
+                        "event": "target_rendezvous",
                         "step": step,
                         "agents": [aid],
                         "kind": "positive",
@@ -14328,6 +15740,12 @@ def collect_recurrent_dagger_episodes(
                     step_weights[aid] = max(step_weights[aid], float(cfg.dagger_focus_recovery_weight))
                     recovery_state_updates += 1
                     recovery_remaining[aid] = remaining - 1
+            step_weights = _apply_signal_initial_message_weight(
+                step_weights,
+                cfg=episode_cfg,
+                actions=oracle_actions,
+                current_step=step,
+            )
             _append_labeled_step(
                 ep_data,
                 obs,
@@ -14337,6 +15755,7 @@ def collect_recurrent_dagger_episodes(
                 feedback=feedback,
                 step_weight=step_weights,
                 pipeline_state=pipeline_state,
+                scan_state=scan_state,
             )
             model_actions, hidden = _decode_recurrent_actions(
                 episode_cfg,
@@ -14608,6 +16027,68 @@ def collect_recurrent_dagger_episodes(
                     ),
                 )
                 for aid in target_discovery_miss_agents:
+                    recovery_remaining[aid] = max(
+                        recovery_remaining[aid],
+                        int(cfg.dagger_focus_window),
+                    )
+            visible_clue_miss_agents = _signal_visible_clue_miss_agents(
+                env,
+                obs,
+                model_actions,
+                episode_cfg,
+            )
+            if visible_clue_miss_agents and "visible_clue_miss" in focus_events:
+                focus_event_counts["visible_clue_miss"] = (
+                    focus_event_counts.get("visible_clue_miss", 0)
+                    + len(visible_clue_miss_agents)
+                )
+                focus_records.append({
+                    "event": "visible_clue_miss",
+                    "step": step,
+                    "agents": list(visible_clue_miss_agents),
+                    "kind": "focus",
+                })
+                focused_state_updates += _scale_latest_agent_weights(
+                    ep_data,
+                    num_agents=env.num_agents,
+                    agent_ids=visible_clue_miss_agents,
+                    weight=max(
+                        float(cfg.dagger_focus_error_weight),
+                        float(cfg.dagger_target_discovery_focus_weight),
+                    ),
+                )
+                for aid in visible_clue_miss_agents:
+                    recovery_remaining[aid] = max(
+                        recovery_remaining[aid],
+                        int(cfg.dagger_focus_window),
+                    )
+            frontier_exploration_miss_agents = _signal_frontier_exploration_miss_agents(
+                env,
+                obs,
+                model_actions,
+                episode_cfg,
+            )
+            if frontier_exploration_miss_agents and "frontier_exploration_miss" in focus_events:
+                focus_event_counts["frontier_exploration_miss"] = (
+                    focus_event_counts.get("frontier_exploration_miss", 0)
+                    + len(frontier_exploration_miss_agents)
+                )
+                focus_records.append({
+                    "event": "frontier_exploration_miss",
+                    "step": step,
+                    "agents": list(frontier_exploration_miss_agents),
+                    "kind": "focus",
+                })
+                focused_state_updates += _scale_latest_agent_weights(
+                    ep_data,
+                    num_agents=env.num_agents,
+                    agent_ids=frontier_exploration_miss_agents,
+                    weight=max(
+                        float(cfg.dagger_focus_error_weight),
+                        float(cfg.dagger_movement_stall_focus_weight),
+                    ),
+                )
+                for aid in frontier_exploration_miss_agents:
                     recovery_remaining[aid] = max(
                         recovery_remaining[aid],
                         int(cfg.dagger_focus_window),
@@ -15043,6 +16524,10 @@ def collect_recurrent_dagger_episodes(
             episodes,
             "signal_target_pursuit_action_mask",
         ),
+        "visible_clue_action_labels": _episode_count_label_mask(
+            episodes,
+            "signal_visible_clue_action_mask",
+        ),
         "frontier_exploration_action_labels": _episode_count_label_mask(
             episodes,
             "signal_frontier_exploration_action_mask",
@@ -15151,6 +16636,9 @@ def collect_recurrent_dagger_episodes(
         "decoy_scan_action_labels": decoy_scan_action_labels,
         "rejected_target_drift_action_labels": rejected_target_drift_action_labels,
         "target_handoff_action_labels": target_handoff_action_labels,
+        "target_rendezvous_action_labels": target_rendezvous_action_labels,
+        "target_rendezvous_wait_labels": target_rendezvous_wait_labels,
+        "initial_target_broadcast_labels": initial_target_broadcast_labels,
         "target_scan_broadcast_labels": target_scan_broadcast_labels,
         "redundant_target_wait_action_labels": redundant_target_wait_action_labels,
         "oracle_message_rollin_rate": float(oracle_message_rollin_rate),
@@ -15938,11 +17426,20 @@ def train_recurrent_bc_dagger(
                         "dagger/collect_target_pursuit_action_labels": int(
                             collect_summary.get("target_pursuit_action_labels", 0)
                         ),
+                        "dagger/collect_visible_clue_action_labels": int(
+                            collect_summary.get("visible_clue_action_labels", 0)
+                        ),
                         "dagger/collect_frontier_exploration_action_labels": int(
                             collect_summary.get("frontier_exploration_action_labels", 0)
                         ),
                         "dagger/collect_sync_response_action_labels": int(
                             collect_summary.get("sync_response_action_labels", 0)
+                        ),
+                        "dagger/collect_target_rendezvous_action_labels": int(
+                            collect_summary.get("target_rendezvous_action_labels", 0)
+                        ),
+                        "dagger/collect_target_rendezvous_wait_labels": int(
+                            collect_summary.get("target_rendezvous_wait_labels", 0)
                         ),
                         "dagger/collect_pipeline_pickup_action_labels": int(
                             collect_summary.get("pipeline_pickup_action_labels", 0)
@@ -16045,6 +17542,9 @@ def train_recurrent_bc_dagger(
                         ),
                         "dagger/collect_target_handoff_action_labels": int(
                             collect_summary.get("target_handoff_action_labels", 0)
+                        ),
+                        "dagger/collect_initial_target_broadcast_labels": int(
+                            collect_summary.get("initial_target_broadcast_labels", 0)
                         ),
                         "dagger/collect_target_scan_broadcast_labels": int(
                             collect_summary.get("target_scan_broadcast_labels", 0)
@@ -16158,26 +17658,71 @@ def _signal_center_target_scan_decoding_candidate(obs_agent: dict, cfg: Recurren
     visible_targets = set(_visible_signal_targets(obs_agent, pos_arr, observed_map_size))
     if pos not in visible_targets:
         return False
-    if not _signal_observation_has_target_information(obs_agent):
+    constraint_state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    if not _signal_observation_has_target_information(obs_agent, constraint_state):
         return False
-    if not _signal_observation_allows_target(obs_agent, pos, observed_map_size):
+    if not _signal_constraint_state_allows_target(constraint_state, pos):
         return False
 
-    own_segments, message_segments = _signal_segments_from_observation(obs_agent)
-    exact_targets = set(_signal_targets_from_segments([*own_segments, *message_segments], observed_map_size))
+    exact_targets = set(constraint_state.exact_targets)
     if pos in exact_targets:
         return True
 
     allowed_visible_targets = {
         target
         for target in visible_targets
-        if _signal_observation_allows_target(obs_agent, target, observed_map_size)
+        if _signal_constraint_state_allows_target(constraint_state, target)
     }
     if allowed_visible_targets == {pos}:
         return True
 
-    inferred_targets = set(_signal_inferred_constraint_targets(obs_agent, observed_map_size))
+    inferred_targets = set(_signal_inferred_constraint_targets(obs_agent, observed_map_size, constraint_state))
     return inferred_targets == {pos}
+
+
+def _signal_center_compatible_target_scan_decoding_candidate(
+    obs_agent: dict,
+    cfg: RecurrentConfig,
+    *,
+    min_strength: int | None = None,
+) -> bool:
+    if cfg.scenario != "signal_hunt" or not isinstance(obs_agent, dict):
+        return False
+    pos = _signal_xy(obs_agent.get("self_pos"))
+    if pos is None or not _signal_center_visible_target_tile(obs_agent, cfg):
+        return False
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    constraint_state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    if not _signal_observation_has_target_information(obs_agent, constraint_state):
+        return False
+    if _signal_center_rejected_target(obs_agent, observed_map_size, constraint_state):
+        return False
+    if not _signal_constraint_state_allows_target(constraint_state, pos):
+        return False
+    strength = constraint_state.strength
+    threshold = (
+        int(min_strength)
+        if min_strength is not None
+        else int(getattr(cfg, "eval_signal_compatible_target_scan_min_strength", 3))
+    )
+    return int(strength) >= max(0, int(threshold))
+
+
+def _signal_center_ambiguous_target_scan_candidate(obs_agent: dict, cfg: RecurrentConfig) -> bool:
+    if cfg.scenario != "signal_hunt" or not isinstance(obs_agent, dict):
+        return False
+    pos = _signal_xy(obs_agent.get("self_pos"))
+    if pos is None or not _signal_center_visible_target_tile(obs_agent, cfg):
+        return False
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    constraint_state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    if not _signal_observation_has_target_information(obs_agent, constraint_state):
+        return False
+    if _signal_center_rejected_target(obs_agent, observed_map_size, constraint_state):
+        return False
+    if not _signal_constraint_state_allows_target(constraint_state, pos):
+        return False
+    return not _signal_center_target_scan_decoding_candidate(obs_agent, cfg)
 
 
 def _signal_center_visible_target_tile(obs_agent: dict, cfg: RecurrentConfig) -> bool:
@@ -16189,6 +17734,57 @@ def _signal_center_visible_target_tile(obs_agent: dict, cfg: RecurrentConfig) ->
     observed_map_size = _observed_map_size(obs_agent, cfg)
     pos = (int(pos_arr[0]), int(pos_arr[1]))
     return pos in set(_visible_signal_targets(obs_agent, pos_arr, observed_map_size))
+
+
+def _signal_exact_center_target_scan_locked(
+    obs_agent: dict,
+    cfg: RecurrentConfig,
+    *,
+    scan_state: Mapping[str, Any] | None = None,
+    agent_id: int | None = None,
+) -> bool:
+    if (
+        cfg.scenario != "signal_hunt"
+        or not bool(getattr(cfg, "eval_signal_exact_target_scan_lock", False))
+        or not isinstance(obs_agent, dict)
+    ):
+        return False
+    pos = _signal_xy(obs_agent.get("self_pos"))
+    if pos is None or not _signal_center_visible_target_tile(obs_agent, cfg):
+        return False
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    constraint_state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    if not _signal_constraint_state_allows_target(constraint_state, pos):
+        return False
+    exact_targets = _signal_exact_targets_from_observation(obs_agent, observed_map_size)
+    if agent_id is not None:
+        exact_targets.update(_signal_exact_target_memory_targets(cfg, scan_state, int(agent_id)))
+    trusted_targets = _signal_trusted_exact_message_targets(
+        cfg,
+        obs_agent,
+        scan_state,
+        agent_id=agent_id,
+    )
+    return tuple(pos) in (exact_targets & trusted_targets)
+
+
+def _signal_target_scan_locked(
+    obs_agent: dict,
+    cfg: RecurrentConfig,
+    *,
+    scan_state: Mapping[str, Any] | None = None,
+    agent_id: int | None = None,
+) -> bool:
+    if bool(getattr(cfg, "eval_signal_target_scan_lock", False)) and (
+        _signal_center_target_scan_decoding_candidate(obs_agent, cfg)
+    ):
+        return True
+    return _signal_exact_center_target_scan_locked(
+        obs_agent,
+        cfg,
+        scan_state=scan_state,
+        agent_id=agent_id,
+    )
 
 
 def _action_allowed_from_obs(obs_agent: dict, action_id: int) -> bool:
@@ -16233,6 +17829,7 @@ def _apply_signal_scan_gate_decoding(
     obs: dict,
     acts: torch.Tensor,
     scan_gate_logits: torch.Tensor | None,
+    scan_state: Mapping[str, Any] | None = None,
 ) -> torch.Tensor:
     threshold = float(getattr(cfg, "eval_signal_scan_gate_threshold", -1.0))
     if cfg.scenario != "signal_hunt" or threshold < 0.0 or scan_gate_logits is None:
@@ -16250,6 +17847,12 @@ def _apply_signal_scan_gate_decoding(
             continue
         observed_map_size = _observed_map_size(obs_agent, cfg)
         candidate = _signal_center_target_scan_decoding_candidate(obs_agent, cfg)
+        locked = _signal_target_scan_locked(
+            obs_agent,
+            cfg,
+            scan_state=scan_state,
+            agent_id=int(aid),
+        )
         rejected = _signal_center_rejected_target(obs_agent, observed_map_size)
         prob = float(scan_probs[aid].detach().cpu().item())
         if prob >= threshold and candidate:
@@ -16257,6 +17860,7 @@ def _apply_signal_scan_gate_decoding(
         elif (
             bool(getattr(cfg, "eval_signal_scan_gate_suppress", True))
             and int(corrected[aid].item()) == int(SyncOrSinkEnv.ACTION_INTERACT)
+            and not locked
             and (prob < threshold or rejected)
             and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY)
         ):
@@ -16269,6 +17873,7 @@ def _apply_signal_target_validity_decoding(
     obs: dict,
     acts: torch.Tensor,
     target_validity_logits: torch.Tensor | None,
+    scan_state: Mapping[str, Any] | None = None,
 ) -> torch.Tensor:
     threshold = float(getattr(cfg, "eval_signal_target_validity_threshold", -1.0))
     if cfg.scenario != "signal_hunt" or threshold < 0.0 or target_validity_logits is None:
@@ -16288,6 +17893,13 @@ def _apply_signal_target_validity_decoding(
             continue
         if not _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY):
             continue
+        if _signal_target_scan_locked(
+            obs_agent,
+            cfg,
+            scan_state=scan_state,
+            agent_id=int(aid),
+        ):
+            continue
         prob = float(validity_probs[aid].detach().cpu().item())
         if prob < threshold:
             corrected[aid] = int(SyncOrSinkEnv.ACTION_STAY)
@@ -16299,6 +17911,7 @@ def _apply_signal_target_decision_decoding(
     obs: dict,
     acts: torch.Tensor,
     target_decision_logits: torch.Tensor | None,
+    scan_state: Mapping[str, Any] | None = None,
 ) -> torch.Tensor:
     threshold = float(getattr(cfg, "eval_signal_target_decision_threshold", -1.0))
     if cfg.scenario != "signal_hunt" or threshold < 0.0 or target_decision_logits is None:
@@ -16318,10 +17931,61 @@ def _apply_signal_target_decision_decoding(
         elif (
             bool(getattr(cfg, "eval_signal_target_decision_suppress", True))
             and int(corrected[aid].item()) == int(SyncOrSinkEnv.ACTION_INTERACT)
+            and not _signal_target_scan_locked(
+                obs_agent,
+                cfg,
+                scan_state=scan_state,
+                agent_id=int(aid),
+            )
             and prob < threshold
             and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY)
         ):
             corrected[aid] = int(SyncOrSinkEnv.ACTION_STAY)
+    return corrected
+
+
+def _apply_signal_compatible_target_scan_assist(
+    cfg: RecurrentConfig,
+    obs: dict,
+    acts: torch.Tensor,
+    scan_state: Mapping[str, Any] | None = None,
+) -> torch.Tensor:
+    if (
+        cfg.scenario != "signal_hunt"
+        or not bool(getattr(cfg, "eval_signal_compatible_target_scan_assist", False))
+    ):
+        return acts
+    corrected = acts.clone()
+    min_strength = int(getattr(cfg, "eval_signal_compatible_target_scan_min_strength", 3))
+    for aid in range(int(acts.shape[0])):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        if not _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_INTERACT):
+            continue
+        if not _signal_center_compatible_target_scan_decoding_candidate(
+            obs_agent,
+            cfg,
+            min_strength=min_strength,
+        ):
+            continue
+        pos = _signal_xy(obs_agent.get("self_pos"))
+        if pos is not None:
+            self_active, teammate_active = _signal_scan_activity_at_position(
+                cfg,
+                scan_state,
+                agent_id=int(aid),
+                num_agents=int(acts.shape[0]),
+                pos=pos,
+            )
+            if (
+                self_active
+                and not teammate_active
+                and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY)
+            ):
+                corrected[aid] = int(SyncOrSinkEnv.ACTION_STAY)
+                continue
+        corrected[aid] = int(SyncOrSinkEnv.ACTION_INTERACT)
     return corrected
 
 
@@ -16603,7 +18267,7 @@ def _signal_base_trusted_exact_message_targets(
     own_exact_segments = [
         segment
         for segment in own_segments
-        if segment and int(segment[0]) == 26
+        if segment and int(segment[0]) in (22, 26)
     ]
     trusted = set(_signal_targets_from_segments(own_exact_segments, observed_map_size))
     trusted.update(_signal_active_scan_positions(cfg, scan_state))
@@ -18208,15 +19872,28 @@ def _decode_recurrent_actions(
     if hasattr(model, "signal_scan_gate"):
         with torch.no_grad():
             scan_gate_logits = model.signal_scan_gate(hidden[0])
-    acts = _apply_signal_scan_gate_decoding(cfg, obs, acts, scan_gate_logits)
+    acts = _apply_signal_scan_gate_decoding(
+        cfg,
+        obs,
+        acts,
+        scan_gate_logits,
+        scan_state=scan_state,
+    )
     target_decision_logits = None
     if hasattr(model, "signal_target_decision"):
         with torch.no_grad():
             target_decision_logits = model.signal_target_decision(hidden[0])
-    acts = _apply_signal_target_decision_decoding(cfg, obs, acts, target_decision_logits)
+    acts = _apply_signal_target_decision_decoding(
+        cfg,
+        obs,
+        acts,
+        target_decision_logits,
+        scan_state=scan_state,
+    )
     acts = _apply_signal_scan_sync_decoding(cfg, obs, acts, feedback, scan_state=scan_state)
     acts = _apply_signal_scan_refresh_decoding(cfg, obs, acts, feedback)
     acts = _apply_signal_exact_target_navigation_assist(cfg, obs, acts, scan_state)
+    acts = _apply_signal_frontier_exploration_assist(cfg, obs, acts, scan_state=scan_state)
     pipeline_interact_gate_logits = None
     if hasattr(model, "pipeline_interact_gate"):
         with torch.no_grad():
@@ -18301,7 +19978,19 @@ def _decode_recurrent_actions(
     if hasattr(model, "signal_target_validity"):
         with torch.no_grad():
             target_validity_logits = model.signal_target_validity(hidden[0])
-    acts = _apply_signal_target_validity_decoding(cfg, obs, acts, target_validity_logits)
+    acts = _apply_signal_target_validity_decoding(
+        cfg,
+        obs,
+        acts,
+        target_validity_logits,
+        scan_state=scan_state,
+    )
+    acts = _apply_signal_compatible_target_scan_assist(
+        cfg,
+        obs,
+        acts,
+        scan_state=scan_state,
+    )
 
     if not cfg.comm:
         return {
@@ -18323,6 +20012,13 @@ def _decode_recurrent_actions(
             "action": int(acts[aid].item()),
             "message_tokens": [int(t) for t in tokens],
         }
+    actions = _apply_signal_constraint_message_copy_assist(cfg, obs, actions)
+    actions = _apply_signal_initial_exact_message_copy_assist(
+        cfg,
+        obs,
+        actions,
+        current_step=current_step,
+    )
     actions = _apply_signal_scan_broadcast_assist(cfg, actions, scan_state)
     actions = _apply_signal_exact_target_message_guard(cfg, obs, actions, scan_state)
     actions = _apply_pipeline_plan_broadcast_assist(
@@ -18397,7 +20093,13 @@ def _apply_recurrent_rollout_eval_decoding(
     if hasattr(model, "signal_scan_gate"):
         with torch.no_grad():
             scan_gate_logits = model.signal_scan_gate(hidden[0])
-    corrected_acts = _apply_signal_scan_gate_decoding(cfg, obs, corrected_acts, scan_gate_logits)
+    corrected_acts = _apply_signal_scan_gate_decoding(
+        cfg,
+        obs,
+        corrected_acts,
+        scan_gate_logits,
+        scan_state=scan_state,
+    )
 
     target_decision_logits = None
     if hasattr(model, "signal_target_decision"):
@@ -18408,6 +20110,7 @@ def _apply_recurrent_rollout_eval_decoding(
         obs,
         corrected_acts,
         target_decision_logits,
+        scan_state=scan_state,
     )
     corrected_acts = _apply_signal_scan_sync_decoding(
         cfg,
@@ -18422,6 +20125,12 @@ def _apply_recurrent_rollout_eval_decoding(
         obs,
         corrected_acts,
         scan_state,
+    )
+    corrected_acts = _apply_signal_frontier_exploration_assist(
+        cfg,
+        obs,
+        corrected_acts,
+        scan_state=scan_state,
     )
     pipeline_interact_gate_logits = None
     if hasattr(model, "pipeline_interact_gate"):
@@ -18541,6 +20250,13 @@ def _apply_recurrent_rollout_eval_decoding(
         obs,
         corrected_acts,
         target_validity_logits,
+        scan_state=scan_state,
+    )
+    corrected_acts = _apply_signal_compatible_target_scan_assist(
+        cfg,
+        obs,
+        corrected_acts,
+        scan_state=scan_state,
     )
 
     corrected_actions = {int(aid): dict(action) for aid, action in actions.items()}
@@ -18549,6 +20265,17 @@ def _apply_recurrent_rollout_eval_decoding(
         corrected_actions[int(aid)]["action"] = int(corrected_acts[aid].item())
         corrected_actions[int(aid)].setdefault("message_tokens", [])
     if cfg.comm:
+        corrected_actions = _apply_signal_constraint_message_copy_assist(
+            cfg,
+            obs,
+            corrected_actions,
+        )
+        corrected_actions = _apply_signal_initial_exact_message_copy_assist(
+            cfg,
+            obs,
+            corrected_actions,
+            current_step=current_step,
+        )
         corrected_actions = _apply_signal_scan_broadcast_assist(cfg, corrected_actions, scan_state)
         corrected_actions = _apply_signal_exact_target_message_guard(cfg, obs, corrected_actions, scan_state)
         corrected_actions = _apply_pipeline_plan_broadcast_assist(
@@ -19185,14 +20912,31 @@ class RecurrentCheckpointPolicy:
             "eval_signal_target_validity_threshold": self.cfg.eval_signal_target_validity_threshold,
             "eval_signal_target_decision_threshold": self.cfg.eval_signal_target_decision_threshold,
             "eval_signal_target_decision_suppress": self.cfg.eval_signal_target_decision_suppress,
+            "eval_signal_target_scan_lock": self.cfg.eval_signal_target_scan_lock,
+            "eval_signal_exact_target_scan_lock": self.cfg.eval_signal_exact_target_scan_lock,
+            "eval_signal_compatible_target_scan_assist": (
+                self.cfg.eval_signal_compatible_target_scan_assist
+            ),
+            "eval_signal_compatible_target_scan_min_strength": (
+                self.cfg.eval_signal_compatible_target_scan_min_strength
+            ),
             "eval_signal_scan_sync_assist": self.cfg.eval_signal_scan_sync_assist,
             "eval_signal_scan_sync_force_first": self.cfg.eval_signal_scan_sync_force_first,
             "eval_signal_scan_broadcast_assist": self.cfg.eval_signal_scan_broadcast_assist,
+            "eval_signal_constraint_message_copy_assist": (
+                self.cfg.eval_signal_constraint_message_copy_assist
+            ),
             "eval_signal_exact_target_message_guard": self.cfg.eval_signal_exact_target_message_guard,
+            "eval_signal_initial_exact_message_copy_assist": (
+                self.cfg.eval_signal_initial_exact_message_copy_assist
+            ),
             "eval_signal_exact_target_navigation_assist": self.cfg.eval_signal_exact_target_navigation_assist,
             "eval_signal_exact_target_memory_steps": self.cfg.eval_signal_exact_target_memory_steps,
             "eval_signal_scan_refresh_assist": self.cfg.eval_signal_scan_refresh_assist,
             "eval_signal_scan_refresh_threshold": self.cfg.eval_signal_scan_refresh_threshold,
+            "eval_signal_frontier_exploration_assist": (
+                self.cfg.eval_signal_frontier_exploration_assist
+            ),
             "eval_pipeline_navigation_assist": self.cfg.eval_pipeline_navigation_assist,
             "eval_pipeline_navigation_assist_trust_messages": (
                 self.cfg.eval_pipeline_navigation_assist_trust_messages
@@ -19283,19 +21027,27 @@ def load_recurrent_checkpoint_policy(
     *,
     device: str | torch.device = "cpu",
     eval_send_threshold: float | None = None,
+    eval_signal_target_scan_threshold: float | None = None,
     eval_signal_scan_gate_threshold: float | None = None,
     eval_signal_scan_gate_suppress: bool | None = None,
     eval_signal_target_validity_threshold: float | None = None,
     eval_signal_target_decision_threshold: float | None = None,
     eval_signal_target_decision_suppress: bool | None = None,
+    eval_signal_target_scan_lock: bool | None = None,
+    eval_signal_exact_target_scan_lock: bool | None = None,
+    eval_signal_compatible_target_scan_assist: bool | None = None,
+    eval_signal_compatible_target_scan_min_strength: int | None = None,
     eval_signal_scan_sync_assist: bool | None = None,
     eval_signal_scan_sync_force_first: bool | None = None,
     eval_signal_scan_broadcast_assist: bool | None = None,
+    eval_signal_constraint_message_copy_assist: bool | None = None,
     eval_signal_exact_target_message_guard: bool | None = None,
+    eval_signal_initial_exact_message_copy_assist: bool | None = None,
     eval_signal_exact_target_navigation_assist: bool | None = None,
     eval_signal_exact_target_memory_steps: int | None = None,
     eval_signal_scan_refresh_assist: bool | None = None,
     eval_signal_scan_refresh_threshold: float | None = None,
+    eval_signal_frontier_exploration_assist: bool | None = None,
     eval_pipeline_navigation_assist: bool | None = None,
     eval_pipeline_navigation_assist_trust_messages: bool | None = None,
     eval_pipeline_station_interact_guard: bool | None = None,
@@ -19317,6 +21069,8 @@ def load_recurrent_checkpoint_policy(
     cfg = RecurrentConfig(**{key: value for key, value in raw_cfg.items() if key in allowed})
     if eval_send_threshold is not None:
         cfg.eval_send_threshold = float(eval_send_threshold)
+    if eval_signal_target_scan_threshold is not None:
+        cfg.eval_signal_target_scan_threshold = float(eval_signal_target_scan_threshold)
     if eval_signal_scan_gate_threshold is not None:
         cfg.eval_signal_scan_gate_threshold = float(eval_signal_scan_gate_threshold)
     if eval_signal_scan_gate_suppress is not None:
@@ -19327,14 +21081,30 @@ def load_recurrent_checkpoint_policy(
         cfg.eval_signal_target_decision_threshold = float(eval_signal_target_decision_threshold)
     if eval_signal_target_decision_suppress is not None:
         cfg.eval_signal_target_decision_suppress = bool(eval_signal_target_decision_suppress)
+    if eval_signal_target_scan_lock is not None:
+        cfg.eval_signal_target_scan_lock = bool(eval_signal_target_scan_lock)
+    if eval_signal_exact_target_scan_lock is not None:
+        cfg.eval_signal_exact_target_scan_lock = bool(eval_signal_exact_target_scan_lock)
+    if eval_signal_compatible_target_scan_assist is not None:
+        cfg.eval_signal_compatible_target_scan_assist = bool(eval_signal_compatible_target_scan_assist)
+    if eval_signal_compatible_target_scan_min_strength is not None:
+        cfg.eval_signal_compatible_target_scan_min_strength = int(
+            eval_signal_compatible_target_scan_min_strength
+        )
     if eval_signal_scan_sync_assist is not None:
         cfg.eval_signal_scan_sync_assist = bool(eval_signal_scan_sync_assist)
     if eval_signal_scan_sync_force_first is not None:
         cfg.eval_signal_scan_sync_force_first = bool(eval_signal_scan_sync_force_first)
     if eval_signal_scan_broadcast_assist is not None:
         cfg.eval_signal_scan_broadcast_assist = bool(eval_signal_scan_broadcast_assist)
+    if eval_signal_constraint_message_copy_assist is not None:
+        cfg.eval_signal_constraint_message_copy_assist = bool(eval_signal_constraint_message_copy_assist)
     if eval_signal_exact_target_message_guard is not None:
         cfg.eval_signal_exact_target_message_guard = bool(eval_signal_exact_target_message_guard)
+    if eval_signal_initial_exact_message_copy_assist is not None:
+        cfg.eval_signal_initial_exact_message_copy_assist = bool(
+            eval_signal_initial_exact_message_copy_assist
+        )
     if eval_signal_exact_target_navigation_assist is not None:
         cfg.eval_signal_exact_target_navigation_assist = bool(eval_signal_exact_target_navigation_assist)
     if eval_signal_exact_target_memory_steps is not None:
@@ -19343,6 +21113,8 @@ def load_recurrent_checkpoint_policy(
         cfg.eval_signal_scan_refresh_assist = bool(eval_signal_scan_refresh_assist)
     if eval_signal_scan_refresh_threshold is not None:
         cfg.eval_signal_scan_refresh_threshold = float(eval_signal_scan_refresh_threshold)
+    if eval_signal_frontier_exploration_assist is not None:
+        cfg.eval_signal_frontier_exploration_assist = bool(eval_signal_frontier_exploration_assist)
     if eval_pipeline_navigation_assist is not None:
         cfg.eval_pipeline_navigation_assist = bool(eval_pipeline_navigation_assist)
     if eval_pipeline_navigation_assist_trust_messages is not None:
@@ -22553,6 +24325,15 @@ def main():
     p.add_argument("--obs-signal-negative-memory-window", type=int, default=64)
     p.add_argument("--obs-signal-inferred-target-features", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--obs-signal-target-match-features", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument(
+        "--obs-agent-id-features",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Append recurrent-only agent identity and scenario role features. "
+            "For Signal Hunt on large maps this includes the assigned search-sector direction."
+        ),
+    )
     p.add_argument("--pipeline-shaping", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--pipeline-shaping-scale", type=float, default=0.1)
     p.add_argument("--pipeline-stage-count", type=int, default=None)
@@ -22651,6 +24432,45 @@ def main():
     p.add_argument("--bc-signal-redundant-target-interact-weight", type=float, default=1.0)
     p.add_argument("--bc-signal-target-pursuit-weight", type=float, default=1.0)
     p.add_argument("--bc-signal-target-pursuit-action-weight", type=float, default=0.0)
+    p.add_argument(
+        "--bc-signal-target-pursuit-trust-exact-memory",
+        action=argparse.BooleanOptionalAction,
+        default=RecurrentConfig.bc_signal_target_pursuit_trust_exact_memory,
+        help=(
+            "Allow Signal Hunt target-pursuit action labels to use trusted exact "
+            "target messages retained in scan-state memory."
+        ),
+    )
+    p.add_argument(
+        "--bc-signal-target-pursuit-max-agents",
+        type=int,
+        default=RecurrentConfig.bc_signal_target_pursuit_max_agents,
+        help=(
+            "Optional cap on how many closest agents receive Signal target-pursuit "
+            "action labels at a step; 0 keeps all eligible agents."
+        ),
+    )
+    p.add_argument(
+        "--bc-signal-constraint-frontier-bias",
+        action=argparse.BooleanOptionalAction,
+        default=RecurrentConfig.bc_signal_constraint_frontier_bias,
+        help=(
+            "Bias Signal frontier action labels toward cells compatible with "
+            "currently known target constraints."
+        ),
+    )
+    p.add_argument(
+        "--bc-signal-initial-message-weight",
+        type=float,
+        default=RecurrentConfig.bc_signal_initial_message_weight,
+        help="Upweight step-0 Signal Hunt agent rows whose oracle label includes a private-hint message",
+    )
+    p.add_argument(
+        "--bc-signal-initial-message-loss-weight",
+        type=float,
+        default=RecurrentConfig.bc_signal_initial_message_loss_weight,
+        help="Extra Signal Hunt BC token/length loss on step-0 private-hint message labels",
+    )
     p.add_argument("--bc-signal-sync-response-weight", type=float, default=1.0)
     p.add_argument("--bc-signal-sync-response-action-loss-weight", type=float, default=0.0)
     p.add_argument("--bc-signal-target-match-action-weight", type=float, default=0.0)
@@ -22692,6 +24512,20 @@ def main():
     p.add_argument("--bc-signal-target-decision-pos-weight", type=float, default=1.0)
     p.add_argument("--bc-signal-target-decision-neg-weight", type=float, default=1.0)
     p.add_argument(
+        "--bc-signal-ambiguous-target-decision-negatives",
+        action="store_true",
+        default=RecurrentConfig.bc_signal_ambiguous_target_decision_negatives,
+        help=(
+            "Opt-in Signal ablation: label true target scans as negative target "
+            "decisions when local constraints still allow multiple target hypotheses."
+        ),
+    )
+    p.add_argument(
+        "--bc-signal-ambiguous-target-decision-min-map-size",
+        type=int,
+        default=RecurrentConfig.bc_signal_ambiguous_target_decision_min_map_size,
+    )
+    p.add_argument(
         "--bc-signal-target-aux-weight",
         type=float,
         default=0.0,
@@ -22711,6 +24545,18 @@ def main():
             "Opt-in action loss for Signal Hunt agents to move toward exploration-memory "
             "frontiers when no local clue/target is visible"
         ),
+    )
+    p.add_argument(
+        "--bc-signal-visible-clue-action-weight",
+        type=float,
+        default=0.0,
+        help="Opt-in action loss for Signal Hunt agents to move toward/interact with visible clues",
+    )
+    p.add_argument(
+        "--bc-signal-visible-clue-min-map-size",
+        type=int,
+        default=16,
+        help="Minimum Signal Hunt map size for visible-clue action labels",
     )
     p.add_argument(
         "--bc-signal-frontier-exploration-min-map-size",
@@ -22897,10 +24743,47 @@ def main():
         help="Convert repeated true-target scan labels into wait labels while the previous scan is still active",
     )
     p.add_argument(
+        "--dagger-initial-target-broadcast-labels",
+        action=argparse.BooleanOptionalAction,
+        default=RecurrentConfig.dagger_initial_target_broadcast_labels,
+        help="Label step-0 Signal Hunt agents with unambiguous private exact target hints to broadcast [26, x, y]",
+    )
+    p.add_argument(
         "--dagger-target-scan-broadcast-labels",
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Label confirmed true-target scanners to broadcast exact target coordinates for teammate handoff",
+    )
+    p.add_argument(
+        "--dagger-target-handoff-requires-exact-target",
+        action=argparse.BooleanOptionalAction,
+        default=RecurrentConfig.dagger_target_handoff_requires_exact_target,
+        help=(
+            "Require trusted exact target evidence before labeling Signal Hunt target-handoff "
+            "join actions from active teammate scan feedback."
+        ),
+    )
+    p.add_argument(
+        "--dagger-signal-target-rendezvous-labels",
+        action=argparse.BooleanOptionalAction,
+        default=RecurrentConfig.dagger_signal_target_rendezvous_labels,
+        help=(
+            "Opt-in Signal Hunt DAgger/demo labeler: once at least two agents have "
+            "target evidence, route the closest pair to the target and make an early "
+            "scanner wait when the partner cannot complete within the scan window."
+        ),
+    )
+    p.add_argument(
+        "--dagger-signal-target-rendezvous-min-map-size",
+        type=int,
+        default=RecurrentConfig.dagger_signal_target_rendezvous_min_map_size,
+        help="Minimum Signal Hunt map size for target-rendezvous labels.",
+    )
+    p.add_argument(
+        "--dagger-signal-target-rendezvous-max-agents",
+        type=int,
+        default=RecurrentConfig.dagger_signal_target_rendezvous_max_agents,
+        help="Maximum closest target-informed agents selected for Signal target-rendezvous labels.",
     )
     p.add_argument(
         "--dagger-oracle-message-rollin-rate",
@@ -23322,6 +25205,39 @@ def main():
         help="When target-decision decoding is enabled, suppress center-target interact below the threshold",
     )
     p.add_argument(
+        "--eval-signal-target-scan-lock",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Keep an observation-safe target-scan interact selected by target-scan decoding from "
+            "being vetoed by learned Signal scan gate, target-validity, or target-decision suppressors."
+        ),
+    )
+    p.add_argument(
+        "--eval-signal-exact-target-scan-lock",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Keep exact, trusted Signal target scans from being vetoed by learned scan gate, "
+            "target-validity, or target-decision suppressors without locking weaker target guesses."
+        ),
+    )
+    p.add_argument(
+        "--eval-signal-compatible-target-scan-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Force interact on a visible center target tile that satisfies the shared Signal "
+            "constraints even when those constraints do not infer a unique target yet."
+        ),
+    )
+    p.add_argument(
+        "--eval-signal-compatible-target-scan-min-strength",
+        type=int,
+        default=3,
+        help="Minimum Signal clue constraint strength required by compatible target scan assist.",
+    )
+    p.add_argument(
         "--eval-signal-scan-sync-assist",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -23340,10 +25256,25 @@ def main():
         help="Use scan-state feedback to broadcast the remembered true-target scan position",
     )
     p.add_argument(
+        "--eval-signal-constraint-message-copy-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Replace sent Signal clue messages with canonical structured constraints from the agent goal hint",
+    )
+    p.add_argument(
         "--eval-signal-exact-target-message-guard",
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Drop exact Signal Hunt target messages unless backed by an own exact hint or active scan state",
+    )
+    p.add_argument(
+        "--eval-signal-initial-exact-message-copy-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "At Signal Hunt step 0, canonicalize learned nonempty messages from agents with "
+            "an unambiguous private exact target hint to [26, x, y]"
+        ),
     )
     p.add_argument(
         "--eval-signal-exact-target-navigation-assist",
@@ -23368,6 +25299,15 @@ def main():
         type=float,
         default=0.5,
         help="Remaining scan-window fraction at or below which refresh assist forces interact",
+    )
+    p.add_argument(
+        "--eval-signal-frontier-exploration-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use exploration-memory frontiers to force Signal Hunt movement when no "
+            "clue, target, or unique target evidence is visible."
+        ),
     )
     p.add_argument(
         "--eval-pipeline-navigation-assist",
@@ -23522,6 +25462,7 @@ def main():
         obs_signal_negative_memory_window=args.obs_signal_negative_memory_window,
         obs_signal_inferred_target_features=args.obs_signal_inferred_target_features,
         obs_signal_target_match_features=args.obs_signal_target_match_features,
+        obs_agent_id_features=args.obs_agent_id_features,
         pipeline_shaping=args.pipeline_shaping,
         pipeline_shaping_scale=args.pipeline_shaping_scale,
         pipeline_stage_count=args.pipeline_stage_count,
@@ -23583,6 +25524,12 @@ def main():
         bc_signal_redundant_target_interact_weight=args.bc_signal_redundant_target_interact_weight,
         bc_signal_target_pursuit_weight=args.bc_signal_target_pursuit_weight,
         bc_signal_target_pursuit_action_weight=args.bc_signal_target_pursuit_action_weight,
+        bc_signal_target_pursuit_trust_exact_memory=(
+            args.bc_signal_target_pursuit_trust_exact_memory
+        ),
+        bc_signal_target_pursuit_max_agents=args.bc_signal_target_pursuit_max_agents,
+        bc_signal_initial_message_weight=args.bc_signal_initial_message_weight,
+        bc_signal_initial_message_loss_weight=args.bc_signal_initial_message_loss_weight,
         bc_signal_sync_response_weight=args.bc_signal_sync_response_weight,
         bc_signal_sync_response_action_loss_weight=args.bc_signal_sync_response_action_loss_weight,
         bc_signal_target_match_action_weight=args.bc_signal_target_match_action_weight,
@@ -23603,6 +25550,12 @@ def main():
         bc_signal_target_decision_loss_weight=args.bc_signal_target_decision_loss_weight,
         bc_signal_target_decision_pos_weight=args.bc_signal_target_decision_pos_weight,
         bc_signal_target_decision_neg_weight=args.bc_signal_target_decision_neg_weight,
+        bc_signal_ambiguous_target_decision_negatives=(
+            args.bc_signal_ambiguous_target_decision_negatives
+        ),
+        bc_signal_ambiguous_target_decision_min_map_size=(
+            args.bc_signal_ambiguous_target_decision_min_map_size
+        ),
         bc_signal_target_aux_weight=args.bc_signal_target_aux_weight,
         bc_signal_rejected_target_interact_loss_weight=args.bc_signal_rejected_target_interact_loss_weight,
         bc_signal_rejected_target_interact_action_loss_weight=(
@@ -23616,12 +25569,17 @@ def main():
         bc_signal_rejected_target_drift_action_loss_weight=(
             args.bc_signal_rejected_target_drift_action_loss_weight
         ),
+        bc_signal_visible_clue_action_weight=(
+            args.bc_signal_visible_clue_action_weight
+        ),
+        bc_signal_visible_clue_min_map_size=args.bc_signal_visible_clue_min_map_size,
         bc_signal_frontier_exploration_action_weight=(
             args.bc_signal_frontier_exploration_action_weight
         ),
         bc_signal_frontier_exploration_min_map_size=(
             args.bc_signal_frontier_exploration_min_map_size
         ),
+        bc_signal_constraint_frontier_bias=args.bc_signal_constraint_frontier_bias,
         bc_pipeline_pickup_action_loss_weight=args.bc_pipeline_pickup_action_loss_weight,
         bc_pipeline_delivery_action_loss_weight=args.bc_pipeline_delivery_action_loss_weight,
         bc_pipeline_delivery_progress_action_loss_weight=(
@@ -23718,7 +25676,18 @@ def main():
         dagger_solo_target_team_success_only=args.dagger_solo_target_team_success_only,
         dagger_positive_target_pursuit_min_map_size=args.dagger_positive_target_pursuit_min_map_size,
         dagger_redundant_target_wait_labels=args.dagger_redundant_target_wait_labels,
+        dagger_initial_target_broadcast_labels=args.dagger_initial_target_broadcast_labels,
         dagger_target_scan_broadcast_labels=args.dagger_target_scan_broadcast_labels,
+        dagger_target_handoff_requires_exact_target=(
+            args.dagger_target_handoff_requires_exact_target
+        ),
+        dagger_signal_target_rendezvous_labels=args.dagger_signal_target_rendezvous_labels,
+        dagger_signal_target_rendezvous_min_map_size=(
+            args.dagger_signal_target_rendezvous_min_map_size
+        ),
+        dagger_signal_target_rendezvous_max_agents=(
+            args.dagger_signal_target_rendezvous_max_agents
+        ),
         dagger_oracle_message_rollin_rate=args.dagger_oracle_message_rollin_rate,
         dagger_oracle_action_rollin_rate=args.dagger_oracle_action_rollin_rate,
         pipeline_assisted_rollout_episodes=args.pipeline_assisted_rollout_episodes,
@@ -23822,14 +25791,25 @@ def main():
         eval_signal_target_validity_threshold=args.eval_signal_target_validity_threshold,
         eval_signal_target_decision_threshold=args.eval_signal_target_decision_threshold,
         eval_signal_target_decision_suppress=args.eval_signal_target_decision_suppress,
+        eval_signal_target_scan_lock=args.eval_signal_target_scan_lock,
+        eval_signal_exact_target_scan_lock=args.eval_signal_exact_target_scan_lock,
+        eval_signal_compatible_target_scan_assist=args.eval_signal_compatible_target_scan_assist,
+        eval_signal_compatible_target_scan_min_strength=(
+            args.eval_signal_compatible_target_scan_min_strength
+        ),
         eval_signal_scan_sync_assist=args.eval_signal_scan_sync_assist,
         eval_signal_scan_sync_force_first=args.eval_signal_scan_sync_force_first,
         eval_signal_scan_broadcast_assist=args.eval_signal_scan_broadcast_assist,
+        eval_signal_constraint_message_copy_assist=args.eval_signal_constraint_message_copy_assist,
         eval_signal_exact_target_message_guard=args.eval_signal_exact_target_message_guard,
+        eval_signal_initial_exact_message_copy_assist=(
+            args.eval_signal_initial_exact_message_copy_assist
+        ),
         eval_signal_exact_target_navigation_assist=args.eval_signal_exact_target_navigation_assist,
         eval_signal_exact_target_memory_steps=args.eval_signal_exact_target_memory_steps,
         eval_signal_scan_refresh_assist=args.eval_signal_scan_refresh_assist,
         eval_signal_scan_refresh_threshold=args.eval_signal_scan_refresh_threshold,
+        eval_signal_frontier_exploration_assist=args.eval_signal_frontier_exploration_assist,
         eval_pipeline_navigation_assist=args.eval_pipeline_navigation_assist,
         eval_pipeline_navigation_assist_trust_messages=args.eval_pipeline_navigation_assist_trust_messages,
         eval_pipeline_station_interact_guard=args.eval_pipeline_station_interact_guard,
@@ -23947,6 +25927,12 @@ def main():
                         _episode_count_label_mask(
                             episodes,
                             "signal_target_pursuit_action_mask",
+                        )
+                    ),
+                    "demo/visible_clue_action_labels": int(
+                        _episode_count_label_mask(
+                            episodes,
+                            "signal_visible_clue_action_mask",
                         )
                     ),
                     "demo/frontier_exploration_action_labels": int(

@@ -63,6 +63,64 @@ def test_core_training_sweep_default_cases_are_core_8x8():
     assert DEFAULT_CASES["energy_grid"].energy_preset == "easy"
 
 
+def test_core_training_sweep_can_run_official_benchmark_cases(tmp_path):
+    from examples.core_training_sweep import parse_args, run_suite
+
+    args = parse_args([
+        "--algorithms",
+        "recurrent_bc_rl",
+        "--benchmark-spec",
+        "benchmarks/syncorsink_v0_1.json",
+        "--benchmark-cases",
+        "signal_hunt_16x16_scaled_search",
+        "--seeds",
+        "0",
+        "--recurrent-demo-episodes",
+        "1",
+        "--recurrent-bc-epochs",
+        "1",
+        "--recurrent-dagger-rounds",
+        "0",
+        "--recurrent-rl-updates",
+        "0",
+        "--output-dir",
+        str(tmp_path / "runs"),
+        "--run-name",
+        "official",
+        "--dry-run",
+    ])
+
+    payload = run_suite(args)
+    run = payload["runs"][0]
+    command = run["command"]
+
+    assert payload["overall"] == {"complete": 0, "dry_run": 1, "failed": 0, "total": 1}
+    assert payload["config"]["benchmark_spec"] == "benchmarks/syncorsink_v0_1.json"
+    assert payload["config"]["benchmark_cases"] == ["signal_hunt_16x16_scaled_search"]
+    assert payload["cases"][0]["benchmark_case"] == "signal_hunt_16x16_scaled_search"
+    assert payload["cases"][0]["map_size"] == 16
+    assert payload["cases"][0]["agents"] == 4
+    assert payload["cases"][0]["fov_preset"] == "medium"
+    assert payload["cases"][0]["max_steps"] == 300
+    assert "recurrent_bc_rl_signal_hunt_16x16_scaled_search_seed0" in run["run_dir"]
+    assert command[command.index("--map-size") + 1] == "16"
+    assert command[command.index("--agents") + 1] == "4"
+    assert command[command.index("--fov-preset") + 1] == "medium"
+    assert command[command.index("--max-steps") + 1] == "300"
+    assert command[command.index("--bc-signal-target-aux-weight") + 1] == "0.25"
+    assert command[command.index("--bc-signal-target-pursuit-action-weight") + 1] == "0.4"
+    assert "--bc-signal-target-pursuit-trust-exact-memory" not in command
+    assert command[command.index("--bc-signal-target-match-action-weight") + 1] == "0.4"
+    assert command[command.index("--bc-signal-first-target-scan-action-weight") + 1] == "0.8"
+    assert command[command.index("--bc-signal-visible-clue-action-weight") + 1] == "0.0"
+    assert command[command.index("--bc-signal-frontier-exploration-action-weight") + 1] == "0.25"
+    assert "--eval-signal-target-scan-lock" not in command
+    assert "--eval-signal-exact-target-scan-lock" not in command
+    assert "--eval-signal-compatible-target-scan-assist" not in command
+    assert "--eval-signal-frontier-exploration-assist" not in command
+    assert "--eval-signal-constraint-message-copy-assist" in command
+
+
 def test_core_training_sweep_seed_alias_merges_with_seeds():
     from examples.core_training_sweep import parse_args
 
@@ -252,6 +310,250 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert payload["config"]["recurrent_bc_kl_coeff"] == 2.0
     assert payload["config"]["recurrent_bc_comm_kl_coeff"] == 2.0
     assert payload["config"]["recurrent_bc_comm_send_pos_weight"] == 0.0
+    signal_send_pos_idx = commands["signal_hunt"].index("--bc-comm-send-pos-weight")
+    energy_send_pos_idx = commands["energy_grid"].index("--bc-comm-send-pos-weight")
+    pipeline_send_pos_idx = commands["pipeline_assembly"].index("--bc-comm-send-pos-weight")
+    signal_initial_msg_idx = commands["signal_hunt"].index("--bc-signal-initial-message-weight")
+    energy_initial_msg_idx = commands["energy_grid"].index("--bc-signal-initial-message-weight")
+    pipeline_initial_msg_idx = commands["pipeline_assembly"].index("--bc-signal-initial-message-weight")
+    signal_initial_msg_loss_idx = commands["signal_hunt"].index(
+        "--bc-signal-initial-message-loss-weight"
+    )
+    signal_target_aux_idx = commands["signal_hunt"].index(
+        "--bc-signal-target-aux-weight"
+    )
+    energy_target_aux_idx = commands["energy_grid"].index(
+        "--bc-signal-target-aux-weight"
+    )
+    pipeline_target_aux_idx = commands["pipeline_assembly"].index(
+        "--bc-signal-target-aux-weight"
+    )
+    signal_target_pursuit_idx = commands["signal_hunt"].index(
+        "--bc-signal-target-pursuit-action-weight"
+    )
+    signal_sync_response_idx = commands["signal_hunt"].index(
+        "--bc-signal-sync-response-action-loss-weight"
+    )
+    signal_target_match_idx = commands["signal_hunt"].index(
+        "--bc-signal-target-match-action-weight"
+    )
+    signal_first_scan_idx = commands["signal_hunt"].index(
+        "--bc-signal-first-target-scan-action-weight"
+    )
+    signal_refresh_scan_idx = commands["signal_hunt"].index(
+        "--bc-signal-refresh-target-scan-action-weight"
+    )
+    signal_joint_scan_idx = commands["signal_hunt"].index(
+        "--bc-signal-joint-target-scan-action-weight"
+    )
+    signal_target_opportunity_idx = commands["signal_hunt"].index(
+        "--bc-signal-target-opportunity-action-weight"
+    )
+    signal_redundant_wait_idx = commands["signal_hunt"].index(
+        "--bc-signal-redundant-target-wait-action-loss-weight"
+    )
+    energy_initial_msg_loss_idx = commands["energy_grid"].index(
+        "--bc-signal-initial-message-loss-weight"
+    )
+    pipeline_initial_msg_loss_idx = commands["pipeline_assembly"].index(
+        "--bc-signal-initial-message-loss-weight"
+    )
+    signal_comm_loss_idx = commands["signal_hunt"].index("--bc-comm-loss-weight")
+    energy_comm_loss_idx = commands["energy_grid"].index("--bc-comm-loss-weight")
+    pipeline_comm_loss_idx = commands["pipeline_assembly"].index("--bc-comm-loss-weight")
+    signal_decoy_scan_idx = commands["signal_hunt"].index(
+        "--bc-signal-decoy-scan-action-loss-weight"
+    )
+    energy_decoy_scan_idx = commands["energy_grid"].index(
+        "--bc-signal-decoy-scan-action-loss-weight"
+    )
+    pipeline_decoy_scan_idx = commands["pipeline_assembly"].index(
+        "--bc-signal-decoy-scan-action-loss-weight"
+    )
+    signal_decoy_drift_idx = commands["signal_hunt"].index(
+        "--bc-signal-decoy-drift-action-loss-weight"
+    )
+    signal_rejected_drift_idx = commands["signal_hunt"].index(
+        "--bc-signal-rejected-target-drift-action-loss-weight"
+    )
+    signal_visible_clue_idx = commands["signal_hunt"].index(
+        "--bc-signal-visible-clue-action-weight"
+    )
+    signal_visible_clue_min_idx = commands["signal_hunt"].index(
+        "--bc-signal-visible-clue-min-map-size"
+    )
+    signal_frontier_idx = commands["signal_hunt"].index(
+        "--bc-signal-frontier-exploration-action-weight"
+    )
+    signal_frontier_min_idx = commands["signal_hunt"].index(
+        "--bc-signal-frontier-exploration-min-map-size"
+    )
+    signal_focus_events_idx = commands["signal_hunt"].index("--dagger-focus-events")
+    energy_focus_events_idx = commands["energy_grid"].index("--dagger-focus-events")
+    pipeline_focus_events_idx = commands["pipeline_assembly"].index("--dagger-focus-events")
+    signal_positive_replay_idx = commands["signal_hunt"].index(
+        "--dagger-positive-replay-events"
+    )
+    signal_replay_weights_idx = commands["signal_hunt"].index("--dagger-replay-event-weights")
+    signal_replay_priority_idx = commands["signal_hunt"].index(
+        "--dagger-replay-priority-events"
+    )
+    signal_target_discovery_min_idx = commands["signal_hunt"].index(
+        "--dagger-target-discovery-min-map-size"
+    )
+    energy_target_discovery_min_idx = commands["energy_grid"].index(
+        "--dagger-target-discovery-min-map-size"
+    )
+    signal_movement_stall_min_idx = commands["signal_hunt"].index(
+        "--dagger-movement-stall-min-map-size"
+    )
+    signal_movement_stall_window_idx = commands["signal_hunt"].index(
+        "--dagger-movement-stall-window"
+    )
+    assert commands["signal_hunt"][signal_send_pos_idx + 1] == "-1.0"
+    assert commands["energy_grid"][energy_send_pos_idx + 1] == "0.0"
+    assert commands["pipeline_assembly"][pipeline_send_pos_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_initial_msg_idx + 1] == "4.0"
+    assert commands["energy_grid"][energy_initial_msg_idx + 1] == "1.0"
+    assert commands["pipeline_assembly"][pipeline_initial_msg_idx + 1] == "1.0"
+    assert commands["signal_hunt"][signal_initial_msg_loss_idx + 1] == "4.0"
+    assert commands["energy_grid"][energy_initial_msg_loss_idx + 1] == "0.0"
+    assert commands["pipeline_assembly"][pipeline_initial_msg_loss_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_target_aux_idx + 1] == "0.25"
+    assert commands["energy_grid"][energy_target_aux_idx + 1] == "0.0"
+    assert commands["pipeline_assembly"][pipeline_target_aux_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_target_pursuit_idx + 1] == "0.4"
+    assert commands["signal_hunt"][signal_sync_response_idx + 1] == "0.2"
+    assert commands["signal_hunt"][signal_target_match_idx + 1] == "0.4"
+    assert commands["signal_hunt"][signal_first_scan_idx + 1] == "0.8"
+    assert commands["signal_hunt"][signal_refresh_scan_idx + 1] == "0.3"
+    assert commands["signal_hunt"][signal_joint_scan_idx + 1] == "0.5"
+    assert commands["signal_hunt"][signal_target_opportunity_idx + 1] == "0.4"
+    assert commands["signal_hunt"][signal_redundant_wait_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_comm_loss_idx + 1] == "1.0"
+    assert commands["energy_grid"][energy_comm_loss_idx + 1] == "0.1"
+    assert commands["pipeline_assembly"][pipeline_comm_loss_idx + 1] == "0.1"
+    assert commands["signal_hunt"][signal_decoy_scan_idx + 1] == "0.0"
+    assert commands["energy_grid"][energy_decoy_scan_idx + 1] == "0.0"
+    assert commands["pipeline_assembly"][pipeline_decoy_scan_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_decoy_drift_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_rejected_drift_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_visible_clue_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_visible_clue_min_idx + 1] == "16"
+    assert commands["signal_hunt"][signal_frontier_idx + 1] == "0.25"
+    assert commands["signal_hunt"][signal_frontier_min_idx + 1] == "16"
+    signal_focus_events = commands["signal_hunt"][signal_focus_events_idx + 1]
+    energy_focus_events = commands["energy_grid"][energy_focus_events_idx + 1]
+    pipeline_focus_events = commands["pipeline_assembly"][pipeline_focus_events_idx + 1]
+    assert "missed_target_scan" in signal_focus_events
+    assert "target_interact_miss" in signal_focus_events
+    assert "target_pursuit_miss" in signal_focus_events
+    assert "target_discovery_miss" in signal_focus_events
+    assert "target_decoy_drift_miss" in signal_focus_events
+    assert "visible_clue_miss" not in signal_focus_events
+    assert "frontier_exploration_miss" in signal_focus_events
+    assert "target_handoff_miss" in signal_focus_events
+    assert "pipeline_wrong_delivery" in signal_focus_events
+    assert "decoy_scan" not in signal_focus_events
+    assert "pipeline_wrong_delivery" in energy_focus_events
+    assert "pipeline_wrong_delivery" in pipeline_focus_events
+    assert "pipeline_delivery_ready" in commands["signal_hunt"][
+        signal_positive_replay_idx + 1
+    ]
+    assert "target_handoff" in commands["signal_hunt"][signal_positive_replay_idx + 1]
+    assert "target_pursuit" not in commands["signal_hunt"][signal_positive_replay_idx + 1]
+    assert "pipeline_delivery_miss:4.0" in commands["signal_hunt"][
+        signal_replay_weights_idx + 1
+    ]
+    assert "target_discovery_miss:4.0" in commands["signal_hunt"][
+        signal_replay_weights_idx + 1
+    ]
+    assert "frontier_exploration_miss:4.0" in commands["signal_hunt"][
+        signal_replay_weights_idx + 1
+    ]
+    assert "target_decoy_drift_miss:4.0" in commands["signal_hunt"][
+        signal_replay_weights_idx + 1
+    ]
+    assert "target_handoff_miss:4.0" in commands["signal_hunt"][
+        signal_replay_weights_idx + 1
+    ]
+    assert "target_handoff:3.0" in commands["signal_hunt"][
+        signal_replay_weights_idx + 1
+    ]
+    assert "pipeline_delivery_miss" in commands["signal_hunt"][
+        signal_replay_priority_idx + 1
+    ]
+    assert "target_discovery_miss" in commands["signal_hunt"][
+        signal_replay_priority_idx + 1
+    ]
+    assert "frontier_exploration_miss" in commands["signal_hunt"][
+        signal_replay_priority_idx + 1
+    ]
+    assert "target_handoff_miss" in commands["signal_hunt"][
+        signal_replay_priority_idx + 1
+    ]
+    assert commands["signal_hunt"][signal_target_discovery_min_idx + 1] == "16"
+    assert commands["energy_grid"][energy_target_discovery_min_idx + 1] == "16"
+    assert commands["signal_hunt"][signal_movement_stall_min_idx + 1] == "16"
+    assert commands["signal_hunt"][signal_movement_stall_window_idx + 1] == "6"
+    assert "--dagger-initial-target-broadcast-labels" in commands["signal_hunt"]
+    assert "--dagger-target-handoff-requires-exact-target" not in commands["signal_hunt"]
+    assert "--eval-signal-initial-exact-message-copy-assist" in commands["signal_hunt"]
+    assert "--obs-agent-id-features" in commands["signal_hunt"]
+    assert "--bc-signal-scan-decision-loss-weight" in commands["signal_hunt"]
+    assert commands["signal_hunt"][
+        commands["signal_hunt"].index("--bc-signal-scan-decision-neg-weight") + 1
+    ] == "3.0"
+    assert commands["signal_hunt"][
+        commands["signal_hunt"].index("--bc-signal-scan-gate-loss-weight") + 1
+    ] == "1.0"
+    assert commands["signal_hunt"][
+        commands["signal_hunt"].index("--bc-signal-target-validity-loss-weight") + 1
+    ] == "1.0"
+    assert commands["signal_hunt"][
+        commands["signal_hunt"].index("--bc-signal-target-decision-loss-weight") + 1
+    ] == "1.0"
+    signal_scan_gate_threshold_idx = commands["signal_hunt"].index(
+        "--eval-signal-scan-gate-threshold"
+    )
+    signal_target_scan_threshold_idx = commands["signal_hunt"].index(
+        "--eval-signal-target-scan-threshold"
+    )
+    signal_target_validity_threshold_idx = commands["signal_hunt"].index(
+        "--eval-signal-target-validity-threshold"
+    )
+    signal_target_decision_threshold_idx = commands["signal_hunt"].index(
+        "--eval-signal-target-decision-threshold"
+    )
+    assert commands["signal_hunt"][signal_scan_gate_threshold_idx + 1] == "0.4"
+    assert commands["signal_hunt"][signal_target_scan_threshold_idx + 1] == "0.0"
+    assert "--eval-signal-scan-gate-suppress" in commands["signal_hunt"]
+    assert "--eval-signal-target-scan-lock" not in commands["signal_hunt"]
+    assert "--eval-signal-exact-target-scan-lock" not in commands["signal_hunt"]
+    assert "--eval-signal-compatible-target-scan-assist" not in commands["signal_hunt"]
+    assert "--eval-signal-constraint-message-copy-assist" in commands["signal_hunt"]
+    assert commands["signal_hunt"][signal_target_validity_threshold_idx + 1] == "0.4"
+    assert commands["signal_hunt"][signal_target_decision_threshold_idx + 1] == "0.4"
+    assert "--dagger-initial-target-broadcast-labels" not in commands["energy_grid"]
+    assert "--dagger-initial-target-broadcast-labels" not in commands["pipeline_assembly"]
+    assert "--dagger-target-handoff-requires-exact-target" not in commands["energy_grid"]
+    assert "--dagger-target-handoff-requires-exact-target" not in commands["pipeline_assembly"]
+    assert "--eval-signal-initial-exact-message-copy-assist" not in commands["energy_grid"]
+    assert "--eval-signal-initial-exact-message-copy-assist" not in commands["pipeline_assembly"]
+    assert "--obs-agent-id-features" not in commands["energy_grid"]
+    assert "--obs-agent-id-features" not in commands["pipeline_assembly"]
+    assert "--eval-signal-target-scan-threshold" not in commands["energy_grid"]
+    assert "--eval-signal-target-scan-threshold" not in commands["pipeline_assembly"]
+    assert "--eval-signal-target-scan-lock" not in commands["energy_grid"]
+    assert "--eval-signal-target-scan-lock" not in commands["pipeline_assembly"]
+    assert "--eval-signal-exact-target-scan-lock" not in commands["energy_grid"]
+    assert "--eval-signal-exact-target-scan-lock" not in commands["pipeline_assembly"]
+    assert "--eval-signal-compatible-target-scan-assist" not in commands["energy_grid"]
+    assert "--eval-signal-compatible-target-scan-assist" not in commands["pipeline_assembly"]
+    assert "--eval-signal-constraint-message-copy-assist" not in commands["energy_grid"]
+    assert "--eval-signal-constraint-message-copy-assist" not in commands["pipeline_assembly"]
+    assert "--bc-signal-scan-decision-loss-weight" not in commands["energy_grid"]
+    assert "--bc-signal-scan-decision-loss-weight" not in commands["pipeline_assembly"]
     assert payload["config"]["recurrent_dagger_failed_effective_ratio_cap"] == 0.25
     assert payload["config"]["recurrent_dagger_oracle_action_rollin_rate"] == 0.25
     assert payload["config"]["recurrent_dagger_oracle_message_rollin_rate"] == 0.0
@@ -269,18 +571,23 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert payload["config"]["recurrent_dagger_replay_post_steps"] == 2
     assert payload["config"]["recurrent_dagger_replay_weight"] == 1.0
     assert payload["config"]["recurrent_dagger_positive_replay_events"] == (
-        "pipeline_delivery_ready,delivered,stage_completed"
+        "target_handoff,pipeline_delivery_ready,delivered,stage_completed"
     )
     assert payload["config"]["recurrent_dagger_replay_event_weights"] == (
         "pipeline_delivery_ready:4.0,pipeline_delivery_miss:4.0,"
         "pipeline_station_stall_miss:3.0,"
         "pipeline_sync_wait:4.0,"
+        "frontier_exploration_miss:4.0,target_discovery_miss:4.0,"
+        "target_decoy_drift_miss:4.0,target_pursuit_miss:3.0,"
+        "target_handoff_miss:4.0,target_handoff:3.0,"
         "pipeline_wrong_delivery:3.0,pipeline_wrong_delivery_root_pickup:3.0,"
         "delivered:2.0,stage_completed:2.0"
     )
     assert payload["config"]["recurrent_dagger_replay_event_caps"] == ""
     assert payload["config"]["recurrent_dagger_replay_success_only_events"] == "delivered,stage_completed"
     assert payload["config"]["recurrent_dagger_replay_priority_events"] == (
+        "frontier_exploration_miss,target_discovery_miss,target_decoy_drift_miss,"
+        "target_handoff_miss,target_handoff,"
         "pipeline_delivery_miss,pipeline_delivery_ready,pipeline_wrong_delivery,"
         "pipeline_wrong_delivery_root_pickup,pipeline_sync_wait"
     )
@@ -461,7 +768,7 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     ] == "1.0"
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--dagger-positive-replay-events") + 1
-    ] == "pipeline_delivery_ready,delivered,stage_completed"
+    ] == "target_handoff,pipeline_delivery_ready,delivered,stage_completed"
     assert commands["pipeline_assembly"][
         commands["pipeline_assembly"].index("--dagger-replay-event-weights") + 1
     ] == payload["config"]["recurrent_dagger_replay_event_weights"]
@@ -488,6 +795,82 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert "--rl-rollout-pipeline-station-interact-guard" not in commands["signal_hunt"]
     assert commands["signal_hunt"][commands["signal_hunt"].index("--obs-memory-mode") + 1] == "egocentric"
     assert "--obs-memory-mode" not in commands["pipeline_assembly"]
+
+
+def test_core_training_sweep_recurrent_large_map_signal_preset_targets_32x_failures(tmp_path):
+    from examples.core_training_sweep import parse_args, run_suite
+
+    args = parse_args([
+        "--algorithms",
+        "recurrent_bc_rl",
+        "--scenarios",
+        "signal_hunt",
+        "energy_grid",
+        "--updates",
+        "1",
+        "--rollout-steps",
+        "8",
+        "--eval-every",
+        "1",
+        "--eval-episodes",
+        "1",
+        "--seeds",
+        "0",
+        "--recurrent-signal-preset",
+        "large_map",
+        "--output-dir",
+        str(tmp_path / "runs"),
+        "--run-name",
+        "recurrent-large-map",
+        "--dry-run",
+    ])
+
+    payload = run_suite(args)
+    commands = {run["scenario"]: run["command"] for run in payload["runs"]}
+
+    def arg_value(command, option):
+        return command[command.index(option) + 1]
+
+    signal = commands["signal_hunt"]
+    energy = commands["energy_grid"]
+    assert payload["config"]["recurrent_signal_preset"] == "large_map"
+    assert arg_value(signal, "--bc-signal-decoy-drift-action-loss-weight") == "0.1"
+    assert arg_value(signal, "--bc-signal-decoy-scan-action-loss-weight") == "0.25"
+    assert arg_value(signal, "--bc-signal-rejected-target-drift-action-loss-weight") == "0.0"
+    assert arg_value(signal, "--bc-signal-visible-clue-action-weight") == "0.25"
+    assert arg_value(signal, "--bc-signal-visible-clue-min-map-size") == "32"
+    assert arg_value(signal, "--bc-signal-frontier-exploration-action-weight") == "0.25"
+    assert arg_value(signal, "--bc-signal-frontier-exploration-min-map-size") == "16"
+    assert arg_value(signal, "--bc-signal-target-pursuit-max-agents") == "0"
+    assert "--bc-signal-ambiguous-target-decision-negatives" not in signal
+    assert arg_value(signal, "--bc-signal-ambiguous-target-decision-min-map-size") == "16"
+    assert arg_value(signal, "--bc-comm-loss-weight") == "1.0"
+    assert "--bc-signal-constraint-frontier-bias" not in signal
+    assert "--dagger-signal-target-rendezvous-labels" not in signal
+    assert arg_value(signal, "--dagger-signal-target-rendezvous-min-map-size") == "16"
+    assert arg_value(signal, "--dagger-signal-target-rendezvous-max-agents") == "2"
+    assert "--obs-exploration-age" not in signal
+    assert "--eval-signal-constraint-message-copy-assist" in signal
+
+    signal_focus_events = arg_value(signal, "--dagger-focus-events")
+    signal_replay_weights = arg_value(signal, "--dagger-replay-event-weights")
+    signal_replay_priority = arg_value(signal, "--dagger-replay-priority-events")
+    for event in (
+        "visible_clue_miss",
+        "decoy_scan",
+        "rejected_target_scan",
+    ):
+        assert event in signal_focus_events
+        assert event in signal_replay_priority
+        assert f"{event}:4.0" in signal_replay_weights
+
+    energy_focus_events = arg_value(energy, "--dagger-focus-events")
+    energy_replay_weights = arg_value(energy, "--dagger-replay-event-weights")
+    assert "visible_clue_miss" not in energy_focus_events
+    assert "decoy_scan" not in energy_focus_events
+    assert "visible_clue_miss:4.0" not in energy_replay_weights
+    assert "decoy_scan:4.0" not in energy_replay_weights
+    assert arg_value(energy, "--bc-signal-decoy-scan-action-loss-weight") == "0.0"
 
 
 def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp_path):
@@ -545,6 +928,7 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
         "--recurrent-pipeline-assisted-rollout-bc-epochs",
         "3",
         "--recurrent-obs-exploration-memory",
+        "--recurrent-obs-exploration-age",
         "--recurrent-obs-feedback",
         "--recurrent-obs-normalize-tokens",
         "--recurrent-obs-navigation-features",
@@ -595,6 +979,7 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
     assert payload["config"]["recurrent_pipeline_assisted_rollout_station_interact_guard"] is False
     assert payload["config"]["recurrent_pipeline_assisted_rollout_bc_epochs"] == 3
     assert payload["config"]["recurrent_obs_exploration_memory"] is True
+    assert payload["config"]["recurrent_obs_exploration_age"] is True
     assert payload["config"]["recurrent_obs_feedback"] is True
     assert payload["config"]["recurrent_obs_normalize_tokens"] is True
     assert payload["config"]["recurrent_obs_navigation_features"] is True
@@ -1002,6 +1387,13 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "0.42",
         "--recurrent-eval-pipeline-event-head-threshold",
         "0.44",
+        "--recurrent-eval-signal-target-scan-lock",
+        "--recurrent-eval-signal-exact-target-scan-lock",
+        "--recurrent-eval-signal-compatible-target-scan-assist",
+        "--recurrent-eval-signal-compatible-target-scan-min-strength",
+        "4",
+        "--recurrent-eval-signal-constraint-message-copy-assist",
+        "--recurrent-eval-signal-frontier-exploration-assist",
         "--no-recurrent-obs-pipeline-features",
         "--recurrent-bc-calibrate-send-threshold",
         "--recurrent-bc-send-threshold-target-rate",
@@ -1012,6 +1404,63 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "0.25",
         "--recurrent-bc-comm-send-rate-target",
         "0.15",
+        "--recurrent-bc-signal-target-aux-weight",
+        "0.45",
+        "--recurrent-bc-signal-target-pursuit-action-weight",
+        "0.6",
+        "--recurrent-bc-signal-target-pursuit-trust-exact-memory",
+        "--recurrent-bc-signal-target-pursuit-max-agents",
+        "1",
+        "--recurrent-bc-signal-sync-response-action-loss-weight",
+        "0.7",
+        "--recurrent-bc-signal-target-match-action-weight",
+        "0.8",
+        "--recurrent-bc-signal-first-target-scan-action-weight",
+        "0.9",
+        "--recurrent-bc-signal-refresh-target-scan-action-weight",
+        "0.4",
+        "--recurrent-bc-signal-joint-target-scan-action-weight",
+        "0.5",
+        "--recurrent-bc-signal-target-opportunity-action-weight",
+        "0.3",
+        "--recurrent-bc-signal-redundant-target-wait-action-loss-weight",
+        "0.2",
+        "--recurrent-bc-signal-constraint-frontier-bias",
+        "--recurrent-bc-signal-scan-decision-loss-weight",
+        "1.4",
+        "--recurrent-bc-signal-scan-decision-pos-weight",
+        "2.4",
+        "--recurrent-bc-signal-scan-decision-neg-weight",
+        "3.4",
+        "--recurrent-bc-signal-scan-gate-loss-weight",
+        "1.5",
+        "--recurrent-bc-signal-scan-gate-pos-weight",
+        "2.5",
+        "--recurrent-bc-signal-scan-gate-neg-weight",
+        "3.5",
+        "--recurrent-bc-signal-target-validity-loss-weight",
+        "1.6",
+        "--recurrent-bc-signal-target-validity-pos-weight",
+        "2.6",
+        "--recurrent-bc-signal-target-validity-neg-weight",
+        "3.6",
+        "--recurrent-bc-signal-target-decision-loss-weight",
+        "1.7",
+        "--recurrent-bc-signal-target-decision-pos-weight",
+        "2.7",
+        "--recurrent-bc-signal-target-decision-neg-weight",
+        "3.7",
+        "--recurrent-bc-signal-ambiguous-target-decision-negatives",
+        "--recurrent-bc-signal-ambiguous-target-decision-min-map-size",
+        "8",
+        "--recurrent-bc-signal-visible-clue-action-weight",
+        "0.35",
+        "--recurrent-bc-signal-visible-clue-min-map-size",
+        "8",
+        "--recurrent-bc-signal-frontier-exploration-action-weight",
+        "0.55",
+        "--recurrent-bc-signal-frontier-exploration-min-map-size",
+        "8",
         "--recurrent-dagger-rounds",
         "1",
         "--recurrent-dagger-episodes",
@@ -1022,6 +1471,12 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "0.4",
         "--recurrent-dagger-oracle-message-rollin-rate",
         "0.3",
+        "--recurrent-dagger-target-handoff-requires-exact-target",
+        "--recurrent-dagger-signal-target-rendezvous-labels",
+        "--recurrent-dagger-signal-target-rendezvous-min-map-size",
+        "16",
+        "--recurrent-dagger-signal-target-rendezvous-max-agents",
+        "2",
         "--recurrent-dagger-focus-events",
         "pipeline_wrong_delivery,pipeline_bad_pickup",
         "--recurrent-dagger-focus-error-weight",
@@ -1157,6 +1612,7 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_resolved_oracles"] == {"signal_hunt": "signal_hint_comm"}
     assert payload["config"]["recurrent_ppo_profile"] == "guarded"
     assert payload["config"]["recurrent_signal_preset"] == "specialist"
+    assert payload["config"]["recurrent_obs_exploration_age"] is False
     assert payload["config"]["recurrent_bc_action_class_balance"] is True
     assert payload["config"]["recurrent_bc_action_class_balance_max_weight"] == 4.0
     assert payload["config"]["recurrent_bc_event_action_weight"] == 6.0
@@ -1207,14 +1663,75 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_eval_pipeline_navigation_head_threshold"] == -1.0
     assert payload["config"]["recurrent_eval_pipeline_option_threshold"] == -1.0
     assert payload["config"]["recurrent_eval_pipeline_option_allow_interact"] is False
+    assert payload["config"]["recurrent_eval_signal_target_scan_lock"] is True
+    assert payload["config"]["recurrent_eval_signal_exact_target_scan_lock"] is True
+    assert payload["config"]["recurrent_eval_signal_compatible_target_scan_assist"] is True
+    assert payload["config"]["recurrent_eval_signal_compatible_target_scan_min_strength"] == 4
+    assert payload["config"]["recurrent_eval_signal_frontier_exploration_assist"] is True
+    assert payload["config"]["recurrent_eval_signal_constraint_message_copy_assist"] is True
     assert payload["config"]["recurrent_bc_calibrate_send_threshold"] is True
     assert payload["config"]["recurrent_bc_send_threshold_target_rate"] == 0.15
     assert payload["config"]["recurrent_bc_comm_send_pos_weight"] == -1
     assert payload["config"]["recurrent_bc_comm_send_rate_penalty_weight"] == 0.25
     assert payload["config"]["recurrent_bc_comm_send_rate_target"] == 0.15
+    assert payload["config"]["recurrent_bc_signal_target_aux_weight"] == 0.45
+    assert payload["config"]["recurrent_bc_signal_target_pursuit_action_weight"] == 0.6
+    assert payload["config"]["recurrent_bc_signal_target_pursuit_trust_exact_memory"] is True
+    assert payload["config"]["recurrent_bc_signal_target_pursuit_max_agents"] == 1
+    assert payload["config"]["recurrent_bc_signal_sync_response_action_loss_weight"] == 0.7
+    assert payload["config"]["recurrent_bc_signal_target_match_action_weight"] == 0.8
+    assert payload["config"]["recurrent_bc_signal_first_target_scan_action_weight"] == 0.9
+    assert payload["config"]["recurrent_bc_signal_refresh_target_scan_action_weight"] == 0.4
+    assert payload["config"]["recurrent_bc_signal_joint_target_scan_action_weight"] == 0.5
+    assert payload["config"]["recurrent_bc_signal_target_opportunity_action_weight"] == 0.3
+    assert payload[
+        "config"
+    ]["recurrent_bc_signal_redundant_target_wait_action_loss_weight"] == 0.2
+    assert payload["config"]["recurrent_bc_signal_constraint_frontier_bias"] is True
+    assert payload["config"]["recurrent_bc_signal_scan_decision_loss_weight"] == 1.4
+    assert payload["config"]["recurrent_bc_signal_scan_decision_pos_weight"] == 2.4
+    assert payload["config"]["recurrent_bc_signal_scan_decision_neg_weight"] == 3.4
+    assert payload["config"]["recurrent_bc_signal_scan_gate_loss_weight"] == 1.5
+    assert payload["config"]["recurrent_bc_signal_scan_gate_pos_weight"] == 2.5
+    assert payload["config"]["recurrent_bc_signal_scan_gate_neg_weight"] == 3.5
+    assert payload["config"]["recurrent_bc_signal_target_validity_loss_weight"] == 1.6
+    assert payload["config"]["recurrent_bc_signal_target_validity_pos_weight"] == 2.6
+    assert payload["config"]["recurrent_bc_signal_target_validity_neg_weight"] == 3.6
+    assert payload["config"]["recurrent_bc_signal_target_decision_loss_weight"] == 1.7
+    assert payload["config"]["recurrent_bc_signal_target_decision_pos_weight"] == 2.7
+    assert payload["config"]["recurrent_bc_signal_target_decision_neg_weight"] == 3.7
+    assert command[command.index("--bc-signal-scan-decision-loss-weight") + 1] == "1.4"
+    assert command[command.index("--bc-signal-scan-decision-pos-weight") + 1] == "2.4"
+    assert command[command.index("--bc-signal-scan-decision-neg-weight") + 1] == "3.4"
+    assert command[command.index("--bc-signal-scan-gate-loss-weight") + 1] == "1.5"
+    assert command[command.index("--bc-signal-scan-gate-pos-weight") + 1] == "2.5"
+    assert command[command.index("--bc-signal-scan-gate-neg-weight") + 1] == "3.5"
+    assert command[command.index("--bc-signal-target-validity-loss-weight") + 1] == "1.6"
+    assert command[command.index("--bc-signal-target-validity-pos-weight") + 1] == "2.6"
+    assert command[command.index("--bc-signal-target-validity-neg-weight") + 1] == "3.6"
+    assert command[command.index("--bc-signal-target-decision-loss-weight") + 1] == "1.7"
+    assert command[command.index("--bc-signal-target-decision-pos-weight") + 1] == "2.7"
+    assert command[command.index("--bc-signal-target-decision-neg-weight") + 1] == "3.7"
+    assert "--bc-signal-ambiguous-target-decision-negatives" in command
+    assert command[command.index("--bc-signal-ambiguous-target-decision-min-map-size") + 1] == "8"
+    assert command[command.index("--bc-signal-target-pursuit-max-agents") + 1] == "1"
+    assert "--bc-signal-constraint-frontier-bias" in command
+    assert "--dagger-signal-target-rendezvous-labels" in command
+    assert command[command.index("--dagger-signal-target-rendezvous-min-map-size") + 1] == "16"
+    assert command[command.index("--dagger-signal-target-rendezvous-max-agents") + 1] == "2"
+    assert payload["config"]["recurrent_bc_signal_visible_clue_action_weight"] == 0.35
+    assert payload["config"]["recurrent_bc_signal_visible_clue_min_map_size"] == 8
+    assert payload["config"]["recurrent_bc_signal_frontier_exploration_action_weight"] == 0.55
+    assert payload["config"]["recurrent_bc_signal_frontier_exploration_min_map_size"] == 8
+    assert payload["config"]["recurrent_bc_signal_ambiguous_target_decision_negatives"] is True
+    assert payload["config"]["recurrent_bc_signal_ambiguous_target_decision_min_map_size"] == 8
     assert payload["config"]["recurrent_dagger_failed_effective_ratio_cap"] == 0.5
     assert payload["config"]["recurrent_dagger_oracle_action_rollin_rate"] == 0.4
     assert payload["config"]["recurrent_dagger_oracle_message_rollin_rate"] == 0.3
+    assert payload["config"]["recurrent_dagger_target_handoff_requires_exact_target"] is True
+    assert payload["config"]["recurrent_dagger_signal_target_rendezvous_labels"] is True
+    assert payload["config"]["recurrent_dagger_signal_target_rendezvous_min_map_size"] == 16
+    assert payload["config"]["recurrent_dagger_signal_target_rendezvous_max_agents"] == 2
     assert payload["config"]["recurrent_dagger_focus_events"] == "pipeline_wrong_delivery,pipeline_bad_pickup"
     assert payload["config"]["recurrent_dagger_focus_error_weight"] == 4.5
     assert payload["config"]["recurrent_dagger_focus_recovery_weight"] == 2.5
@@ -1313,6 +1830,43 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert command[
         command.index("--bc-pipeline-frontier-exploration-min-map-size") + 1
     ] == "8"
+    assert command[command.index("--bc-signal-target-aux-weight") + 1] == "0.45"
+    assert command[command.index("--bc-signal-target-pursuit-action-weight") + 1] == "0.6"
+    assert "--bc-signal-target-pursuit-trust-exact-memory" in command
+    assert "--eval-signal-frontier-exploration-assist" in command
+    assert command[
+        command.index("--bc-signal-sync-response-action-loss-weight") + 1
+    ] == "0.7"
+    assert command[command.index("--bc-signal-target-match-action-weight") + 1] == "0.8"
+    assert command[
+        command.index("--bc-signal-first-target-scan-action-weight") + 1
+    ] == "0.9"
+    assert command[
+        command.index("--bc-signal-refresh-target-scan-action-weight") + 1
+    ] == "0.4"
+    assert command[
+        command.index("--bc-signal-joint-target-scan-action-weight") + 1
+    ] == "0.5"
+    assert command[
+        command.index("--bc-signal-target-opportunity-action-weight") + 1
+    ] == "0.3"
+    assert command[
+        command.index("--bc-signal-redundant-target-wait-action-loss-weight") + 1
+    ] == "0.2"
+    assert command[
+        command.index("--bc-signal-frontier-exploration-action-weight") + 1
+    ] == "0.55"
+    assert command[
+        command.index("--bc-signal-frontier-exploration-min-map-size") + 1
+    ] == "8"
+    assert "--eval-signal-target-scan-lock" in command
+    assert "--eval-signal-exact-target-scan-lock" in command
+    assert "--eval-signal-compatible-target-scan-assist" in command
+    assert command[
+        command.index("--eval-signal-compatible-target-scan-min-strength") + 1
+    ] == "4"
+    assert "--eval-signal-constraint-message-copy-assist" in command
+    assert "--dagger-target-handoff-requires-exact-target" in command
     assert command[
         command.index("--bc-pipeline-ready-interact-action-loss-weight") + 1
     ] == "1.45"
@@ -1415,6 +1969,10 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert "--obs-exploration-memory" in command
     assert "--obs-signal-scan-state" in command
     assert "--eval-signal-exact-target-navigation-assist" in command
+    assert "--eval-signal-initial-exact-message-copy-assist" in command
+    assert "--bc-signal-scan-gate-loss-weight" in command
+    assert "--bc-signal-decoy-scan-action-loss-weight" in command
+    assert "--eval-signal-target-decision-threshold" in command
     assert "--signal-shaping" in command
     assert "--comm-send-target" not in command
 
