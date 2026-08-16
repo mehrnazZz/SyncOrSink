@@ -460,6 +460,13 @@ therefore not promoted as the default profile.
 | `recurrent_signal_multisize_16_32_large_map_cluepositive_seed0` | 60% mixed eval | Negative ablation: added `clue_found` positive replay; 16x16 reached 80% but 32x32 stayed at 40%, with 32x32 decoy scans rising to 6.7; W&B run `tuudojwi` |
 | `recurrent_signal_multisize_16_32_large_map_ambiguousdecision_seed0` | 70% mixed eval | Diagnostic ablation: ambiguous true-target scans become negative target-decision labels; best split was 90% at 16x16 and 50% at 32x32, matching but not beating the conservative 32x32 eval slice; W&B run `7dr55x28` |
 | `recurrent_signal_multisize_16_32_large_map_ambiguousdecision_scanpush_seed0` | 65% mixed eval | Negative follow-up: ambiguity labels plus moderate first-scan/opportunity pressure; best split was 85% at 16x16 and 45% at 32x32; W&B run `8tbyh3s6` |
+| `recurrent_signal_multisize_16_32_large_map_ambiguoussearch32_seed0` | 70% mixed eval | Diagnostic follow-up: 32x32-only ambiguous target search labels let agents leave locally non-unique targets for visible clues/frontiers; best split was 90% at 16x16 and 50% at 32x32, while the final round fell to 62.5% mixed with wrong-target scans returning; W&B run `5g5q8b1l` |
+| `recurrent_signal_multisize_16_32_large_map_confidence_seed0` | 60% mixed eval | Negative diagnostic: added opt-in target-confidence observation features; best/final split was 75% at 16x16 and 45% at 32x32 with wrong-target scans reduced to zero, so scan discipline improved but large-map discovery did not; W&B run `0mycw4ng` |
+| `recurrent_signal_multisize_16_32_large_map_sector_seed0` | 60% mixed eval | Negative diagnostic: added opt-in sector-search observation features; final split was 75% at 16x16 and 45% at 32x32, 32x32 true-target reach rose to 50%, and wrong-target scans fell to zero, but success did not beat the baseline; W&B run `lqyp8kkf` |
+| `recurrent_signal_multisize_16_32_large_map_cluepositive_negguard_seed0` | 47.5% mixed eval | Negative diagnostic: retested `clue_found` positive replay after negative-memory scan guarding; wrong scans stayed at zero, but the split fell to 65%/30% and first-target-scan misses rose, so clue replay alone creates target visits without reliable scan conversion; W&B run `uazym681` |
+| `recurrent_signal_multisize_16_32_large_map_active_scan_response_negguard_seed0` | 65% mixed eval | Negative diagnostic: trusted active-scan responder labels were learned cleanly and kept wrong-target scans at zero, but the split was 87.5% at 16x16 and 42.5% at 32x32, so the auxiliary remains opt-in; W&B run `0nmjb6d4` |
+| `recurrent_signal_multisize_16_32_large_map_clueinteract_negguard_seed0` | 67.5% mixed eval | Diagnostic ablation: center-clue `INTERACT` labels fired and were learned, but the split was 82.5% at 16x16 and 52.5% at 32x32, just under the conservative 32x32 baseline; W&B run `ofakn8vg` |
+| `recurrent_signal_multisize_16_32_large_map_scanbridge_negguard_seed0` | 53.75% saved-best mixed eval | Negative diagnostic: scan-bridge labels fired and were learned, but the saved-best split was 70% at 16x16 and 37.5% at 32x32; later DAgger rounds improved clue collection but fell to 51.25% mixed and 25% at 32x32; W&B run `29z8hpul` |
 
 The main remaining bottlenecks are now weighted toward large-map discovery.
 Constraint-message copy fixed a major communication failure where generated
@@ -561,6 +568,44 @@ inside the target-scan window. It produced many labels
 to 60%, with 80% on 16x16 and only 40% on 32x32. It reduced decoy scanning but
 also reduced 32x32 true-target reach, so no full audit was run and the flag
 remains diagnostic.
+The next implemented search-side change is an opt-in evidence-sweep auxiliary
+(`bc_signal_evidence_sweep_*`) that assigns agents to stable map sectors and
+upweights DAgger misses when the model ignores those search labels. Unlike the
+direct frontier eval assist, this is training-only by default and is intended
+to test whether large-map failures are primarily pre-evidence coverage rather
+than scan conversion. The matched run
+(`recurrent_signal_multisize_16_32_large_map_evidencesweep_negguard_seed0`,
+`jo36kevt`) activated the path (`36` evidence-sweep replay triggers in round 1
+and `45` in round 2), but the restored-best split tied the guarded 32x32 result
+at 50% while reducing 16x16 to 65%; later DAgger rounds fell to 45% mixed eval.
+The feature therefore remains opt-in and is not part of the large-map preset.
+The follow-up implementation added a narrower post-discovery auxiliary:
+`bc_signal_active_scan_response_*`. It labels only a trusted exact-target
+responder while a teammate's true-target scan is active, using the existing
+target-join expert helper and capping responders by distance. The matched run
+(`recurrent_signal_multisize_16_32_large_map_active_scan_response_negguard_seed0`,
+`0nmjb6d4`) learned the auxiliary cleanly but reached only 65% mixed eval, with
+87.5% on 16x16 and 42.5% on 32x32. It therefore remains opt-in rather than a
+large-map default.
+The next acquisition-side implementation separated center-clue pickup from
+generic visible-clue pursuit with `bc_signal_clue_interact_*`. The matched run
+(`recurrent_signal_multisize_16_32_large_map_clueinteract_negguard_seed0`,
+`ofakn8vg`) generated `296` and `211` DAgger collection labels across the two
+rounds and learned the head to `0.767` final BC action-match. It reached 67.5%
+mixed eval, split 82.5% at 16x16 and 52.5% at 32x32. That is close to, but
+still below, the conservative 55% 32x32 baseline, so the auxiliary remains
+diagnostic.
+The follow-up post-discovery implementation added `bc_signal_scan_bridge_*`.
+It labels the current scanner to refresh/bridge an active true-target scan only
+when its own scan window is partially expired and an exact-target-informed
+teammate is nearby. The matched run
+(`recurrent_signal_multisize_16_32_large_map_scanbridge_negguard_seed0`,
+`29z8hpul`) produced `51` and `42` bridge labels across the two DAgger
+collections and learned them quickly (`scan_bridge` action-match reached
+`1.000` during round-2 BC). The saved-best checkpoint was round 0, however,
+with only 53.75% mixed eval and a 70%/37.5% 16x16/32x32 split. Later rounds
+raised 32x32 clue collection to `0.825` but dropped the 32x32 success rate to
+25%, so bridge refresh pressure is not the missing large-map mechanism.
 Adding `clue_found` to positive replay
 (`recurrent_signal_multisize_16_32_large_map_cluepositive_seed0`, `tuudojwi`)
 also failed to improve the large-map split: the event path was active
@@ -582,6 +627,35 @@ scan-pressure follow-up
 lesson is that ambiguity-aware target decisions help decoy discipline but need
 better evidence acquisition or scan timing before they can improve the official
 large-map score.
+The 32x32-only ambiguous-search follow-up
+(`recurrent_signal_multisize_16_32_large_map_ambiguoussearch32_seed0`,
+`5g5q8b1l`) kept the ambiguity decision negative labels but added action labels
+for visible clues and frontiers while an agent stands on a compatible,
+non-unique target. It produced the intended extra supervision
+(`2415` visible-clue labels and `2388` frontier labels by round 2) but still
+matched only the 70% mixed best eval, again with 90% at 16x16 and 50% at 32x32.
+The final round regressed to 62.5% mixed eval and reintroduced 2.15 average
+wrong-target scans. The failure is useful: simply leaving ambiguous targets to
+search can undo decoy discipline unless target-hypothesis confidence and scan
+timing are modeled more explicitly.
+The target-confidence observation follow-up
+(`recurrent_signal_multisize_16_32_large_map_confidence_seed0`, `0mycw4ng`)
+added a 14-value center-target hypothesis block covering exact/safe,
+compatible, ambiguous, rejected, unknown, constraint presence/strength, and
+evidence counts. It did improve scan discipline: final/best eval had zero
+wrong-target scans. It did not improve the benchmark score, reaching only 60%
+mixed eval with a 75%/45% 16x16/32x32 split. That points away from pure scan
+gating as the bottleneck and back toward large-map clue discovery, role
+coverage, and memory-guided exploration.
+The sector-search observation follow-up
+(`recurrent_signal_multisize_16_32_large_map_sector_seed0`, `lqyp8kkf`) exposed
+assigned-frontier direction and assigned-sector exploration progress. It again
+reduced wrong-target scans to zero and improved the final 32x32 true-target
+reach to 50%, but the success split remained 75%/45% and mixed eval stayed at
+60%. Compact sector state alone is therefore insufficient; the next likely
+bottleneck is that the learned policy still needs stronger supervised
+collection/broadcast behavior for newly discovered clues, not just better
+search-progress awareness.
 
 Implementation note:
 `--recurrent-eval-signal-constraint-message-copy-assist` now defaults on for
@@ -687,8 +761,25 @@ available for reproduction but default-off after the first audit.
 
 ## 18. Next Steps
 
-1. **Check TarMAC results** — classic comm method comparison
-2. **Check LLM 16x16 results** — gpt-oss:20b scaling
-3. **Crack pipeline assembly** — hierarchical approach or curriculum learning
-4. **Paper writing** — results tables, analysis figures, discussion of findings
-5. **32x32 experiments** — further scaling study if needed
+1. **Signal 32x32 scan gating** — the post-clue constraint-message diagnostic
+   (`recurrent_signal_multisize_16_32_large_map_constraintmsg_seed0`,
+   W&B `https://wandb.ai/orion8/syncorsink-core-training/runs/rc4pmvoq`) reached
+   67.5% mixed eval with an 85%/50% 16x16/32x32 split, but 32x32 wrong-target
+   scans rose to `7.55` on average. The matched negative-memory scan-guard
+   rerun (`recurrent_signal_multisize_16_32_large_map_constraintmsg_negguard_seed0`,
+   W&B `https://wandb.ai/orion8/syncorsink-core-training/runs/8i0re2bp`) kept
+   the same 67.5% mixed eval and 85%/50% split, but cut 32x32 wrong scans to
+   `0.5`, so the next implementation target is true-target acquisition and
+   coordinated scan completion rather than more decoy suppression. A direct
+   32x32 checkpoint audit with the sweep-exposed scan-refresh assist still
+   landed at 10/20 successes, and the target-probe diagnostic also stayed flat.
+   Retesting clue-found replay with the guard regressed to 47.5% mixed eval, so
+   the next core implementation target is a better large-map evidence/search
+   policy rather than more replay, refresh, or one-step probe overrides.
+2. **Signal clue collection/execution audit** — compare clue-found, target-reach,
+   refresh-scan, and joint-scan breakdowns for the sector/confidence diagnostics
+   versus the guarded run to preserve the 16x16 gain while lifting 32x32 success.
+3. **Pipeline assembly training** — continue the staged curriculum once Signal
+   large-map communication behavior is understood.
+4. **Model zoo breadth** — resume MAPPO/Comm-MAT/TarMAC comparisons after the
+   recurrent expert-guided path has a stable large-map Signal baseline.

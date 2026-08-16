@@ -259,6 +259,8 @@ def make_recurrent_checkpoint_policy_factory(
     eval_signal_exact_target_scan_lock: bool | None = None,
     eval_signal_compatible_target_scan_assist: bool | None = None,
     eval_signal_compatible_target_scan_min_strength: int | None = None,
+    eval_signal_negative_memory_scan_guard: bool | None = None,
+    eval_signal_target_probe_assist: bool | None = None,
     eval_signal_scan_sync_assist: bool | None = None,
     eval_signal_scan_sync_force_first: bool | None = None,
     eval_signal_scan_broadcast_assist: bool | None = None,
@@ -304,6 +306,8 @@ def make_recurrent_checkpoint_policy_factory(
             eval_signal_compatible_target_scan_min_strength=(
                 eval_signal_compatible_target_scan_min_strength
             ),
+            eval_signal_negative_memory_scan_guard=eval_signal_negative_memory_scan_guard,
+            eval_signal_target_probe_assist=eval_signal_target_probe_assist,
             eval_signal_scan_sync_assist=eval_signal_scan_sync_assist,
             eval_signal_scan_sync_force_first=eval_signal_scan_sync_force_first,
             eval_signal_scan_broadcast_assist=eval_signal_scan_broadcast_assist,

@@ -68,6 +68,8 @@ class RecurrentCurriculumConfig:
     obs_signal_negative_memory_window: int = 64
     obs_signal_inferred_target_features: bool = False
     obs_signal_target_match_features: bool = True
+    obs_signal_confidence_features: bool = False
+    obs_signal_sector_features: bool = False
     comm: bool = True
     comm_token_limit: int = 8
     comm_vocab_size: int = 32
@@ -123,8 +125,16 @@ class RecurrentCurriculumConfig:
     bc_signal_constraint_frontier_bias: bool = False
     bc_signal_initial_message_weight: float = 4.0
     bc_signal_initial_message_loss_weight: float = 4.0
+    bc_signal_constraint_message_loss_weight: float = 4.0
     bc_signal_sync_response_weight: float = 1.0
     bc_signal_sync_response_action_loss_weight: float = 0.0
+    bc_signal_active_scan_response_action_weight: float = 0.0
+    bc_signal_active_scan_response_min_map_size: int = 16
+    bc_signal_active_scan_response_max_agents: int = 1
+    bc_signal_scan_bridge_action_weight: float = 0.0
+    bc_signal_scan_bridge_min_map_size: int = 16
+    bc_signal_scan_bridge_remaining_threshold: float = 0.5
+    bc_signal_scan_bridge_max_teammate_distance: int = 6
     bc_signal_target_aux_weight: float = 0.0
     bc_signal_target_match_action_weight: float = 0.0
     bc_signal_first_target_scan_action_weight: float = 0.0
@@ -146,12 +156,18 @@ class RecurrentCurriculumConfig:
     bc_signal_target_decision_neg_weight: float = 3.0
     bc_signal_ambiguous_target_decision_negatives: bool = False
     bc_signal_ambiguous_target_decision_min_map_size: int = 16
+    bc_signal_ambiguous_target_search_labels: bool = False
+    bc_signal_ambiguous_target_search_min_map_size: int = 16
     bc_signal_rejected_target_interact_loss_weight: float = 0.05
     bc_signal_rejected_target_interact_action_loss_weight: float = 0.0
     bc_signal_bad_redundant_target_interact_loss_weight: float = 0.05
     bc_signal_decoy_drift_action_loss_weight: float = 0.25
     bc_signal_decoy_scan_action_loss_weight: float = 0.1
     bc_signal_rejected_target_drift_action_loss_weight: float = 0.0
+    bc_signal_clue_interact_action_weight: float = 0.0
+    bc_signal_clue_interact_min_map_size: int = 16
+    bc_signal_evidence_sweep_action_weight: float = 0.0
+    bc_signal_evidence_sweep_min_map_size: int = 16
     bc_signal_frontier_exploration_action_weight: float = 0.0
     bc_signal_frontier_exploration_min_map_size: int = 16
     bc_pipeline_pickup_action_loss_weight: float = 0.0
@@ -308,6 +324,8 @@ class RecurrentCurriculumConfig:
     eval_signal_exact_target_scan_lock: bool = False
     eval_signal_compatible_target_scan_assist: bool = False
     eval_signal_compatible_target_scan_min_strength: int = 3
+    eval_signal_negative_memory_scan_guard: bool = False
+    eval_signal_target_probe_assist: bool = False
     eval_signal_scan_sync_assist: bool = False
     eval_signal_scan_sync_force_first: bool = False
     eval_signal_scan_broadcast_assist: bool = False
@@ -664,6 +682,8 @@ def _stage_recurrent_config(
         obs_signal_negative_memory_window=cfg.obs_signal_negative_memory_window,
         obs_signal_inferred_target_features=cfg.obs_signal_inferred_target_features,
         obs_signal_target_match_features=cfg.obs_signal_target_match_features,
+        obs_signal_confidence_features=cfg.obs_signal_confidence_features,
+        obs_signal_sector_features=cfg.obs_signal_sector_features,
         hidden_dim=cfg.hidden_dim,
         recurrent_backbone=cfg.recurrent_backbone,
         comm=cfg.comm,
@@ -716,8 +736,26 @@ def _stage_recurrent_config(
         bc_signal_constraint_frontier_bias=cfg.bc_signal_constraint_frontier_bias,
         bc_signal_initial_message_weight=cfg.bc_signal_initial_message_weight,
         bc_signal_initial_message_loss_weight=cfg.bc_signal_initial_message_loss_weight,
+        bc_signal_constraint_message_loss_weight=cfg.bc_signal_constraint_message_loss_weight,
         bc_signal_sync_response_weight=cfg.bc_signal_sync_response_weight,
         bc_signal_sync_response_action_loss_weight=cfg.bc_signal_sync_response_action_loss_weight,
+        bc_signal_active_scan_response_action_weight=(
+            cfg.bc_signal_active_scan_response_action_weight
+        ),
+        bc_signal_active_scan_response_min_map_size=(
+            cfg.bc_signal_active_scan_response_min_map_size
+        ),
+        bc_signal_active_scan_response_max_agents=(
+            cfg.bc_signal_active_scan_response_max_agents
+        ),
+        bc_signal_scan_bridge_action_weight=cfg.bc_signal_scan_bridge_action_weight,
+        bc_signal_scan_bridge_min_map_size=cfg.bc_signal_scan_bridge_min_map_size,
+        bc_signal_scan_bridge_remaining_threshold=(
+            cfg.bc_signal_scan_bridge_remaining_threshold
+        ),
+        bc_signal_scan_bridge_max_teammate_distance=(
+            cfg.bc_signal_scan_bridge_max_teammate_distance
+        ),
         bc_signal_target_aux_weight=cfg.bc_signal_target_aux_weight,
         bc_signal_target_match_action_weight=cfg.bc_signal_target_match_action_weight,
         bc_signal_first_target_scan_action_weight=cfg.bc_signal_first_target_scan_action_weight,
@@ -743,6 +781,12 @@ def _stage_recurrent_config(
         bc_signal_ambiguous_target_decision_min_map_size=(
             cfg.bc_signal_ambiguous_target_decision_min_map_size
         ),
+        bc_signal_ambiguous_target_search_labels=(
+            cfg.bc_signal_ambiguous_target_search_labels
+        ),
+        bc_signal_ambiguous_target_search_min_map_size=(
+            cfg.bc_signal_ambiguous_target_search_min_map_size
+        ),
         bc_signal_rejected_target_interact_loss_weight=cfg.bc_signal_rejected_target_interact_loss_weight,
         bc_signal_rejected_target_interact_action_loss_weight=(
             cfg.bc_signal_rejected_target_interact_action_loss_weight
@@ -752,6 +796,16 @@ def _stage_recurrent_config(
         bc_signal_decoy_scan_action_loss_weight=cfg.bc_signal_decoy_scan_action_loss_weight,
         bc_signal_rejected_target_drift_action_loss_weight=(
             cfg.bc_signal_rejected_target_drift_action_loss_weight
+        ),
+        bc_signal_clue_interact_action_weight=(
+            cfg.bc_signal_clue_interact_action_weight
+        ),
+        bc_signal_clue_interact_min_map_size=cfg.bc_signal_clue_interact_min_map_size,
+        bc_signal_evidence_sweep_action_weight=(
+            cfg.bc_signal_evidence_sweep_action_weight
+        ),
+        bc_signal_evidence_sweep_min_map_size=(
+            cfg.bc_signal_evidence_sweep_min_map_size
         ),
         bc_signal_frontier_exploration_action_weight=(
             cfg.bc_signal_frontier_exploration_action_weight
@@ -954,6 +1008,8 @@ def _stage_recurrent_config(
         eval_signal_exact_target_scan_lock=cfg.eval_signal_exact_target_scan_lock,
         eval_signal_compatible_target_scan_assist=cfg.eval_signal_compatible_target_scan_assist,
         eval_signal_compatible_target_scan_min_strength=cfg.eval_signal_compatible_target_scan_min_strength,
+        eval_signal_negative_memory_scan_guard=cfg.eval_signal_negative_memory_scan_guard,
+        eval_signal_target_probe_assist=cfg.eval_signal_target_probe_assist,
         eval_signal_scan_sync_assist=cfg.eval_signal_scan_sync_assist,
         eval_signal_scan_sync_force_first=cfg.eval_signal_scan_sync_force_first,
         eval_signal_scan_broadcast_assist=cfg.eval_signal_scan_broadcast_assist,
@@ -1246,6 +1302,8 @@ def main() -> None:
     parser.add_argument("--obs-signal-negative-memory-window", type=int, default=64)
     parser.add_argument("--obs-signal-inferred-target-features", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--obs-signal-target-match-features", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--obs-signal-confidence-features", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--obs-signal-sector-features", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--comm", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--comm-token-limit", type=int, default=8)
     parser.add_argument("--comm-vocab-size", type=int, default=32)
@@ -1284,8 +1342,48 @@ def main() -> None:
     )
     parser.add_argument("--bc-signal-initial-message-weight", type=float, default=4.0)
     parser.add_argument("--bc-signal-initial-message-loss-weight", type=float, default=4.0)
+    parser.add_argument("--bc-signal-constraint-message-loss-weight", type=float, default=4.0)
     parser.add_argument("--bc-signal-sync-response-weight", type=float, default=1.0)
     parser.add_argument("--bc-signal-sync-response-action-loss-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--bc-signal-active-scan-response-action-weight",
+        type=float,
+        default=RecurrentCurriculumConfig.bc_signal_active_scan_response_action_weight,
+        help=(
+            "Opt-in Signal Hunt action loss for trusted target-informed agents to "
+            "join/scan while a teammate target scan is active."
+        ),
+    )
+    parser.add_argument(
+        "--bc-signal-active-scan-response-min-map-size",
+        type=int,
+        default=RecurrentCurriculumConfig.bc_signal_active_scan_response_min_map_size,
+    )
+    parser.add_argument(
+        "--bc-signal-active-scan-response-max-agents",
+        type=int,
+        default=RecurrentCurriculumConfig.bc_signal_active_scan_response_max_agents,
+    )
+    parser.add_argument(
+        "--bc-signal-scan-bridge-action-weight",
+        type=float,
+        default=RecurrentCurriculumConfig.bc_signal_scan_bridge_action_weight,
+    )
+    parser.add_argument(
+        "--bc-signal-scan-bridge-min-map-size",
+        type=int,
+        default=RecurrentCurriculumConfig.bc_signal_scan_bridge_min_map_size,
+    )
+    parser.add_argument(
+        "--bc-signal-scan-bridge-remaining-threshold",
+        type=float,
+        default=RecurrentCurriculumConfig.bc_signal_scan_bridge_remaining_threshold,
+    )
+    parser.add_argument(
+        "--bc-signal-scan-bridge-max-teammate-distance",
+        type=int,
+        default=RecurrentCurriculumConfig.bc_signal_scan_bridge_max_teammate_distance,
+    )
     parser.add_argument("--bc-signal-target-aux-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-target-match-action-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-first-target-scan-action-weight", type=float, default=0.0)
@@ -1315,12 +1413,26 @@ def main() -> None:
         ),
     )
     parser.add_argument("--bc-signal-ambiguous-target-decision-min-map-size", type=int, default=16)
+    parser.add_argument(
+        "--bc-signal-ambiguous-target-search-labels",
+        action="store_true",
+        default=False,
+        help=(
+            "Opt-in Signal ablation: keep clue/frontier search labels active "
+            "while standing on locally ambiguous target hypotheses."
+        ),
+    )
+    parser.add_argument("--bc-signal-ambiguous-target-search-min-map-size", type=int, default=16)
     parser.add_argument("--bc-signal-rejected-target-interact-loss-weight", type=float, default=0.05)
     parser.add_argument("--bc-signal-rejected-target-interact-action-loss-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-bad-redundant-target-interact-loss-weight", type=float, default=0.05)
     parser.add_argument("--bc-signal-decoy-drift-action-loss-weight", type=float, default=0.25)
     parser.add_argument("--bc-signal-decoy-scan-action-loss-weight", type=float, default=0.1)
     parser.add_argument("--bc-signal-rejected-target-drift-action-loss-weight", type=float, default=0.0)
+    parser.add_argument("--bc-signal-clue-interact-action-weight", type=float, default=0.0)
+    parser.add_argument("--bc-signal-clue-interact-min-map-size", type=int, default=16)
+    parser.add_argument("--bc-signal-evidence-sweep-action-weight", type=float, default=0.0)
+    parser.add_argument("--bc-signal-evidence-sweep-min-map-size", type=int, default=16)
     parser.add_argument("--bc-signal-frontier-exploration-action-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-frontier-exploration-min-map-size", type=int, default=16)
     parser.add_argument("--bc-pipeline-pickup-action-loss-weight", type=float, default=0.0)
@@ -1603,6 +1715,16 @@ def main() -> None:
         default=False,
     )
     parser.add_argument("--eval-signal-compatible-target-scan-min-strength", type=int, default=3)
+    parser.add_argument(
+        "--eval-signal-negative-memory-scan-guard",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--eval-signal-target-probe-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--eval-signal-scan-sync-assist", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--eval-signal-scan-sync-force-first", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--eval-signal-scan-broadcast-assist", action=argparse.BooleanOptionalAction, default=False)
@@ -1743,6 +1865,8 @@ def main() -> None:
         obs_signal_negative_memory_window=args.obs_signal_negative_memory_window,
         obs_signal_inferred_target_features=args.obs_signal_inferred_target_features,
         obs_signal_target_match_features=args.obs_signal_target_match_features,
+        obs_signal_confidence_features=args.obs_signal_confidence_features,
+        obs_signal_sector_features=args.obs_signal_sector_features,
         comm=args.comm,
         comm_token_limit=args.comm_token_limit,
         comm_vocab_size=args.comm_vocab_size,
@@ -1759,8 +1883,26 @@ def main() -> None:
         bc_signal_constraint_frontier_bias=args.bc_signal_constraint_frontier_bias,
         bc_signal_initial_message_weight=args.bc_signal_initial_message_weight,
         bc_signal_initial_message_loss_weight=args.bc_signal_initial_message_loss_weight,
+        bc_signal_constraint_message_loss_weight=args.bc_signal_constraint_message_loss_weight,
         bc_signal_sync_response_weight=args.bc_signal_sync_response_weight,
         bc_signal_sync_response_action_loss_weight=args.bc_signal_sync_response_action_loss_weight,
+        bc_signal_active_scan_response_action_weight=(
+            args.bc_signal_active_scan_response_action_weight
+        ),
+        bc_signal_active_scan_response_min_map_size=(
+            args.bc_signal_active_scan_response_min_map_size
+        ),
+        bc_signal_active_scan_response_max_agents=(
+            args.bc_signal_active_scan_response_max_agents
+        ),
+        bc_signal_scan_bridge_action_weight=args.bc_signal_scan_bridge_action_weight,
+        bc_signal_scan_bridge_min_map_size=args.bc_signal_scan_bridge_min_map_size,
+        bc_signal_scan_bridge_remaining_threshold=(
+            args.bc_signal_scan_bridge_remaining_threshold
+        ),
+        bc_signal_scan_bridge_max_teammate_distance=(
+            args.bc_signal_scan_bridge_max_teammate_distance
+        ),
         bc_signal_target_aux_weight=args.bc_signal_target_aux_weight,
         bc_signal_target_match_action_weight=args.bc_signal_target_match_action_weight,
         bc_signal_first_target_scan_action_weight=args.bc_signal_first_target_scan_action_weight,
@@ -1786,6 +1928,12 @@ def main() -> None:
         bc_signal_ambiguous_target_decision_min_map_size=(
             args.bc_signal_ambiguous_target_decision_min_map_size
         ),
+        bc_signal_ambiguous_target_search_labels=(
+            args.bc_signal_ambiguous_target_search_labels
+        ),
+        bc_signal_ambiguous_target_search_min_map_size=(
+            args.bc_signal_ambiguous_target_search_min_map_size
+        ),
         bc_signal_rejected_target_interact_loss_weight=args.bc_signal_rejected_target_interact_loss_weight,
         bc_signal_rejected_target_interact_action_loss_weight=(
             args.bc_signal_rejected_target_interact_action_loss_weight
@@ -1794,6 +1942,14 @@ def main() -> None:
         bc_signal_decoy_drift_action_loss_weight=args.bc_signal_decoy_drift_action_loss_weight,
         bc_signal_decoy_scan_action_loss_weight=args.bc_signal_decoy_scan_action_loss_weight,
         bc_signal_rejected_target_drift_action_loss_weight=args.bc_signal_rejected_target_drift_action_loss_weight,
+        bc_signal_clue_interact_action_weight=args.bc_signal_clue_interact_action_weight,
+        bc_signal_clue_interact_min_map_size=args.bc_signal_clue_interact_min_map_size,
+        bc_signal_evidence_sweep_action_weight=(
+            args.bc_signal_evidence_sweep_action_weight
+        ),
+        bc_signal_evidence_sweep_min_map_size=(
+            args.bc_signal_evidence_sweep_min_map_size
+        ),
         bc_signal_frontier_exploration_action_weight=(
             args.bc_signal_frontier_exploration_action_weight
         ),
@@ -2006,6 +2162,8 @@ def main() -> None:
         eval_signal_compatible_target_scan_min_strength=(
             args.eval_signal_compatible_target_scan_min_strength
         ),
+        eval_signal_negative_memory_scan_guard=args.eval_signal_negative_memory_scan_guard,
+        eval_signal_target_probe_assist=args.eval_signal_target_probe_assist,
         eval_signal_scan_sync_assist=args.eval_signal_scan_sync_assist,
         eval_signal_scan_sync_force_first=args.eval_signal_scan_sync_force_first,
         eval_signal_scan_broadcast_assist=args.eval_signal_scan_broadcast_assist,

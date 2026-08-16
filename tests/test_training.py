@@ -513,6 +513,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         obs_signal_negative_memory=True,
         obs_signal_negative_memory_window=12,
         obs_signal_inferred_target_features=True,
+        obs_signal_confidence_features=True,
+        obs_signal_sector_features=True,
         bc_signal_redundant_target_interact_weight=1.5,
         hidden_dim=96,
         recurrent_backbone="residual_mlp",
@@ -536,8 +538,18 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         bc_signal_constraint_frontier_bias=True,
         bc_signal_initial_message_weight=4.5,
         bc_signal_initial_message_loss_weight=3.5,
+        bc_signal_constraint_message_loss_weight=2.75,
         bc_signal_sync_response_weight=2.5,
         bc_signal_sync_response_action_loss_weight=1.25,
+        bc_signal_active_scan_response_action_weight=0.95,
+        bc_signal_active_scan_response_min_map_size=12,
+        bc_signal_active_scan_response_max_agents=2,
+        bc_signal_scan_bridge_action_weight=0.55,
+        bc_signal_scan_bridge_min_map_size=12,
+        bc_signal_scan_bridge_remaining_threshold=0.35,
+        bc_signal_scan_bridge_max_teammate_distance=5,
+        bc_signal_clue_interact_action_weight=0.85,
+        bc_signal_clue_interact_min_map_size=12,
         bc_signal_target_match_action_weight=1.75,
         bc_signal_target_opportunity_action_weight=0.8,
         bc_signal_redundant_target_wait_action_loss_weight=1.4,
@@ -550,6 +562,10 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         bc_signal_target_decision_neg_weight=1.75,
         bc_signal_ambiguous_target_decision_negatives=True,
         bc_signal_ambiguous_target_decision_min_map_size=12,
+        bc_signal_ambiguous_target_search_labels=True,
+        bc_signal_ambiguous_target_search_min_map_size=12,
+        bc_signal_evidence_sweep_action_weight=0.75,
+        bc_signal_evidence_sweep_min_map_size=12,
         bc_signal_frontier_exploration_action_weight=0.65,
         bc_signal_frontier_exploration_min_map_size=12,
         bc_pipeline_delivery_progress_action_loss_weight=0.8,
@@ -582,6 +598,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         eval_signal_target_validity_threshold=0.55,
         eval_signal_target_decision_threshold=0.6,
         eval_signal_target_decision_suppress=False,
+        eval_signal_negative_memory_scan_guard=True,
+        eval_signal_target_probe_assist=True,
         eval_signal_scan_broadcast_assist=True,
         eval_signal_exact_target_message_guard=True,
         eval_signal_initial_exact_message_copy_assist=True,
@@ -683,11 +701,23 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["bc_signal_constraint_frontier_bias"] is True
     assert result["config"]["bc_signal_initial_message_weight"] == pytest.approx(4.5)
     assert result["config"]["bc_signal_initial_message_loss_weight"] == pytest.approx(3.5)
+    assert result["config"]["bc_signal_constraint_message_loss_weight"] == pytest.approx(2.75)
     assert result["config"]["bc_signal_sync_response_action_loss_weight"] == pytest.approx(1.25)
+    assert result["config"]["bc_signal_active_scan_response_action_weight"] == pytest.approx(0.95)
+    assert result["config"]["bc_signal_active_scan_response_min_map_size"] == 12
+    assert result["config"]["bc_signal_active_scan_response_max_agents"] == 2
+    assert result["config"]["bc_signal_scan_bridge_action_weight"] == pytest.approx(0.55)
+    assert result["config"]["bc_signal_scan_bridge_min_map_size"] == 12
+    assert result["config"]["bc_signal_scan_bridge_remaining_threshold"] == pytest.approx(0.35)
+    assert result["config"]["bc_signal_scan_bridge_max_teammate_distance"] == 5
+    assert result["config"]["bc_signal_clue_interact_action_weight"] == pytest.approx(0.85)
+    assert result["config"]["bc_signal_clue_interact_min_map_size"] == 12
     assert result["config"]["bc_signal_redundant_target_wait_action_loss_weight"] == pytest.approx(1.4)
     assert result["config"]["bc_signal_rejected_target_interact_action_loss_weight"] == pytest.approx(0.7)
     assert result["config"]["bc_signal_target_validity_loss_weight"] == pytest.approx(0.6)
     assert result["config"]["bc_signal_target_decision_loss_weight"] == pytest.approx(0.4)
+    assert result["config"]["bc_signal_evidence_sweep_action_weight"] == pytest.approx(0.75)
+    assert result["config"]["bc_signal_evidence_sweep_min_map_size"] == 12
     assert result["config"]["bc_signal_frontier_exploration_action_weight"] == pytest.approx(0.65)
     assert result["config"]["bc_signal_frontier_exploration_min_map_size"] == 12
     assert result["config"]["bc_pipeline_delivery_progress_action_loss_weight"] == pytest.approx(0.8)
@@ -720,6 +750,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["eval_signal_target_validity_threshold"] == pytest.approx(0.55)
     assert result["config"]["eval_signal_target_decision_threshold"] == pytest.approx(0.6)
     assert result["config"]["eval_signal_target_decision_suppress"] is False
+    assert result["config"]["eval_signal_negative_memory_scan_guard"] is True
+    assert result["config"]["eval_signal_target_probe_assist"] is True
     assert result["config"]["eval_signal_scan_broadcast_assist"] is True
     assert result["config"]["eval_signal_exact_target_message_guard"] is True
     assert result["config"]["eval_signal_initial_exact_message_copy_assist"] is True
@@ -754,6 +786,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["obs_pipeline_shared_feedback"] is True
     assert result["config"]["obs_pipeline_progress_features"] is True
     assert result["config"]["obs_signal_negative_memory"] is True
+    assert result["config"]["obs_signal_sector_features"] is True
     assert result["config"]["dagger_solo_target_team_weight"] == pytest.approx(2.25)
     assert result["config"]["dagger_focus_events"] == (
         "pipeline_pickup_miss,pipeline_delivery_miss"
@@ -793,6 +826,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["dagger_signal_target_rendezvous_max_agents"] == 3
     assert result["config"]["bc_signal_ambiguous_target_decision_negatives"] is True
     assert result["config"]["bc_signal_ambiguous_target_decision_min_map_size"] == 12
+    assert result["config"]["bc_signal_ambiguous_target_search_labels"] is True
+    assert result["config"]["bc_signal_ambiguous_target_search_min_map_size"] == 12
     assert result["config"]["pipeline_assisted_rollout_navigation_assist"] is False
     assert result["config"]["pipeline_assisted_rollout_navigation_assist_trust_messages"] is False
     assert result["config"]["pipeline_assisted_rollout_station_interact_guard"] is True
@@ -868,6 +903,10 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.obs_pipeline_progress_features is True
     assert stage_cfg.obs_signal_negative_memory_window == 12
     assert stage_cfg.obs_signal_inferred_target_features is True
+    assert stage_cfg.obs_signal_confidence_features is True
+    assert stage_cfg.obs_signal_sector_features is True
+    assert stage_cfg.eval_signal_negative_memory_scan_guard is True
+    assert stage_cfg.eval_signal_target_probe_assist is True
     assert stage_cfg.hidden_dim == 96
     assert stage_cfg.recurrent_backbone == "residual_mlp"
     assert stage_cfg.bc_eval_every_epochs == 2
@@ -891,8 +930,18 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.bc_signal_constraint_frontier_bias is True
     assert stage_cfg.bc_signal_initial_message_weight == pytest.approx(4.5)
     assert stage_cfg.bc_signal_initial_message_loss_weight == pytest.approx(3.5)
+    assert stage_cfg.bc_signal_constraint_message_loss_weight == pytest.approx(2.75)
     assert stage_cfg.bc_signal_sync_response_weight == pytest.approx(2.5)
     assert stage_cfg.bc_signal_sync_response_action_loss_weight == pytest.approx(1.25)
+    assert stage_cfg.bc_signal_active_scan_response_action_weight == pytest.approx(0.95)
+    assert stage_cfg.bc_signal_active_scan_response_min_map_size == 12
+    assert stage_cfg.bc_signal_active_scan_response_max_agents == 2
+    assert stage_cfg.bc_signal_scan_bridge_action_weight == pytest.approx(0.55)
+    assert stage_cfg.bc_signal_scan_bridge_min_map_size == 12
+    assert stage_cfg.bc_signal_scan_bridge_remaining_threshold == pytest.approx(0.35)
+    assert stage_cfg.bc_signal_scan_bridge_max_teammate_distance == 5
+    assert stage_cfg.bc_signal_clue_interact_action_weight == pytest.approx(0.85)
+    assert stage_cfg.bc_signal_clue_interact_min_map_size == 12
     assert stage_cfg.bc_signal_target_match_action_weight == pytest.approx(1.75)
     assert stage_cfg.bc_signal_target_opportunity_action_weight == pytest.approx(0.8)
     assert stage_cfg.bc_signal_redundant_target_wait_action_loss_weight == pytest.approx(1.4)
@@ -903,6 +952,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.bc_signal_target_decision_loss_weight == pytest.approx(0.4)
     assert stage_cfg.bc_signal_target_decision_pos_weight == pytest.approx(2.5)
     assert stage_cfg.bc_signal_target_decision_neg_weight == pytest.approx(1.75)
+    assert stage_cfg.bc_signal_evidence_sweep_action_weight == pytest.approx(0.75)
+    assert stage_cfg.bc_signal_evidence_sweep_min_map_size == 12
     assert stage_cfg.bc_signal_frontier_exploration_action_weight == pytest.approx(0.65)
     assert stage_cfg.bc_signal_frontier_exploration_min_map_size == 12
     assert stage_cfg.bc_pipeline_frontier_exploration_action_loss_weight == pytest.approx(0.55)
@@ -986,6 +1037,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.dagger_signal_target_rendezvous_max_agents == 3
     assert stage_cfg.bc_signal_ambiguous_target_decision_negatives is True
     assert stage_cfg.bc_signal_ambiguous_target_decision_min_map_size == 12
+    assert stage_cfg.bc_signal_ambiguous_target_search_labels is True
+    assert stage_cfg.bc_signal_ambiguous_target_search_min_map_size == 12
     assert stage_cfg.dagger_replay_priority_events == "movement_stall_miss"
     assert stage_cfg.dagger_replay_balance_positive_events == "first_target_scan,joint_target_scan"
     assert stage_cfg.dagger_replay_balance_negative_events == "decoy_scan,rejected_target_scan"
@@ -1096,6 +1149,7 @@ def test_recurrent_init_inherits_eval_send_threshold(tmp_path):
                 "obs_memory_mode": "egocentric",
                 "obs_memory_radius": 2,
                 "obs_signal_negative_memory": True,
+                "obs_signal_sector_features": True,
             }
         },
         threshold_checkpoint,
@@ -1107,10 +1161,12 @@ def test_recurrent_init_inherits_eval_send_threshold(tmp_path):
         "obs_memory_mode": "egocentric",
         "obs_memory_radius": 2,
         "obs_signal_negative_memory": True,
+        "obs_signal_sector_features": True,
     }
     assert inherit_cfg.obs_memory_mode == "egocentric"
     assert inherit_cfg.obs_memory_radius == 2
     assert inherit_cfg.obs_signal_negative_memory is True
+    assert inherit_cfg.obs_signal_sector_features is True
     assert _checkpoint_eval_send_threshold(threshold_checkpoint) == pytest.approx(0.73)
     assert _inherit_recurrent_init_eval_send_threshold(inherit_cfg) == pytest.approx(0.73)
     assert inherit_cfg.eval_send_threshold == pytest.approx(0.73)
@@ -1119,6 +1175,7 @@ def test_recurrent_init_inherits_eval_send_threshold(tmp_path):
         recurrent_init=str(threshold_checkpoint),
         obs_memory_radius=7,
         obs_signal_negative_memory=True,
+        obs_signal_sector_features=True,
         eval_send_threshold=0.41,
     )
     inherited_override_obs = _inherit_recurrent_init_observation_config(override_cfg)
@@ -1126,6 +1183,7 @@ def test_recurrent_init_inherits_eval_send_threshold(tmp_path):
     assert override_cfg.obs_memory_mode == "egocentric"
     assert override_cfg.obs_memory_radius == 7
     assert override_cfg.obs_signal_negative_memory is True
+    assert override_cfg.obs_signal_sector_features is True
     assert _inherit_recurrent_init_eval_send_threshold(override_cfg) is None
     assert override_cfg.eval_send_threshold == pytest.approx(0.41)
 
@@ -1839,7 +1897,7 @@ def test_recurrent_skip_bc_stage_requires_checkpoint_and_no_dagger():
 
 def test_recurrent_rollout_eval_decoding_updates_actions_and_comm_tensors():
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
-    from syncorsink.envs.maps import TILE_TARGET
+    from syncorsink.envs.maps import TILE_CLUE, TILE_TARGET
     from syncorsink.train.recurrent_bc_rl import (
         RecurrentConfig,
         _apply_recurrent_rollout_eval_decoding,
@@ -2310,7 +2368,7 @@ def test_recurrent_dagger_focus_step_weight_helpers():
 
 def test_recurrent_signal_target_interact_label_weighting():
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
-    from syncorsink.envs.maps import TILE_TARGET
+    from syncorsink.envs.maps import TILE_CLUE, TILE_TARGET
     from syncorsink.train.recurrent_bc_rl import (
         RecurrentConfig,
         _SIGNAL_TARGET_SCAN_KIND_FIRST,
@@ -2325,6 +2383,8 @@ def test_recurrent_signal_target_interact_label_weighting():
         _apply_signal_scan_gate_decoding,
         _apply_signal_scan_refresh_decoding,
         _apply_signal_scan_sync_decoding,
+        _apply_signal_negative_memory_scan_guard,
+        _apply_signal_target_probe_assist,
         _apply_signal_target_decision_decoding,
         _apply_signal_target_validity_decoding,
         _apply_signal_target_scan_decoding,
@@ -2335,9 +2395,11 @@ def test_recurrent_signal_target_interact_label_weighting():
         _new_episode_sequence,
         _redundant_target_scan_agents,
         _apply_signal_compatible_target_scan_assist,
+        _signal_ambiguous_target_search_candidate,
         _signal_center_target_scan_decoding_candidate,
         _signal_center_compatible_target_scan_decoding_candidate,
         _signal_center_ambiguous_target_scan_candidate,
+        _signal_frontier_exploration_action_label_mask,
         _signal_bad_redundant_target_interact_agents,
         _signal_bad_redundant_target_interact_loss,
         _signal_bad_redundant_target_mask,
@@ -2355,6 +2417,7 @@ def test_recurrent_signal_target_interact_label_weighting():
         _signal_target_scan_opportunity_label_mask,
         _signal_target_validity_label,
         _signal_target_validity_loss,
+        _signal_visible_clue_action_label_mask,
         _wrong_target_scan_agents,
     )
 
@@ -2923,6 +2986,94 @@ def test_recurrent_signal_target_interact_label_weighting():
     )
     assert strict_decision_mask[0] == pytest.approx(1.0)
     assert strict_decision_label[0] == pytest.approx(0.0)
+    default_visible_clue_mask, default_visible_clue_action_id = _signal_visible_clue_action_label_mask(
+        env,
+        ambiguous_obs,
+        scan_cfg,
+    )
+    np.testing.assert_allclose(default_visible_clue_mask, np.array([0.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(default_visible_clue_action_id, np.array([-1, -1], dtype=np.int64))
+    search_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        obs_exploration_memory=True,
+        bc_signal_ambiguous_target_search_labels=True,
+        bc_signal_ambiguous_target_search_min_map_size=8,
+        bc_signal_visible_clue_min_map_size=8,
+        bc_signal_frontier_exploration_min_map_size=8,
+    )
+    assert _signal_ambiguous_target_search_candidate(ambiguous_target_obs, search_cfg)
+    ambiguous_clue_obs = {
+        0: {
+            key: value.copy() if hasattr(value, "copy") else value
+            for key, value in ambiguous_target_obs.items()
+        },
+        1: decode_obs[1],
+    }
+    ambiguous_clue_grid = ambiguous_clue_obs[0]["local_grid"].copy()
+    clue_lx = min(ambiguous_clue_grid.shape[1] - 1, cx + 1)
+    ambiguous_clue_grid[cy, clue_lx] = TILE_CLUE
+    ambiguous_clue_obs[0]["local_grid"] = ambiguous_clue_grid
+    search_visible_clue_mask, search_visible_clue_action_id = _signal_visible_clue_action_label_mask(
+        env,
+        ambiguous_clue_obs,
+        search_cfg,
+    )
+    np.testing.assert_allclose(search_visible_clue_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(
+        search_visible_clue_action_id,
+        np.array([env.ACTION_RIGHT, -1], dtype=np.int64),
+    )
+    search_clue_frontier_mask, search_clue_frontier_action_id = (
+        _signal_frontier_exploration_action_label_mask(
+            env,
+            ambiguous_clue_obs,
+            search_cfg,
+        )
+    )
+    np.testing.assert_allclose(search_clue_frontier_mask, np.array([0.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(search_clue_frontier_action_id, np.array([-1, -1], dtype=np.int64))
+    ambiguous_frontier_obs = {
+        0: {
+            key: value.copy() if hasattr(value, "copy") else value
+            for key, value in ambiguous_target_obs.items()
+        },
+        1: decode_obs[1],
+    }
+    explored = np.ones((env.map_size, env.map_size), dtype=np.int8)
+    fx = min(env.map_size - 1, tx + 1)
+    if fx == tx:
+        fx = max(0, tx - 1)
+    explored[ty, fx] = 0
+    ambiguous_frontier_obs[0]["explored_mask"] = explored
+    ambiguous_frontier_obs[1]["explored_mask"] = np.ones_like(explored)
+    default_frontier_mask, default_frontier_action_id = _signal_frontier_exploration_action_label_mask(
+        env,
+        ambiguous_frontier_obs,
+        RecurrentConfig(
+            scenario="signal_hunt",
+            map_size=8,
+            agents=2,
+            obs_exploration_memory=True,
+            bc_signal_frontier_exploration_min_map_size=8,
+        ),
+    )
+    np.testing.assert_allclose(default_frontier_mask, np.array([0.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(default_frontier_action_id, np.array([-1, -1], dtype=np.int64))
+    search_frontier_mask, search_frontier_action_id = _signal_frontier_exploration_action_label_mask(
+        env,
+        ambiguous_frontier_obs,
+        search_cfg,
+    )
+    np.testing.assert_allclose(search_frontier_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(
+        search_frontier_action_id,
+        np.array([
+            env.ACTION_RIGHT if fx > tx else env.ACTION_LEFT,
+            -1,
+        ], dtype=np.int64),
+    )
     scan_cfg.eval_signal_compatible_target_scan_assist = True
     compatible_actions = _apply_signal_compatible_target_scan_assist(
         scan_cfg,
@@ -2944,6 +3095,85 @@ def test_recurrent_signal_target_interact_label_weighting():
     )
     assert compatible_wait_actions.tolist() == [env.ACTION_STAY, env.ACTION_INTERACT]
     scan_cfg.eval_signal_compatible_target_scan_assist = False
+    negative_guard_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        obs_signal_negative_memory=True,
+        obs_signal_negative_memory_window=4,
+        eval_signal_negative_memory_scan_guard=True,
+    )
+    negative_guard_actions = _apply_signal_negative_memory_scan_guard(
+        negative_guard_cfg,
+        decode_obs,
+        torch.full((2,), env.ACTION_INTERACT, dtype=torch.long),
+        scan_state={
+            "step": 5,
+            "negative_target_log": [{"agent_id": 0, "pos": list(target_pos), "step": 4}],
+        },
+    )
+    assert negative_guard_actions.tolist() == [env.ACTION_STAY, env.ACTION_INTERACT]
+    stale_negative_guard_actions = _apply_signal_negative_memory_scan_guard(
+        negative_guard_cfg,
+        decode_obs,
+        torch.full((2,), env.ACTION_INTERACT, dtype=torch.long),
+        scan_state={
+            "step": 10,
+            "negative_target_log": [{"agent_id": 0, "pos": list(target_pos), "step": 4}],
+        },
+    )
+    assert stale_negative_guard_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_INTERACT]
+    probe_obs = {
+        0: {
+            key: value.copy() if hasattr(value, "copy") else value
+            for key, value in decode_obs[0].items()
+        },
+        1: {
+            key: value.copy() if hasattr(value, "copy") else value
+            for key, value in decode_obs[1].items()
+        },
+    }
+    for aid in probe_obs:
+        probe_obs[aid]["goal_hint"] = np.full((8,), -1, dtype=np.int16)
+        probe_obs[aid]["messages_tokens"] = np.full((2, 8), -1, dtype=np.int16)
+    probe_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        obs_signal_negative_memory=True,
+        obs_signal_negative_memory_window=4,
+        eval_signal_target_probe_assist=True,
+    )
+    probe_actions = _apply_signal_target_probe_assist(
+        probe_cfg,
+        probe_obs,
+        torch.full((2,), env.ACTION_STAY, dtype=torch.long),
+        scan_state={"step": 5, "negative_target_log": []},
+    )
+    assert probe_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_INTERACT]
+    negative_probe_actions = _apply_signal_target_probe_assist(
+        probe_cfg,
+        probe_obs,
+        torch.full((2,), env.ACTION_STAY, dtype=torch.long),
+        scan_state={
+            "step": 5,
+            "negative_target_log": [{"agent_id": 0, "pos": list(target_pos), "step": 4}],
+        },
+    )
+    assert negative_probe_actions.tolist() == [env.ACTION_STAY, env.ACTION_INTERACT]
+    active_probe_actions = _apply_signal_target_probe_assist(
+        probe_cfg,
+        probe_obs,
+        torch.full((2,), env.ACTION_STAY, dtype=torch.long),
+        scan_state={
+            "step": 5,
+            "scan_log": {0: 5},
+            "scan_pos": {0: target_pos},
+            "scan_window": 3,
+            "negative_target_log": [],
+        },
+    )
+    assert active_probe_actions.tolist() == [env.ACTION_STAY, env.ACTION_INTERACT]
     constraint_copy_cfg = RecurrentConfig(
         scenario="signal_hunt",
         map_size=8,
@@ -3331,10 +3561,14 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         _label_latest_signal_decoy_scan_actions,
         _label_latest_signal_rejected_target_drift_actions,
         _new_episode_sequence,
+        _signal_clue_interact_action_label_mask,
+        _signal_clue_interact_miss_agents,
         _signal_decoy_pursuit_agents,
         _signal_decoy_drift_action_loss,
         _signal_exact_target_handoff_candidate,
         _signal_constraint_frontier_targets,
+        _signal_evidence_sweep_action_label_mask,
+        _signal_evidence_sweep_miss_agents,
         _signal_frontier_exploration_action_label_mask,
         _signal_frontier_exploration_miss_agents,
         _signal_nearest_frontier_cell,
@@ -3344,6 +3578,7 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         _signal_positive_target_pursuit_agents,
         _signal_rejected_target_drift_agents,
         _signal_assigned_frontier_cell,
+        _signal_constraint_message_label,
         _signal_target_decoy_drift_miss_agents,
         _signal_target_discovery_miss_agents,
         _signal_target_handoff_miss_agents,
@@ -3643,6 +3878,71 @@ def test_recurrent_signal_target_pursuit_label_weighting():
             spread_env.ACTION_LEFT,
         ], dtype=np.int64),
     )
+    sweep_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=16,
+        agents=2,
+        obs_exploration_memory=True,
+        bc_signal_evidence_sweep_action_weight=0.5,
+        bc_signal_evidence_sweep_min_map_size=16,
+    )
+    sweep_obs = {
+        aid: {
+            key: value.copy() if hasattr(value, "copy") else value
+            for key, value in frontier_obs[aid].items()
+        }
+        for aid in range(2)
+    }
+    sweep_explored = np.ones((16, 16), dtype=np.int8)
+    sweep_explored[8, 2] = 0
+    sweep_explored[8, 13] = 0
+    for aid in range(2):
+        sweep_obs[aid]["self_pos"] = np.array([8, 8], dtype=np.int16)
+        sweep_obs[aid]["goal_hint"] = np.full_like(sweep_obs[aid]["goal_hint"], -1)
+        sweep_obs[aid]["messages_tokens"] = np.full_like(sweep_obs[aid]["messages_tokens"], -1)
+        sweep_obs[aid]["local_grid"] = np.zeros_like(sweep_obs[aid]["local_grid"], dtype=np.int16)
+        sweep_obs[aid]["action_mask"] = np.ones_like(sweep_obs[aid]["action_mask"], dtype=np.float32)
+        sweep_obs[aid]["explored_mask"] = sweep_explored.copy()
+    default_sweep_mask, default_sweep_action_id = _signal_evidence_sweep_action_label_mask(
+        large_env,
+        sweep_obs,
+        RecurrentConfig(
+            scenario="signal_hunt",
+            map_size=16,
+            agents=2,
+            obs_exploration_memory=True,
+        ),
+    )
+    np.testing.assert_allclose(default_sweep_mask, np.array([0.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(default_sweep_action_id, np.array([-1, -1], dtype=np.int64))
+    sweep_mask, sweep_action_id = _signal_evidence_sweep_action_label_mask(
+        large_env,
+        sweep_obs,
+        sweep_cfg,
+    )
+    np.testing.assert_allclose(sweep_mask, np.ones((2,), dtype=np.float32))
+    np.testing.assert_array_equal(
+        sweep_action_id,
+        np.array([large_env.ACTION_LEFT, large_env.ACTION_RIGHT], dtype=np.int64),
+    )
+    assert _signal_evidence_sweep_miss_agents(
+        large_env,
+        sweep_obs,
+        {
+            0: {"action": large_env.ACTION_STAY, "message_tokens": []},
+            1: {"action": large_env.ACTION_STAY, "message_tokens": []},
+        },
+        sweep_cfg,
+    ) == [0, 1]
+    assert _signal_evidence_sweep_miss_agents(
+        large_env,
+        sweep_obs,
+        {
+            0: {"action": large_env.ACTION_LEFT, "message_tokens": []},
+            1: {"action": large_env.ACTION_RIGHT, "message_tokens": []},
+        },
+        sweep_cfg,
+    ) == []
     target_frontier_obs = {
         aid: {
             key: value.copy() if hasattr(value, "copy") else value
@@ -3720,6 +4020,26 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         visible_clue_action_id,
         np.array([large_env.ACTION_INTERACT, -1], dtype=np.int64),
     )
+    clue_interact_mask, clue_interact_action_id = _signal_clue_interact_action_label_mask(
+        large_env,
+        clue_obs,
+        frontier_cfg,
+    )
+    np.testing.assert_allclose(
+        clue_interact_mask,
+        np.array([1.0, 0.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        clue_interact_action_id,
+        np.array([large_env.ACTION_INTERACT, -1], dtype=np.int64),
+    )
+    clue_sweep_mask, clue_sweep_action_id = _signal_evidence_sweep_action_label_mask(
+        large_env,
+        clue_obs,
+        sweep_cfg,
+    )
+    np.testing.assert_allclose(clue_sweep_mask, np.array([0.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(clue_sweep_action_id, np.array([-1, -1], dtype=np.int64))
     assert _signal_visible_clue_miss_agents(
         large_env,
         clue_obs,
@@ -3738,7 +4058,40 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         },
         frontier_cfg,
     ) == []
+    assert _signal_clue_interact_miss_agents(
+        large_env,
+        clue_obs,
+        {
+            0: {"action": large_env.ACTION_STAY, "message_tokens": []},
+            1: {"action": large_env.ACTION_STAY, "message_tokens": []},
+        },
+        frontier_cfg,
+    ) == [0]
+    assert _signal_clue_interact_miss_agents(
+        large_env,
+        clue_obs,
+        {
+            0: {"action": large_env.ACTION_INTERACT, "message_tokens": []},
+            1: {"action": large_env.ACTION_STAY, "message_tokens": []},
+        },
+        frontier_cfg,
+    ) == []
     large_env.scenario_state.data["clue_claimed"] = {(8, 8)}
+    claimed_clue_interact_mask, claimed_clue_interact_action_id = (
+        _signal_clue_interact_action_label_mask(
+            large_env,
+            clue_obs,
+            frontier_cfg,
+        )
+    )
+    np.testing.assert_allclose(
+        claimed_clue_interact_mask,
+        np.array([0.0, 0.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        claimed_clue_interact_action_id,
+        np.array([-1, -1], dtype=np.int64),
+    )
     claimed_clue_mask, claimed_clue_action_id = _signal_visible_clue_action_label_mask(
         large_env,
         clue_obs,
@@ -4032,6 +4385,7 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         initial_broadcast_cfg,
     )
     assert initial_msg_ep_data["signal_initial_message_mask"] == [1.0, 1.0, 0.0, 0.0]
+    assert initial_msg_ep_data["signal_constraint_message_mask"] == [0.0, 0.0, 0.0, 0.0]
     initial_msg_episode = _finalize_episode_sequence(
         initial_msg_ep_data,
         large_env,
@@ -4041,6 +4395,35 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         initial_msg_episode["signal_initial_message_mask"],
         np.array([[1.0, 1.0], [0.0, 0.0]], dtype=np.float32),
     )
+    np.testing.assert_allclose(
+        initial_msg_episode["signal_constraint_message_mask"],
+        np.zeros((2, 2), dtype=np.float32),
+    )
+    assert not _signal_constraint_message_label([24, 1], current_step=0)
+    assert _signal_constraint_message_label([24, 1], current_step=1)
+    assert _signal_constraint_message_label([22, 2, 3, 4, -1, 1], current_step=1)
+    assert not _signal_constraint_message_label([26, large_target[0], large_target[1]], current_step=1)
+    constraint_msg_ep_data = _new_episode_sequence()
+    constraint_msg_actions = {
+        0: {"action": large_env.ACTION_STAY, "message_tokens": [24, 1]},
+        1: {"action": large_env.ACTION_STAY, "message_tokens": []},
+    }
+    _append_labeled_step(
+        constraint_msg_ep_data,
+        handoff_obs,
+        constraint_msg_actions,
+        large_env,
+        initial_broadcast_cfg,
+    )
+    _append_labeled_step(
+        constraint_msg_ep_data,
+        handoff_obs,
+        constraint_msg_actions,
+        large_env,
+        initial_broadcast_cfg,
+    )
+    assert constraint_msg_ep_data["signal_initial_message_mask"] == [1.0, 0.0, 0.0, 0.0]
+    assert constraint_msg_ep_data["signal_constraint_message_mask"] == [0.0, 0.0, 1.0, 0.0]
     copied_initial_messages = _apply_signal_initial_exact_message_copy_assist(
         initial_broadcast_cfg,
         handoff_obs,
@@ -4561,6 +4944,28 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         large_env,
         frontier_cfg,
     )
+    sweep_ep_data = _new_episode_sequence()
+    _append_labeled_step(
+        sweep_ep_data,
+        sweep_obs,
+        {
+            0: {"action": large_env.ACTION_LEFT, "message_tokens": []},
+            1: {"action": large_env.ACTION_RIGHT, "message_tokens": []},
+        },
+        large_env,
+        sweep_cfg,
+    )
+    clue_ep_data = _new_episode_sequence()
+    _append_labeled_step(
+        clue_ep_data,
+        clue_obs,
+        {
+            0: {"action": large_env.ACTION_INTERACT, "message_tokens": []},
+            1: {"action": large_env.ACTION_STAY, "message_tokens": []},
+        },
+        large_env,
+        frontier_cfg,
+    )
     target_frontier_ep_data = _new_episode_sequence()
     _append_labeled_step(
         target_frontier_ep_data,
@@ -4650,6 +5055,24 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         frontier_episode["signal_frontier_exploration_action_id"],
         np.array([[large_env.ACTION_RIGHT, -1]], dtype=np.int64),
     )
+    sweep_episode = _finalize_episode_sequence(sweep_ep_data, large_env, sweep_cfg)
+    np.testing.assert_allclose(
+        sweep_episode["signal_evidence_sweep_action_mask"],
+        np.array([[1.0, 1.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        sweep_episode["signal_evidence_sweep_action_id"],
+        np.array([[large_env.ACTION_LEFT, large_env.ACTION_RIGHT]], dtype=np.int64),
+    )
+    clue_episode = _finalize_episode_sequence(clue_ep_data, large_env, frontier_cfg)
+    np.testing.assert_allclose(
+        clue_episode["signal_clue_interact_action_mask"],
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        clue_episode["signal_clue_interact_action_id"],
+        np.array([[large_env.ACTION_INTERACT, -1]], dtype=np.int64),
+    )
     large_replay = _slice_recurrent_episode(large_episode, 0, 1)
     np.testing.assert_allclose(
         large_replay["signal_decoy_drift_action_mask"],
@@ -4707,6 +5130,24 @@ def test_recurrent_signal_target_pursuit_label_weighting():
     np.testing.assert_array_equal(
         frontier_replay["signal_frontier_exploration_action_id"],
         frontier_episode["signal_frontier_exploration_action_id"],
+    )
+    sweep_replay = _slice_recurrent_episode(sweep_episode, 0, 1)
+    np.testing.assert_allclose(
+        sweep_replay["signal_evidence_sweep_action_mask"],
+        sweep_episode["signal_evidence_sweep_action_mask"],
+    )
+    np.testing.assert_array_equal(
+        sweep_replay["signal_evidence_sweep_action_id"],
+        sweep_episode["signal_evidence_sweep_action_id"],
+    )
+    clue_replay = _slice_recurrent_episode(clue_episode, 0, 1)
+    np.testing.assert_allclose(
+        clue_replay["signal_clue_interact_action_mask"],
+        clue_episode["signal_clue_interact_action_mask"],
+    )
+    np.testing.assert_array_equal(
+        clue_replay["signal_clue_interact_action_id"],
+        clue_episode["signal_clue_interact_action_id"],
     )
     bad_high_logits = torch.zeros((2, 8), dtype=torch.float32)
     bad_low_logits = torch.zeros((2, 8), dtype=torch.float32)
@@ -5073,11 +5514,14 @@ def test_recurrent_signal_negative_memory_feedback_tracks_decoy_scans():
 
 def test_recurrent_signal_sync_response_label_weighting():
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_TARGET
     from syncorsink.train.recurrent_bc_rl import (
         RecurrentConfig,
         _append_labeled_step,
         _feedback_matrix,
         _new_episode_sequence,
+        _signal_active_scan_response_action_label_mask,
+        _signal_scan_bridge_action_label_mask,
         _signal_sync_response_agents,
         _signal_sync_response_action_label_mask,
         _signal_target_handoff_miss_agents,
@@ -5211,6 +5655,135 @@ def test_recurrent_signal_sync_response_label_weighting():
     assert active_scan_ep_data["step_weights"] == [1.0, 5.0]
     assert active_scan_ep_data["signal_sync_response_action_mask"] == [0.0, 1.0]
     assert active_scan_ep_data["signal_sync_response_action_id"] == [-1, action]
+
+    active_scan_response_cfg = RecurrentConfig(
+        **{
+            **vars(cfg),
+            "bc_signal_active_scan_response_action_weight": 1.1,
+            "bc_signal_active_scan_response_min_map_size": 8,
+            "bc_signal_active_scan_response_max_agents": 1,
+        }
+    )
+    active_response_mask, active_response_action_id = (
+        _signal_active_scan_response_action_label_mask(
+            env,
+            obs,
+            active_scan_response_cfg,
+            active_scan_feedback,
+        )
+    )
+    np.testing.assert_allclose(active_response_mask, np.array([0.0, 1.0], dtype=np.float32))
+    np.testing.assert_array_equal(
+        active_response_action_id,
+        np.array([-1, action], dtype=np.int64),
+    )
+    no_exact_obs = {0: dict(obs[0]), 1: dict(obs[1])}
+    no_exact_obs[1]["goal_hint"] = np.full((8,), -1, dtype=np.int16)
+    no_exact_mask, no_exact_action_id = _signal_active_scan_response_action_label_mask(
+        env,
+        no_exact_obs,
+        active_scan_response_cfg,
+        active_scan_feedback,
+    )
+    np.testing.assert_allclose(no_exact_mask, np.array([0.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(no_exact_action_id, np.array([-1, -1], dtype=np.int64))
+    active_response_ep_data = _new_episode_sequence()
+    _append_labeled_step(
+        active_response_ep_data,
+        obs,
+        actions,
+        env,
+        active_scan_response_cfg,
+        feedback=active_scan_feedback,
+    )
+    assert active_response_ep_data["signal_active_scan_response_action_mask"] == [0.0, 1.0]
+    assert active_response_ep_data["signal_active_scan_response_action_id"] == [-1, action]
+
+    bridge_cfg = RecurrentConfig(
+        **{
+            **vars(cfg),
+            "bc_signal_scan_bridge_action_weight": 1.2,
+            "bc_signal_scan_bridge_min_map_size": 8,
+            "bc_signal_scan_bridge_remaining_threshold": 0.5,
+            "bc_signal_scan_bridge_max_teammate_distance": 2,
+            "eval_signal_exact_target_memory_steps": 8,
+        }
+    )
+    bridge_target = (2, 2)
+    bridge_teammate_pos = (3, 2)
+    env.grid[:, :] = 0
+    env.grid[bridge_target[1], bridge_target[0]] = TILE_TARGET
+    env.agent_positions = [bridge_target, bridge_teammate_pos]
+    env.steps = 2
+    env.scenario_state.data["target"] = bridge_target
+    env.scenario_state.data["scan_window"] = 3
+    env.scenario_state.data["scan_log"] = {0: 0}
+    env.scenario_state.data["scan_pos"] = {0: bridge_target}
+    bridge_obs = env._build_observations()
+    exact_hint = np.array(
+        [26, bridge_target[0], bridge_target[1], -1, -1, -1, -1, -1],
+        dtype=np.int16,
+    )
+    bridge_obs[0]["goal_hint"] = exact_hint.copy()
+    bridge_obs[1]["goal_hint"] = exact_hint.copy()
+    bridge_feedback = _feedback_matrix(
+        bridge_cfg,
+        2,
+        info={},
+        env=env,
+        obs=bridge_obs,
+    )
+    bridge_scan_state = {
+        "step": 2,
+        "scan_window": 3,
+        "scan_log": {0: 0},
+        "scan_pos": {0: bridge_target},
+    }
+
+    bridge_mask, bridge_action_id = _signal_scan_bridge_action_label_mask(
+        env,
+        bridge_obs,
+        bridge_cfg,
+        bridge_feedback,
+        scan_state=bridge_scan_state,
+    )
+    np.testing.assert_allclose(bridge_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(
+        bridge_action_id,
+        np.array([env.ACTION_INTERACT, -1], dtype=np.int64),
+    )
+
+    far_bridge_cfg = RecurrentConfig(
+        **{
+            **vars(bridge_cfg),
+            "bc_signal_scan_bridge_max_teammate_distance": 0,
+        }
+    )
+    far_bridge_mask, far_bridge_action_id = _signal_scan_bridge_action_label_mask(
+        env,
+        bridge_obs,
+        far_bridge_cfg,
+        bridge_feedback,
+        scan_state=bridge_scan_state,
+    )
+    np.testing.assert_allclose(far_bridge_mask, np.array([0.0, 0.0], dtype=np.float32))
+    np.testing.assert_array_equal(far_bridge_action_id, np.array([-1, -1], dtype=np.int64))
+
+    bridge_ep_data = _new_episode_sequence()
+    _append_labeled_step(
+        bridge_ep_data,
+        bridge_obs,
+        {
+            0: {"action": env.ACTION_INTERACT, "message_tokens": []},
+            1: {"action": env.ACTION_STAY, "message_tokens": []},
+        },
+        env,
+        bridge_cfg,
+        feedback=bridge_feedback,
+        scan_state=bridge_scan_state,
+    )
+    assert bridge_ep_data["signal_scan_bridge_action_mask"] == [1.0, 0.0]
+    assert bridge_ep_data["signal_scan_bridge_action_id"] == [env.ACTION_INTERACT, -1]
 
 
 def test_recurrent_build_env_passes_signal_shaping_config():
@@ -9724,6 +10297,88 @@ def test_recurrent_signal_features_include_inferred_target_candidates():
     )
 
 
+def test_recurrent_signal_features_include_target_confidence_state():
+    from syncorsink.envs.maps import TILE_TARGET
+    from syncorsink.train.recurrent_bc_rl import RecurrentConfig, _signal_coordination_features
+
+    local_grid = np.zeros((5, 5), dtype=np.int16)
+    local_grid[2, 2] = TILE_TARGET
+    cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        obs_signal_features=True,
+        obs_signal_confidence_features=True,
+        comm=True,
+        comm_token_limit=8,
+        comm_vocab_size=32,
+    )
+
+    exact_obs = {
+        "local_grid": local_grid,
+        "self_pos": np.array([2, 2], dtype=np.int16),
+        "goal_hint": np.array([26, 2, 2, -1, -1, -1, -1, -1], dtype=np.int16),
+        "messages_tokens": np.full((2, 8), -1, dtype=np.int16),
+        "message_from": np.array([-1, -1], dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    exact_features = _signal_coordination_features(exact_obs, cfg, observed_map_size=8)
+    exact_confidence = exact_features[38:52]
+
+    assert exact_features.shape == (52,)
+    np.testing.assert_allclose(
+        exact_confidence,
+        np.array([
+            1.0,  # center is a target tile
+            1.0,  # center matches an exact target hint
+            1.0,  # center is safe to scan from exact/unique evidence
+            1.0,  # center is compatible with the current evidence
+            0.0,  # not merely ambiguous
+            0.0,  # not rejected
+            0.0,  # not unknown
+            1.0,  # target information exists
+            0.0,  # exact coordinates are not a constraint grammar
+            0.0,
+            0.25,
+            0.125,
+            0.125,
+            0.0,
+        ], dtype=np.float32),
+    )
+
+    ambiguous_obs = {
+        "local_grid": local_grid,
+        "self_pos": np.array([2, 2], dtype=np.int16),
+        "goal_hint": np.array([23, 0, 0, 8, -1, -1, -1, -1], dtype=np.int16),
+        "messages_tokens": np.full((2, 8), -1, dtype=np.int16),
+        "message_from": np.array([-1, -1], dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    ambiguous_features = _signal_coordination_features(ambiguous_obs, cfg, observed_map_size=8)
+    ambiguous_confidence = ambiguous_features[38:52]
+
+    assert ambiguous_features.shape == (52,)
+    np.testing.assert_allclose(
+        ambiguous_confidence,
+        np.array([
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            0.4,
+            0.0,
+            0.125,
+            0.125,
+            0.0,
+        ], dtype=np.float32),
+    )
+
+
 def test_recurrent_agent_role_features_include_signal_search_anchor():
     from syncorsink.train.mappo import action_mask_from_flat_obs
     from syncorsink.train.recurrent_bc_rl import (
@@ -9754,6 +10409,54 @@ def test_recurrent_agent_role_features_include_signal_search_anchor():
         features[5:],
         np.array([1.0, 0.0, 8 / 15, 8 / 15], dtype=np.float32),
     )
+    expected_mask = torch.tensor(obs_agent["action_mask"], dtype=torch.float32)
+    assert torch.equal(action_mask_from_flat_obs(torch.tensor(flat).unsqueeze(0))[0], expected_mask)
+
+
+def test_recurrent_signal_sector_features_track_assigned_frontier_progress():
+    from syncorsink.train.mappo import action_mask_from_flat_obs
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _flatten_recurrent_obs,
+        _signal_cell_in_agent_sector,
+        _signal_sector_search_features,
+    )
+
+    explored = np.ones((16, 16), dtype=np.int8)
+    explored[:, 10:] = 0
+    obs_agent = {
+        "local_grid": np.zeros((5, 5), dtype=np.int16),
+        "self_pos": np.array([7, 7], dtype=np.int16),
+        "explored_mask": explored,
+        "action_mask": np.array([1, 0, 1, 0, 1, 0, 0, 0], dtype=np.float32),
+    }
+    cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=16,
+        agents=4,
+        obs_exploration_memory=True,
+        obs_memory_mode="egocentric",
+        obs_memory_radius=2,
+        obs_signal_sector_features=True,
+    )
+
+    features = _signal_sector_search_features(obs_agent, cfg, observed_map_size=16, agent_id=1)
+    flat = _flatten_recurrent_obs(obs_agent, cfg, agent_id=1)
+
+    assert features.shape == (10,)
+    np.testing.assert_allclose(
+        features[:4],
+        np.array([1.0, 2 / 15, 0.0, 2 / 15], dtype=np.float32),
+    )
+    assert features[4] == pytest.approx(10 / 16)
+    assert features[5] == pytest.approx(0.25)
+    assert features[6] == pytest.approx(1.0)
+    assert features[7] == pytest.approx(0.0)
+    assert features[8] == pytest.approx(8 / 15)
+    assert features[9] == pytest.approx(2 / 15)
+    assert _signal_cell_in_agent_sector((12, 4), agent_id=1, num_agents=4, width=16, height=16)
+    assert not _signal_cell_in_agent_sector((4, 12), agent_id=1, num_agents=4, width=16, height=16)
+
     expected_mask = torch.tensor(obs_agent["action_mask"], dtype=torch.float32)
     assert torch.equal(action_mask_from_flat_obs(torch.tensor(flat).unsqueeze(0))[0], expected_mask)
 
@@ -10937,6 +11640,8 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
         eval_signal_exact_target_scan_lock=True,
         eval_signal_compatible_target_scan_assist=True,
         eval_signal_compatible_target_scan_min_strength=4,
+        eval_signal_negative_memory_scan_guard=True,
+        eval_signal_target_probe_assist=True,
         eval_signal_constraint_message_copy_assist=True,
         eval_pipeline_frontier_exploration_assist=True,
         eval_pipeline_interact_gate_threshold=0.37,
@@ -10953,6 +11658,8 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
     assert calls[0][1]["eval_signal_exact_target_scan_lock"] is None
     assert calls[0][1]["eval_signal_compatible_target_scan_assist"] is None
     assert calls[0][1]["eval_signal_compatible_target_scan_min_strength"] is None
+    assert calls[0][1]["eval_signal_negative_memory_scan_guard"] is None
+    assert calls[0][1]["eval_signal_target_probe_assist"] is None
     assert calls[0][1]["eval_signal_constraint_message_copy_assist"] is None
     assert calls[0][1]["eval_pipeline_frontier_exploration_assist"] is None
     assert calls[0][1]["eval_pipeline_event_head_threshold"] is None
@@ -10966,6 +11673,8 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
     assert calls[1][1]["eval_signal_exact_target_scan_lock"] is True
     assert calls[1][1]["eval_signal_compatible_target_scan_assist"] is True
     assert calls[1][1]["eval_signal_compatible_target_scan_min_strength"] == 4
+    assert calls[1][1]["eval_signal_negative_memory_scan_guard"] is True
+    assert calls[1][1]["eval_signal_target_probe_assist"] is True
     assert calls[1][1]["eval_signal_constraint_message_copy_assist"] is True
     assert calls[1][1]["eval_pipeline_frontier_exploration_assist"] is True
     assert calls[1][1]["eval_pipeline_interact_gate_threshold"] == pytest.approx(0.37)

@@ -126,6 +126,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--recurrent-signal-compatible-target-scan-min-strength", type=int, default=None)
     parser.add_argument(
+        "--recurrent-signal-negative-memory-scan-guard",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-signal-target-probe-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
         "--recurrent-signal-scan-sync-assist",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -372,6 +382,10 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 eval_signal_compatible_target_scan_min_strength=(
                     args.recurrent_signal_compatible_target_scan_min_strength
                 ),
+                eval_signal_negative_memory_scan_guard=(
+                    args.recurrent_signal_negative_memory_scan_guard
+                ),
+                eval_signal_target_probe_assist=args.recurrent_signal_target_probe_assist,
                 eval_signal_scan_sync_assist=args.recurrent_signal_scan_sync_assist,
                 eval_signal_scan_sync_force_first=args.recurrent_signal_scan_sync_force_first,
                 eval_signal_scan_broadcast_assist=args.recurrent_signal_scan_broadcast_assist,
@@ -446,6 +460,10 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 "eval_signal_compatible_target_scan_min_strength": (
                     args.recurrent_signal_compatible_target_scan_min_strength
                 ),
+                "eval_signal_negative_memory_scan_guard": (
+                    args.recurrent_signal_negative_memory_scan_guard
+                ),
+                "eval_signal_target_probe_assist": args.recurrent_signal_target_probe_assist,
                 "eval_signal_scan_sync_assist": args.recurrent_signal_scan_sync_assist,
                 "eval_signal_scan_sync_force_first": args.recurrent_signal_scan_sync_force_first,
                 "eval_signal_scan_broadcast_assist": args.recurrent_signal_scan_broadcast_assist,

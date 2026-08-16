@@ -111,13 +111,20 @@ def test_core_training_sweep_can_run_official_benchmark_cases(tmp_path):
     assert command[command.index("--bc-signal-target-pursuit-action-weight") + 1] == "0.4"
     assert "--bc-signal-target-pursuit-trust-exact-memory" not in command
     assert command[command.index("--bc-signal-target-match-action-weight") + 1] == "0.4"
+    assert command[command.index("--bc-signal-scan-bridge-action-weight") + 1] == "0.0"
+    assert command[command.index("--bc-signal-scan-bridge-min-map-size") + 1] == "16"
+    assert command[command.index("--bc-signal-scan-bridge-remaining-threshold") + 1] == "0.5"
+    assert command[command.index("--bc-signal-scan-bridge-max-teammate-distance") + 1] == "6"
     assert command[command.index("--bc-signal-first-target-scan-action-weight") + 1] == "0.8"
     assert command[command.index("--bc-signal-visible-clue-action-weight") + 1] == "0.0"
     assert command[command.index("--bc-signal-frontier-exploration-action-weight") + 1] == "0.25"
     assert "--eval-signal-target-scan-lock" not in command
     assert "--eval-signal-exact-target-scan-lock" not in command
     assert "--eval-signal-compatible-target-scan-assist" not in command
+    assert "--eval-signal-negative-memory-scan-guard" not in command
+    assert "--eval-signal-target-probe-assist" not in command
     assert "--eval-signal-frontier-exploration-assist" not in command
+    assert "--eval-signal-scan-refresh-assist" not in command
     assert "--eval-signal-constraint-message-copy-assist" in command
 
 
@@ -319,6 +326,9 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     signal_initial_msg_loss_idx = commands["signal_hunt"].index(
         "--bc-signal-initial-message-loss-weight"
     )
+    signal_constraint_msg_loss_idx = commands["signal_hunt"].index(
+        "--bc-signal-constraint-message-loss-weight"
+    )
     signal_target_aux_idx = commands["signal_hunt"].index(
         "--bc-signal-target-aux-weight"
     )
@@ -333,6 +343,27 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     )
     signal_sync_response_idx = commands["signal_hunt"].index(
         "--bc-signal-sync-response-action-loss-weight"
+    )
+    signal_active_scan_response_idx = commands["signal_hunt"].index(
+        "--bc-signal-active-scan-response-action-weight"
+    )
+    signal_active_scan_response_min_idx = commands["signal_hunt"].index(
+        "--bc-signal-active-scan-response-min-map-size"
+    )
+    signal_active_scan_response_max_idx = commands["signal_hunt"].index(
+        "--bc-signal-active-scan-response-max-agents"
+    )
+    signal_scan_bridge_idx = commands["signal_hunt"].index(
+        "--bc-signal-scan-bridge-action-weight"
+    )
+    signal_scan_bridge_min_idx = commands["signal_hunt"].index(
+        "--bc-signal-scan-bridge-min-map-size"
+    )
+    signal_scan_bridge_remaining_idx = commands["signal_hunt"].index(
+        "--bc-signal-scan-bridge-remaining-threshold"
+    )
+    signal_scan_bridge_distance_idx = commands["signal_hunt"].index(
+        "--bc-signal-scan-bridge-max-teammate-distance"
     )
     signal_target_match_idx = commands["signal_hunt"].index(
         "--bc-signal-target-match-action-weight"
@@ -358,6 +389,12 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     pipeline_initial_msg_loss_idx = commands["pipeline_assembly"].index(
         "--bc-signal-initial-message-loss-weight"
     )
+    energy_constraint_msg_loss_idx = commands["energy_grid"].index(
+        "--bc-signal-constraint-message-loss-weight"
+    )
+    pipeline_constraint_msg_loss_idx = commands["pipeline_assembly"].index(
+        "--bc-signal-constraint-message-loss-weight"
+    )
     signal_comm_loss_idx = commands["signal_hunt"].index("--bc-comm-loss-weight")
     energy_comm_loss_idx = commands["energy_grid"].index("--bc-comm-loss-weight")
     pipeline_comm_loss_idx = commands["pipeline_assembly"].index("--bc-comm-loss-weight")
@@ -381,6 +418,18 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     )
     signal_visible_clue_min_idx = commands["signal_hunt"].index(
         "--bc-signal-visible-clue-min-map-size"
+    )
+    signal_clue_interact_idx = commands["signal_hunt"].index(
+        "--bc-signal-clue-interact-action-weight"
+    )
+    signal_clue_interact_min_idx = commands["signal_hunt"].index(
+        "--bc-signal-clue-interact-min-map-size"
+    )
+    signal_evidence_sweep_idx = commands["signal_hunt"].index(
+        "--bc-signal-evidence-sweep-action-weight"
+    )
+    signal_evidence_sweep_min_idx = commands["signal_hunt"].index(
+        "--bc-signal-evidence-sweep-min-map-size"
     )
     signal_frontier_idx = commands["signal_hunt"].index(
         "--bc-signal-frontier-exploration-action-weight"
@@ -419,11 +468,21 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert commands["signal_hunt"][signal_initial_msg_loss_idx + 1] == "4.0"
     assert commands["energy_grid"][energy_initial_msg_loss_idx + 1] == "0.0"
     assert commands["pipeline_assembly"][pipeline_initial_msg_loss_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_constraint_msg_loss_idx + 1] == "4.0"
+    assert commands["energy_grid"][energy_constraint_msg_loss_idx + 1] == "0.0"
+    assert commands["pipeline_assembly"][pipeline_constraint_msg_loss_idx + 1] == "0.0"
     assert commands["signal_hunt"][signal_target_aux_idx + 1] == "0.25"
     assert commands["energy_grid"][energy_target_aux_idx + 1] == "0.0"
     assert commands["pipeline_assembly"][pipeline_target_aux_idx + 1] == "0.0"
     assert commands["signal_hunt"][signal_target_pursuit_idx + 1] == "0.4"
     assert commands["signal_hunt"][signal_sync_response_idx + 1] == "0.2"
+    assert commands["signal_hunt"][signal_active_scan_response_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_active_scan_response_min_idx + 1] == "16"
+    assert commands["signal_hunt"][signal_active_scan_response_max_idx + 1] == "1"
+    assert commands["signal_hunt"][signal_scan_bridge_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_scan_bridge_min_idx + 1] == "16"
+    assert commands["signal_hunt"][signal_scan_bridge_remaining_idx + 1] == "0.5"
+    assert commands["signal_hunt"][signal_scan_bridge_distance_idx + 1] == "6"
     assert commands["signal_hunt"][signal_target_match_idx + 1] == "0.4"
     assert commands["signal_hunt"][signal_first_scan_idx + 1] == "0.8"
     assert commands["signal_hunt"][signal_refresh_scan_idx + 1] == "0.3"
@@ -438,8 +497,12 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert commands["pipeline_assembly"][pipeline_decoy_scan_idx + 1] == "0.0"
     assert commands["signal_hunt"][signal_decoy_drift_idx + 1] == "0.0"
     assert commands["signal_hunt"][signal_rejected_drift_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_clue_interact_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_clue_interact_min_idx + 1] == "16"
     assert commands["signal_hunt"][signal_visible_clue_idx + 1] == "0.0"
     assert commands["signal_hunt"][signal_visible_clue_min_idx + 1] == "16"
+    assert commands["signal_hunt"][signal_evidence_sweep_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_evidence_sweep_min_idx + 1] == "16"
     assert commands["signal_hunt"][signal_frontier_idx + 1] == "0.25"
     assert commands["signal_hunt"][signal_frontier_min_idx + 1] == "16"
     signal_focus_events = commands["signal_hunt"][signal_focus_events_idx + 1]
@@ -834,22 +897,32 @@ def test_core_training_sweep_recurrent_large_map_signal_preset_targets_32x_failu
     signal = commands["signal_hunt"]
     energy = commands["energy_grid"]
     assert payload["config"]["recurrent_signal_preset"] == "large_map"
+    assert payload["config"]["recurrent_obs_signal_confidence_features"] is False
+    assert payload["config"]["recurrent_obs_signal_sector_features"] is False
     assert arg_value(signal, "--bc-signal-decoy-drift-action-loss-weight") == "0.1"
     assert arg_value(signal, "--bc-signal-decoy-scan-action-loss-weight") == "0.25"
     assert arg_value(signal, "--bc-signal-rejected-target-drift-action-loss-weight") == "0.0"
+    assert arg_value(signal, "--bc-signal-clue-interact-action-weight") == "0.0"
+    assert arg_value(signal, "--bc-signal-clue-interact-min-map-size") == "16"
     assert arg_value(signal, "--bc-signal-visible-clue-action-weight") == "0.25"
     assert arg_value(signal, "--bc-signal-visible-clue-min-map-size") == "32"
+    assert arg_value(signal, "--bc-signal-evidence-sweep-action-weight") == "0.0"
+    assert arg_value(signal, "--bc-signal-evidence-sweep-min-map-size") == "16"
     assert arg_value(signal, "--bc-signal-frontier-exploration-action-weight") == "0.25"
     assert arg_value(signal, "--bc-signal-frontier-exploration-min-map-size") == "16"
     assert arg_value(signal, "--bc-signal-target-pursuit-max-agents") == "0"
     assert "--bc-signal-ambiguous-target-decision-negatives" not in signal
     assert arg_value(signal, "--bc-signal-ambiguous-target-decision-min-map-size") == "16"
+    assert "--bc-signal-ambiguous-target-search-labels" not in signal
+    assert arg_value(signal, "--bc-signal-ambiguous-target-search-min-map-size") == "16"
     assert arg_value(signal, "--bc-comm-loss-weight") == "1.0"
     assert "--bc-signal-constraint-frontier-bias" not in signal
     assert "--dagger-signal-target-rendezvous-labels" not in signal
     assert arg_value(signal, "--dagger-signal-target-rendezvous-min-map-size") == "16"
     assert arg_value(signal, "--dagger-signal-target-rendezvous-max-agents") == "2"
     assert "--obs-exploration-age" not in signal
+    assert "--obs-signal-confidence-features" not in signal
+    assert "--obs-signal-sector-features" not in signal
     assert "--eval-signal-constraint-message-copy-assist" in signal
 
     signal_focus_events = arg_value(signal, "--dagger-focus-events")
@@ -863,6 +936,9 @@ def test_core_training_sweep_recurrent_large_map_signal_preset_targets_32x_failu
         assert event in signal_focus_events
         assert event in signal_replay_priority
         assert f"{event}:4.0" in signal_replay_weights
+    assert "evidence_sweep_miss" not in signal_focus_events
+    assert "evidence_sweep_miss" not in signal_replay_priority
+    assert "evidence_sweep_miss:4.0" not in signal_replay_weights
 
     energy_focus_events = arg_value(energy, "--dagger-focus-events")
     energy_replay_weights = arg_value(energy, "--dagger-replay-event-weights")
@@ -934,6 +1010,8 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
         "--recurrent-obs-navigation-features",
         "--recurrent-obs-signal-features",
         "--recurrent-obs-signal-target-match-features",
+        "--recurrent-obs-signal-confidence-features",
+        "--recurrent-obs-signal-sector-features",
         "--recurrent-obs-signal-sync-feedback",
         "--recurrent-obs-signal-scan-state",
         "--recurrent-obs-pipeline-feedback",
@@ -985,6 +1063,8 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
     assert payload["config"]["recurrent_obs_navigation_features"] is True
     assert payload["config"]["recurrent_obs_signal_features"] is True
     assert payload["config"]["recurrent_obs_signal_target_match_features"] is True
+    assert payload["config"]["recurrent_obs_signal_confidence_features"] is True
+    assert payload["config"]["recurrent_obs_signal_sector_features"] is True
     assert payload["config"]["recurrent_obs_signal_sync_feedback"] is True
     assert payload["config"]["recurrent_obs_signal_scan_state"] is True
     assert payload["config"]["recurrent_obs_pipeline_feedback"] is True
@@ -1057,6 +1137,8 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
     assert "--obs-navigation-features" in commands["pipeline_assembly"]
     assert "--obs-signal-features" in commands["pipeline_assembly"]
     assert "--obs-signal-target-match-features" in commands["pipeline_assembly"]
+    assert "--obs-signal-confidence-features" in commands["pipeline_assembly"]
+    assert "--obs-signal-sector-features" in commands["pipeline_assembly"]
     assert "--obs-signal-sync-feedback" in commands["pipeline_assembly"]
     assert "--obs-signal-scan-state" in commands["pipeline_assembly"]
     assert "--obs-pipeline-feedback" in commands["pipeline_assembly"]
@@ -1065,6 +1147,8 @@ def test_core_training_sweep_recurrent_pipeline_assist_flag_is_pipeline_only(tmp
     assert "--obs-pipeline-shared-feedback" in commands["pipeline_assembly"]
     assert commands["pipeline_assembly"][commands["pipeline_assembly"].index("--obs-memory-mode") + 1] == "egocentric"
     assert commands["signal_hunt"].count("--obs-memory-mode") == 1
+    assert "--obs-signal-confidence-features" in commands["signal_hunt"]
+    assert "--obs-signal-sector-features" in commands["signal_hunt"]
     assert "--eval-pipeline-navigation-assist" not in commands["signal_hunt"]
     assert "--eval-pipeline-navigation-assist-trust-messages" not in commands["signal_hunt"]
     assert "--eval-pipeline-station-interact-guard" not in commands["signal_hunt"]
@@ -1392,8 +1476,13 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "--recurrent-eval-signal-compatible-target-scan-assist",
         "--recurrent-eval-signal-compatible-target-scan-min-strength",
         "4",
+        "--recurrent-eval-signal-negative-memory-scan-guard",
+        "--recurrent-eval-signal-target-probe-assist",
         "--recurrent-eval-signal-constraint-message-copy-assist",
         "--recurrent-eval-signal-frontier-exploration-assist",
+        "--recurrent-eval-signal-scan-refresh-assist",
+        "--recurrent-eval-signal-scan-refresh-threshold",
+        "0.35",
         "--no-recurrent-obs-pipeline-features",
         "--recurrent-bc-calibrate-send-threshold",
         "--recurrent-bc-send-threshold-target-rate",
@@ -1406,6 +1495,8 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "0.15",
         "--recurrent-bc-signal-target-aux-weight",
         "0.45",
+        "--recurrent-bc-signal-constraint-message-loss-weight",
+        "1.25",
         "--recurrent-bc-signal-target-pursuit-action-weight",
         "0.6",
         "--recurrent-bc-signal-target-pursuit-trust-exact-memory",
@@ -1413,6 +1504,20 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "1",
         "--recurrent-bc-signal-sync-response-action-loss-weight",
         "0.7",
+        "--recurrent-bc-signal-active-scan-response-action-weight",
+        "0.65",
+        "--recurrent-bc-signal-active-scan-response-min-map-size",
+        "8",
+        "--recurrent-bc-signal-active-scan-response-max-agents",
+        "2",
+        "--recurrent-bc-signal-scan-bridge-action-weight",
+        "0.44",
+        "--recurrent-bc-signal-scan-bridge-min-map-size",
+        "8",
+        "--recurrent-bc-signal-scan-bridge-remaining-threshold",
+        "0.25",
+        "--recurrent-bc-signal-scan-bridge-max-teammate-distance",
+        "5",
         "--recurrent-bc-signal-target-match-action-weight",
         "0.8",
         "--recurrent-bc-signal-first-target-scan-action-weight",
@@ -1453,9 +1558,20 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "--recurrent-bc-signal-ambiguous-target-decision-negatives",
         "--recurrent-bc-signal-ambiguous-target-decision-min-map-size",
         "8",
+        "--recurrent-bc-signal-ambiguous-target-search-labels",
+        "--recurrent-bc-signal-ambiguous-target-search-min-map-size",
+        "8",
+        "--recurrent-bc-signal-clue-interact-action-weight",
+        "0.42",
+        "--recurrent-bc-signal-clue-interact-min-map-size",
+        "8",
         "--recurrent-bc-signal-visible-clue-action-weight",
         "0.35",
         "--recurrent-bc-signal-visible-clue-min-map-size",
+        "8",
+        "--recurrent-bc-signal-evidence-sweep-action-weight",
+        "0.45",
+        "--recurrent-bc-signal-evidence-sweep-min-map-size",
         "8",
         "--recurrent-bc-signal-frontier-exploration-action-weight",
         "0.55",
@@ -1667,7 +1783,11 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_eval_signal_exact_target_scan_lock"] is True
     assert payload["config"]["recurrent_eval_signal_compatible_target_scan_assist"] is True
     assert payload["config"]["recurrent_eval_signal_compatible_target_scan_min_strength"] == 4
+    assert payload["config"]["recurrent_eval_signal_negative_memory_scan_guard"] is True
+    assert payload["config"]["recurrent_eval_signal_target_probe_assist"] is True
     assert payload["config"]["recurrent_eval_signal_frontier_exploration_assist"] is True
+    assert payload["config"]["recurrent_eval_signal_scan_refresh_assist"] is True
+    assert payload["config"]["recurrent_eval_signal_scan_refresh_threshold"] == 0.35
     assert payload["config"]["recurrent_eval_signal_constraint_message_copy_assist"] is True
     assert payload["config"]["recurrent_bc_calibrate_send_threshold"] is True
     assert payload["config"]["recurrent_bc_send_threshold_target_rate"] == 0.15
@@ -1675,10 +1795,18 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_bc_comm_send_rate_penalty_weight"] == 0.25
     assert payload["config"]["recurrent_bc_comm_send_rate_target"] == 0.15
     assert payload["config"]["recurrent_bc_signal_target_aux_weight"] == 0.45
+    assert payload["config"]["recurrent_bc_signal_constraint_message_loss_weight"] == 1.25
     assert payload["config"]["recurrent_bc_signal_target_pursuit_action_weight"] == 0.6
     assert payload["config"]["recurrent_bc_signal_target_pursuit_trust_exact_memory"] is True
     assert payload["config"]["recurrent_bc_signal_target_pursuit_max_agents"] == 1
     assert payload["config"]["recurrent_bc_signal_sync_response_action_loss_weight"] == 0.7
+    assert payload["config"]["recurrent_bc_signal_active_scan_response_action_weight"] == 0.65
+    assert payload["config"]["recurrent_bc_signal_active_scan_response_min_map_size"] == 8
+    assert payload["config"]["recurrent_bc_signal_active_scan_response_max_agents"] == 2
+    assert payload["config"]["recurrent_bc_signal_scan_bridge_action_weight"] == 0.44
+    assert payload["config"]["recurrent_bc_signal_scan_bridge_min_map_size"] == 8
+    assert payload["config"]["recurrent_bc_signal_scan_bridge_remaining_threshold"] == 0.25
+    assert payload["config"]["recurrent_bc_signal_scan_bridge_max_teammate_distance"] == 5
     assert payload["config"]["recurrent_bc_signal_target_match_action_weight"] == 0.8
     assert payload["config"]["recurrent_bc_signal_first_target_scan_action_weight"] == 0.9
     assert payload["config"]["recurrent_bc_signal_refresh_target_scan_action_weight"] == 0.4
@@ -1714,17 +1842,30 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert command[command.index("--bc-signal-target-decision-neg-weight") + 1] == "3.7"
     assert "--bc-signal-ambiguous-target-decision-negatives" in command
     assert command[command.index("--bc-signal-ambiguous-target-decision-min-map-size") + 1] == "8"
+    assert "--bc-signal-ambiguous-target-search-labels" in command
+    assert command[command.index("--bc-signal-ambiguous-target-search-min-map-size") + 1] == "8"
     assert command[command.index("--bc-signal-target-pursuit-max-agents") + 1] == "1"
     assert "--bc-signal-constraint-frontier-bias" in command
+    assert command[command.index("--bc-signal-constraint-message-loss-weight") + 1] == "1.25"
     assert "--dagger-signal-target-rendezvous-labels" in command
     assert command[command.index("--dagger-signal-target-rendezvous-min-map-size") + 1] == "16"
     assert command[command.index("--dagger-signal-target-rendezvous-max-agents") + 1] == "2"
+    assert payload["config"]["recurrent_bc_signal_clue_interact_action_weight"] == 0.42
+    assert payload["config"]["recurrent_bc_signal_clue_interact_min_map_size"] == 8
+    assert command[command.index("--bc-signal-clue-interact-action-weight") + 1] == "0.42"
+    assert command[command.index("--bc-signal-clue-interact-min-map-size") + 1] == "8"
     assert payload["config"]["recurrent_bc_signal_visible_clue_action_weight"] == 0.35
     assert payload["config"]["recurrent_bc_signal_visible_clue_min_map_size"] == 8
+    assert payload["config"]["recurrent_bc_signal_evidence_sweep_action_weight"] == 0.45
+    assert payload["config"]["recurrent_bc_signal_evidence_sweep_min_map_size"] == 8
     assert payload["config"]["recurrent_bc_signal_frontier_exploration_action_weight"] == 0.55
     assert payload["config"]["recurrent_bc_signal_frontier_exploration_min_map_size"] == 8
+    assert command[command.index("--bc-signal-evidence-sweep-action-weight") + 1] == "0.45"
+    assert command[command.index("--bc-signal-evidence-sweep-min-map-size") + 1] == "8"
     assert payload["config"]["recurrent_bc_signal_ambiguous_target_decision_negatives"] is True
     assert payload["config"]["recurrent_bc_signal_ambiguous_target_decision_min_map_size"] == 8
+    assert payload["config"]["recurrent_bc_signal_ambiguous_target_search_labels"] is True
+    assert payload["config"]["recurrent_bc_signal_ambiguous_target_search_min_map_size"] == 8
     assert payload["config"]["recurrent_dagger_failed_effective_ratio_cap"] == 0.5
     assert payload["config"]["recurrent_dagger_oracle_action_rollin_rate"] == 0.4
     assert payload["config"]["recurrent_dagger_oracle_message_rollin_rate"] == 0.3
@@ -1837,6 +1978,27 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert command[
         command.index("--bc-signal-sync-response-action-loss-weight") + 1
     ] == "0.7"
+    assert command[
+        command.index("--bc-signal-active-scan-response-action-weight") + 1
+    ] == "0.65"
+    assert command[
+        command.index("--bc-signal-active-scan-response-min-map-size") + 1
+    ] == "8"
+    assert command[
+        command.index("--bc-signal-active-scan-response-max-agents") + 1
+    ] == "2"
+    assert command[
+        command.index("--bc-signal-scan-bridge-action-weight") + 1
+    ] == "0.44"
+    assert command[
+        command.index("--bc-signal-scan-bridge-min-map-size") + 1
+    ] == "8"
+    assert command[
+        command.index("--bc-signal-scan-bridge-remaining-threshold") + 1
+    ] == "0.25"
+    assert command[
+        command.index("--bc-signal-scan-bridge-max-teammate-distance") + 1
+    ] == "5"
     assert command[command.index("--bc-signal-target-match-action-weight") + 1] == "0.8"
     assert command[
         command.index("--bc-signal-first-target-scan-action-weight") + 1
@@ -1865,7 +2027,11 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert command[
         command.index("--eval-signal-compatible-target-scan-min-strength") + 1
     ] == "4"
+    assert "--eval-signal-negative-memory-scan-guard" in command
+    assert "--eval-signal-target-probe-assist" in command
     assert "--eval-signal-constraint-message-copy-assist" in command
+    assert "--eval-signal-scan-refresh-assist" in command
+    assert command[command.index("--eval-signal-scan-refresh-threshold") + 1] == "0.35"
     assert "--dagger-target-handoff-requires-exact-target" in command
     assert command[
         command.index("--bc-pipeline-ready-interact-action-loss-weight") + 1

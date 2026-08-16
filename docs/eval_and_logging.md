@@ -176,6 +176,10 @@ scalars include:
 
 - `bc/*` losses, accuracies, auxiliary Signal Hunt action heads, send rates,
   and learning rate
+- `bc/signal_clue_interact_*` counts, loss, match rate, and mean action
+  probability for the opt-in center-clue pickup auxiliary
+- `bc/signal_evidence_sweep_*` counts, loss, match rate, and mean action
+  probability for the opt-in large-map sector-search auxiliary
 - `bc/signal_frontier_exploration_*` labels and action-match metrics for the
   opt-in large-map search fallback auxiliary, active only when no true-target
   candidate is decoded from the observation
@@ -526,7 +530,13 @@ Large-map Signal Hunt search auxiliary:
   reached only 60% mixed eval, with 80% on 16x16 and 40% on 32x32. The event
   path was active (`36` positive replay events and `11` replay triggers in
   round 2), but 32x32 decoy scans rose to `6.7`, so clue replay is not promoted
-  into the large-map preset.
+  into the large-map preset. Retesting this idea after the negative-memory scan
+  guard did not rescue it:
+  `recurrent_signal_multisize_16_32_large_map_cluepositive_negguard_seed0`
+  logged to `https://wandb.ai/orion8/syncorsink-core-training/runs/uazym681`
+  and fell to 47.5% mixed eval with a 65%/30% 16x16/32x32 split. Wrong scans
+  stayed at zero, but first-target-scan misses rose sharply, so clue replay
+  alone creates target visits without reliable scan conversion.
 - `--bc-signal-ambiguous-target-decision-negatives` is an opt-in target-decision
   label ablation. It treats visible true-target scans as negative target
   decisions when the observation cannot uniquely justify that center target,
@@ -544,6 +554,54 @@ Large-map Signal Hunt search auxiliary:
   `recurrent_signal_multisize_16_32_large_map_ambiguousdecision_scanpush_seed0`,
   logged to `https://wandb.ai/orion8/syncorsink-core-training/runs/8tbyh3s6`
   and regressed to 65% mixed eval with at most 45% on 32x32.
+- `--bc-signal-ambiguous-target-search-labels` is an opt-in follow-up to the
+  ambiguous target-decision ablation. When an agent is standing on a compatible
+  but locally non-unique target, visible-clue labels may still fire, and if no
+  clue is visible the frontier label may move the agent off the ambiguous target
+  to gather more evidence. The sweep flag is
+  `--recurrent-bc-signal-ambiguous-target-search-labels`, with
+  `--recurrent-bc-signal-ambiguous-target-search-min-map-size` controlling
+  where it starts. The 32x32-only run
+  `recurrent_signal_multisize_16_32_large_map_ambiguoussearch32_seed0` logged to
+  `https://wandb.ai/orion8/syncorsink-core-training/runs/5g5q8b1l` and matched
+  the prior 70% mixed best eval with a 90%/50% 16x16/32x32 split, but did not
+  improve the 32x32 slice. The final round regressed to 62.5% mixed eval and
+  reintroduced 2.15 average wrong-target scans, so the flag remains diagnostic.
+- `--obs-signal-confidence-features` appends a 14-value Signal observation block
+  describing the current center target hypothesis: exact, unique/safe,
+  compatible, ambiguous, rejected, unknown, whether target information and
+  constraints are present, and normalized evidence counts. The sweep flag is
+  `--recurrent-obs-signal-confidence-features`. The run
+  `recurrent_signal_multisize_16_32_large_map_confidence_seed0` logged to
+  `https://wandb.ai/orion8/syncorsink-core-training/runs/0mycw4ng` and reached
+  only 60% mixed eval with a 75%/45% 16x16/32x32 split. It reduced wrong-target
+  scans to zero, but did not improve large-map discovery, so it remains
+  diagnostic rather than a promoted large-map default.
+- `--obs-signal-sector-features` appends a 10-value Signal observation block for
+  role-aware search: assigned-frontier direction, global and assigned-sector
+  explored fractions, whether an assigned frontier exists, whether the agent is
+  currently inside its assigned sector, and normalized anchor/frontier
+  distances. The sweep flag is `--recurrent-obs-signal-sector-features`. The
+  isolated run `recurrent_signal_multisize_16_32_large_map_sector_seed0` logged
+  to `https://wandb.ai/orion8/syncorsink-core-training/runs/lqyp8kkf` and
+  reached 60% mixed eval with a 75%/45% 16x16/32x32 split. It also drove
+  wrong-target scans to zero but did not improve the 32x32 success slice, so the
+  flag remains diagnostic.
+- `--bc-signal-constraint-message-loss-weight` adds an auxiliary token/length
+  BC loss for non-initial Signal messages that carry structured clue/constraint
+  segments (`21`-`25`). This targets the post-clue broadcast bottleneck without
+  mixing it into the step-0 private-hint loss. The base trainer default is
+  `0.0`; the recurrent Signal specialist sweep preset defaults to `4.0`.
+  W&B logs `bc/signal_constraint_message_count`,
+  `bc/signal_constraint_message_loss`,
+  `bc/signal_constraint_message_exact_rate`, and
+  `bc/signal_constraint_message_token_acc`. The isolated large-map run
+  `recurrent_signal_multisize_16_32_large_map_constraintmsg_seed0` logged to
+  `https://wandb.ai/orion8/syncorsink-core-training/runs/rc4pmvoq` and reached
+  67.5% mixed eval with an 85%/50% 16x16/32x32 split. It improved clue finding
+  but reintroduced 32x32 wrong-target scans (`7.55` average), so the next
+  Signal target is confidence-gated scanning/decoy suppression rather than more
+  message-token supervision.
 - `--bc-signal-visible-clue-action-weight` enables a BC action loss for agents
   that can locally see an unclaimed clue but do not yet have a unique known
   target. The label moves toward the nearest visible clue or interacts if the
@@ -621,6 +679,36 @@ agent is standing on an observation-safe center target candidate. The guarded
 profile replays Signal target-discovery, decoy-drift, frontier-exploration, and
 target-handoff misses, and includes positive target-handoff snippets so larger
 maps emphasize both search recovery and post-discovery scan completion.
+`--recurrent-bc-signal-active-scan-response-action-weight` is an opt-in
+post-discovery ablation. When a teammate's true-target scan is still active, it
+labels the closest trusted exact-target-informed responder to join/scan the
+target, with minimum-map-size and max-responder caps exposed by the matching
+`--recurrent-bc-signal-active-scan-response-*` flags. It is disabled by default
+after the matched active-scan run improved the learned label fit but reached
+only 65% mixed eval, with 87.5% on 16x16 and 42.5% on 32x32.
+`--recurrent-bc-signal-clue-interact-action-weight` is an opt-in acquisition
+ablation for agents already standing on an unclaimed clue. It adds a local
+`INTERACT` action label, with
+`--recurrent-bc-signal-clue-interact-min-map-size` controlling where it starts.
+The matched 16/32 run
+`recurrent_signal_multisize_16_32_large_map_clueinteract_negguard_seed0`
+logged to `https://wandb.ai/orion8/syncorsink-core-training/runs/ofakn8vg`.
+The auxiliary fired (`296` and `211` DAgger collection labels across the two
+rounds) and the final BC pass reached `0.767` label action-match, but the run
+ended at 67.5% mixed eval with an 82.5%/52.5% 16x16/32x32 split. It remains
+opt-in because it did not beat the conservative 55% 32x32 baseline.
+`--recurrent-bc-signal-scan-bridge-action-weight` is an opt-in post-discovery
+ablation for an agent already standing on the true target while its own scan
+window is partially expired and an exact-target-informed teammate is nearby.
+It logs `bc/signal_scan_bridge_*` counts, action-match, action probability, and
+configuration thresholds. The matched run
+`recurrent_signal_multisize_16_32_large_map_scanbridge_negguard_seed0` logged
+to `https://wandb.ai/orion8/syncorsink-core-training/runs/29z8hpul`. The
+bridge labels fired (`51` and `42` DAgger collection labels) and were learned
+quickly, but the saved best checkpoint reached only 53.75% mixed eval with a
+70%/37.5% 16x16/32x32 split; later DAgger rounds improved clue collection but
+fell to 51.25% mixed and 25% at 32x32. It remains a negative diagnostic rather
+than a large-map default.
 Signal specialist runs also default
 `--recurrent-eval-signal-constraint-message-copy-assist` on, which forwards
 `--eval-signal-constraint-message-copy-assist` and replaces sent Signal clue
@@ -716,7 +804,41 @@ discovery/no-scan cases.
 `--recurrent-eval-signal-compatible-target-scan-assist` is available as an
 opt-in diagnostic for visible target tiles that satisfy non-unique clue
 constraints, but it did not improve the first 16x16 rolefix-handoff audit once
-constraint-message copy was enabled.
+constraint-message copy was enabled. `--recurrent-eval-signal-negative-memory-scan-guard`
+is a narrower opt-in follow-up: it forwards
+`--eval-signal-negative-memory-scan-guard`, suppressing a target-scan `INTERACT`
+when the visible center target is still in Signal negative memory as a prior
+decoy unless exact target-scan lock trusts it. This is intended for the next
+32x32 over-scan ablation after
+`recurrent_signal_multisize_16_32_large_map_constraintmsg_seed0`
+(`https://wandb.ai/orion8/syncorsink-core-training/runs/rc4pmvoq`), where
+constraint-message supervision improved the mixed 16/32 score to 67.5% but left
+32x32 at 50% with 7.55 wrong scans per episode. The matched guarded rerun
+`recurrent_signal_multisize_16_32_large_map_constraintmsg_negguard_seed0`
+(`https://wandb.ai/orion8/syncorsink-core-training/runs/8i0re2bp`) kept mixed
+success at 67.5% with the same 85%/50% 16x16/32x32 split, but reduced 32x32
+wrong-target scans to 0.5 per episode. The remaining 32x32 bottleneck is
+therefore true-target acquisition/coordinated scanning rather than decoy-scan
+suppression alone. The next narrow sweep lever is
+`--recurrent-eval-signal-scan-refresh-assist`, which forwards
+`--eval-signal-scan-refresh-assist` plus
+`--eval-signal-scan-refresh-threshold`; it re-triggers an expiring own target
+scan from scan-state feedback when no teammate scan is active. Direct 32x32
+checkpoint audits on the guarded run kept success at 10/20 both without refresh
+(`logs/trajectory_audit/signal_32_guard_baseline_eval_seed3000`) and with
+refresh (`logs/trajectory_audit/signal_32_guard_refresh_eval_seed3000`);
+refresh raised target scans slightly (`2.1` to `2.35`) but did not change the
+failure mix (`9` never reached target, `4` no clue/target scan, `3` no target
+scan, `1` solo target scan, `2` decoy-scan failures). This points the next
+implementation target back to large-map clue/target acquisition.
+`--recurrent-eval-signal-target-probe-assist` is another opt-in diagnostic for
+this failure mode. It forwards `--eval-signal-target-probe-assist`, which
+probe-scans a visible center target only when it is not rejected, not in active
+negative memory, and not already under this agent's active scan. Direct 32x32
+audits showed it is not enough by itself: the guarded checkpoint stayed at
+10/20 successes (`logs/trajectory_audit/signal_32_guard_probe_eval_seed3000`),
+and the clue-positive checkpoint stayed weak at 6/20
+(`logs/trajectory_audit/signal_32_cluepositive_probe_eval_seed3000`).
 Use `--recurrent-backbone mlp` for the legacy two-layer flat encoder or
 `--recurrent-backbone residual_mlp` for the LayerNorm residual flat encoder.
 Use `--recurrent-backbone local_cnn` to encode the local grid/resource/node/
