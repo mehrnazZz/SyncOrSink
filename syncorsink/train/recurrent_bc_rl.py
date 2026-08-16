@@ -9905,6 +9905,39 @@ def _episode_count_masked_positive_labels(episodes, mask_key: str, label_key: st
     return total
 
 
+def _episode_signal_target_hypothesis_stats(episodes) -> dict[str, float | int]:
+    labels = 0
+    commit_labels = 0
+    ambiguity_sum = 0.0
+    for ep in episodes:
+        if "signal_target_hypothesis_mask" not in ep:
+            continue
+        mask = np.asarray(ep["signal_target_hypothesis_mask"], dtype=np.float32)
+        hypothesis = mask > 0.0
+        label_count = int(hypothesis.sum())
+        if label_count <= 0:
+            continue
+        labels += label_count
+        commit_label = np.asarray(
+            ep.get("signal_target_hypothesis_commit_label", np.zeros_like(mask)),
+            dtype=np.float32,
+        )
+        ambiguity_label = np.asarray(
+            ep.get("signal_target_hypothesis_ambiguity_label", np.zeros_like(mask)),
+            dtype=np.float32,
+        )
+        commit_labels += int(((commit_label >= 0.5) & hypothesis).sum())
+        ambiguity_sum += float(ambiguity_label[hypothesis].sum())
+    ambiguous_labels = max(0, labels - commit_labels)
+    return {
+        "labels": labels,
+        "commit_labels": commit_labels,
+        "ambiguous_labels": ambiguous_labels,
+        "commit_rate": commit_labels / max(labels, 1),
+        "ambiguity_mean": ambiguity_sum / max(labels, 1),
+    }
+
+
 def _episode_training_weight(ep_data: dict) -> float:
     return max(0.0, float(ep_data.get("weight", 1.0)))
 
@@ -18340,6 +18373,7 @@ def collect_recurrent_dagger_episodes(
         for ep in focus_replay_episodes
         if ep.get("parent_success") is True
     ]
+    target_hypothesis_stats = _episode_signal_target_hypothesis_stats(episodes)
     summary = {
         "episodes": len(episodes),
         "base_episodes": base_episodes,
@@ -18374,10 +18408,11 @@ def collect_recurrent_dagger_episodes(
             episodes,
             "signal_target_opportunity_action_mask",
         ),
-        "target_hypothesis_labels": _episode_count_label_mask(
-            episodes,
-            "signal_target_hypothesis_mask",
-        ),
+        "target_hypothesis_labels": int(target_hypothesis_stats["labels"]),
+        "target_hypothesis_commit_labels": int(target_hypothesis_stats["commit_labels"]),
+        "target_hypothesis_ambiguous_labels": int(target_hypothesis_stats["ambiguous_labels"]),
+        "target_hypothesis_commit_rate": float(target_hypothesis_stats["commit_rate"]),
+        "target_hypothesis_ambiguity_mean": float(target_hypothesis_stats["ambiguity_mean"]),
         "redundant_target_wait_action_aux_labels": _episode_count_label_mask(
             episodes,
             "signal_redundant_target_wait_action_mask",
@@ -19300,6 +19335,18 @@ def train_recurrent_bc_dagger(
                         ),
                         "dagger/collect_target_hypothesis_labels": int(
                             collect_summary.get("target_hypothesis_labels", 0)
+                        ),
+                        "dagger/collect_target_hypothesis_commit_labels": int(
+                            collect_summary.get("target_hypothesis_commit_labels", 0)
+                        ),
+                        "dagger/collect_target_hypothesis_ambiguous_labels": int(
+                            collect_summary.get("target_hypothesis_ambiguous_labels", 0)
+                        ),
+                        "dagger/collect_target_hypothesis_commit_rate": float(
+                            collect_summary.get("target_hypothesis_commit_rate", 0.0)
+                        ),
+                        "dagger/collect_target_hypothesis_ambiguity_mean": float(
+                            collect_summary.get("target_hypothesis_ambiguity_mean", 0.0)
                         ),
                         "dagger/collect_redundant_target_wait_action_aux_labels": int(
                             collect_summary.get("redundant_target_wait_action_aux_labels", 0)
@@ -28111,6 +28158,7 @@ def main():
                 for source, count in demo_source_counts.items()
                 if str(source).endswith("_replay")
             )
+            demo_hypothesis_stats = _episode_signal_target_hypothesis_stats(episodes)
             _wandb_log(
                 wandb_run,
                 {
@@ -28182,11 +28230,18 @@ def main():
                             "signal_scan_bridge_action_mask",
                         )
                     ),
-                    "demo/target_hypothesis_labels": int(
-                        _episode_count_label_mask(
-                            episodes,
-                            "signal_target_hypothesis_mask",
-                        )
+                    "demo/target_hypothesis_labels": int(demo_hypothesis_stats["labels"]),
+                    "demo/target_hypothesis_commit_labels": int(
+                        demo_hypothesis_stats["commit_labels"]
+                    ),
+                    "demo/target_hypothesis_ambiguous_labels": int(
+                        demo_hypothesis_stats["ambiguous_labels"]
+                    ),
+                    "demo/target_hypothesis_commit_rate": float(
+                        demo_hypothesis_stats["commit_rate"]
+                    ),
+                    "demo/target_hypothesis_ambiguity_mean": float(
+                        demo_hypothesis_stats["ambiguity_mean"]
                     ),
                     "demo/pipeline_pickup_action_labels": int(
                         _episode_count_label_mask(episodes, "pipeline_pickup_action_mask")

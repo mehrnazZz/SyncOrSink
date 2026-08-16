@@ -2412,6 +2412,7 @@ def test_recurrent_signal_target_interact_label_weighting():
         _signal_target_interact_agents,
         _scale_solo_target_team_weights,
         _split_solo_target_scan_agents,
+        _episode_signal_target_hypothesis_stats,
         _signal_scan_decision_loss,
         _signal_scan_gate_loss,
         _signal_redundant_target_wait_action_label_mask,
@@ -2863,6 +2864,12 @@ def test_recurrent_signal_target_interact_label_weighting():
     )
     assert hypothesis_ep_data["signal_target_hypothesis_commit_label"] == [1.0, 0.0]
     assert hypothesis_ep_data["signal_target_hypothesis_ambiguity_label"] == [0.0, 0.0]
+    exact_hypothesis_stats = _episode_signal_target_hypothesis_stats([hypothesis_ep_data])
+    assert exact_hypothesis_stats["labels"] == 1
+    assert exact_hypothesis_stats["commit_labels"] == 1
+    assert exact_hypothesis_stats["ambiguous_labels"] == 0
+    assert exact_hypothesis_stats["commit_rate"] == pytest.approx(1.0)
+    assert exact_hypothesis_stats["ambiguity_mean"] == pytest.approx(0.0)
     env.steps = 2
     env.scenario_state.data["scan_log"] = {1: 2}
     opportunity_mask, opportunity_kind = _signal_target_scan_opportunity_label_mask(
@@ -3060,6 +3067,16 @@ def test_recurrent_signal_target_interact_label_weighting():
     np.testing.assert_allclose(ambiguous_hypothesis_xy[0], expected_hypothesis_xy)
     assert ambiguous_hypothesis_commit[0] == pytest.approx(0.0)
     assert ambiguous_hypothesis_ambiguity[0] > 0.0
+    ambiguous_hypothesis_ep_data = _new_episode_sequence()
+    _append_labeled_step(ambiguous_hypothesis_ep_data, ambiguous_obs, actions, env, hypothesis_cfg)
+    ambiguous_hypothesis_stats = _episode_signal_target_hypothesis_stats(
+        [ambiguous_hypothesis_ep_data]
+    )
+    assert ambiguous_hypothesis_stats["labels"] == 1
+    assert ambiguous_hypothesis_stats["commit_labels"] == 0
+    assert ambiguous_hypothesis_stats["ambiguous_labels"] == 1
+    assert ambiguous_hypothesis_stats["commit_rate"] == pytest.approx(0.0)
+    assert ambiguous_hypothesis_stats["ambiguity_mean"] > 0.0
     default_visible_clue_mask, default_visible_clue_action_id = _signal_visible_clue_action_label_mask(
         env,
         ambiguous_obs,

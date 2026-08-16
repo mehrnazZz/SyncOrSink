@@ -589,8 +589,10 @@ Large-map Signal Hunt search auxiliary:
   `bc/signal_target_hypothesis_loss`,
   `bc/signal_target_hypothesis_commit_acc`,
   `bc/signal_target_hypothesis_ambiguity_l1`, and
-  `bc/signal_target_hypothesis_xy_l1`. This is implemented for measurement and
-  ablation; it is not yet used as a decoding override.
+  `bc/signal_target_hypothesis_xy_l1`, plus demo/DAgger label mix fields for
+  commit labels, ambiguous labels, commit rate, and mean ambiguity. This is
+  implemented for measurement and ablation; it is not yet used as a decoding
+  override.
 - `--obs-signal-sector-features` appends a 10-value Signal observation block for
   role-aware search: assigned-frontier direction, global and assigned-sector
   explored fractions, whether an assigned frontier exists, whether the agent is
