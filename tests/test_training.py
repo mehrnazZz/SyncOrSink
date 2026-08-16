@@ -560,6 +560,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         bc_signal_target_decision_loss_weight=0.4,
         bc_signal_target_decision_pos_weight=2.5,
         bc_signal_target_decision_neg_weight=1.75,
+        bc_signal_target_hypothesis_loss_weight=0.45,
+        bc_signal_target_hypothesis_min_map_size=12,
         bc_signal_ambiguous_target_decision_negatives=True,
         bc_signal_ambiguous_target_decision_min_map_size=12,
         bc_signal_ambiguous_target_search_labels=True,
@@ -716,6 +718,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["bc_signal_rejected_target_interact_action_loss_weight"] == pytest.approx(0.7)
     assert result["config"]["bc_signal_target_validity_loss_weight"] == pytest.approx(0.6)
     assert result["config"]["bc_signal_target_decision_loss_weight"] == pytest.approx(0.4)
+    assert result["config"]["bc_signal_target_hypothesis_loss_weight"] == pytest.approx(0.45)
+    assert result["config"]["bc_signal_target_hypothesis_min_map_size"] == 12
     assert result["config"]["bc_signal_evidence_sweep_action_weight"] == pytest.approx(0.75)
     assert result["config"]["bc_signal_evidence_sweep_min_map_size"] == 12
     assert result["config"]["bc_signal_frontier_exploration_action_weight"] == pytest.approx(0.65)
@@ -952,6 +956,8 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.bc_signal_target_decision_loss_weight == pytest.approx(0.4)
     assert stage_cfg.bc_signal_target_decision_pos_weight == pytest.approx(2.5)
     assert stage_cfg.bc_signal_target_decision_neg_weight == pytest.approx(1.75)
+    assert stage_cfg.bc_signal_target_hypothesis_loss_weight == pytest.approx(0.45)
+    assert stage_cfg.bc_signal_target_hypothesis_min_map_size == 12
     assert stage_cfg.bc_signal_evidence_sweep_action_weight == pytest.approx(0.75)
     assert stage_cfg.bc_signal_evidence_sweep_min_map_size == 12
     assert stage_cfg.bc_signal_frontier_exploration_action_weight == pytest.approx(0.65)
@@ -2411,6 +2417,8 @@ def test_recurrent_signal_target_interact_label_weighting():
         _signal_redundant_target_wait_action_label_mask,
         _signal_target_decision_label_mask,
         _signal_target_decision_loss,
+        _signal_target_hypothesis_label,
+        _signal_target_hypothesis_loss,
         _signal_target_interact_miss_agents,
         _signal_target_scan_action_loss,
         _signal_target_scan_kind,
@@ -2724,6 +2732,35 @@ def test_recurrent_signal_target_interact_label_weighting():
         positive_weight=2.0,
         negative_weight=1.0,
     ).item()
+    hypothesis_xy = torch.tensor([[0.25, 0.75], [0.50, 0.25]], dtype=torch.float32)
+    hypothesis_logits = torch.logit(hypothesis_xy.clamp(0.01, 0.99))
+    good_hypothesis_pred = torch.cat(
+        [
+            torch.tensor([[4.0, -4.0], [-4.0, 2.0]], dtype=torch.float32),
+            hypothesis_logits,
+        ],
+        dim=1,
+    )
+    bad_hypothesis_pred = torch.cat(
+        [
+            torch.tensor([[-4.0, 4.0], [4.0, -2.0]], dtype=torch.float32),
+            torch.flip(hypothesis_logits, dims=[0]),
+        ],
+        dim=1,
+    )
+    assert _signal_target_hypothesis_loss(
+        good_hypothesis_pred,
+        torch.tensor([1.0, 1.0], dtype=torch.float32),
+        hypothesis_xy,
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+        torch.tensor([0.0, 0.75], dtype=torch.float32),
+    ).item() < _signal_target_hypothesis_loss(
+        bad_hypothesis_pred,
+        torch.tensor([1.0, 1.0], dtype=torch.float32),
+        hypothesis_xy,
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+        torch.tensor([0.0, 0.75], dtype=torch.float32),
+    ).item()
 
     high_bad_logits = torch.zeros((2, 8), dtype=torch.float32)
     low_bad_logits = torch.zeros((2, 8), dtype=torch.float32)
@@ -2802,6 +2839,30 @@ def test_recurrent_signal_target_interact_label_weighting():
     )
     np.testing.assert_allclose(decision_mask, np.array([1.0, 1.0], dtype=np.float32))
     np.testing.assert_allclose(decision_label, np.array([1.0, 0.0], dtype=np.float32))
+    hypothesis_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        bc_signal_target_hypothesis_loss_weight=1.0,
+        bc_signal_target_hypothesis_min_map_size=8,
+    )
+    hypothesis_mask, hypothesis_xy, hypothesis_commit, hypothesis_ambiguity = (
+        _signal_target_hypothesis_label(env, decode_obs, hypothesis_cfg)
+    )
+    expected_hypothesis_xy = np.asarray(target_pos, dtype=np.float32) / float(env.map_size - 1)
+    np.testing.assert_allclose(hypothesis_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_allclose(hypothesis_xy[0], expected_hypothesis_xy)
+    np.testing.assert_allclose(hypothesis_commit, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_allclose(hypothesis_ambiguity, np.array([0.0, 0.0], dtype=np.float32))
+    hypothesis_ep_data = _new_episode_sequence()
+    _append_labeled_step(hypothesis_ep_data, decode_obs, actions, env, hypothesis_cfg)
+    assert hypothesis_ep_data["signal_target_hypothesis_mask"] == [1.0, 0.0]
+    np.testing.assert_allclose(
+        hypothesis_ep_data["signal_target_hypothesis_xy"][0],
+        expected_hypothesis_xy,
+    )
+    assert hypothesis_ep_data["signal_target_hypothesis_commit_label"] == [1.0, 0.0]
+    assert hypothesis_ep_data["signal_target_hypothesis_ambiguity_label"] == [0.0, 0.0]
     env.steps = 2
     env.scenario_state.data["scan_log"] = {1: 2}
     opportunity_mask, opportunity_kind = _signal_target_scan_opportunity_label_mask(
@@ -2831,6 +2892,12 @@ def test_recurrent_signal_target_interact_label_weighting():
         scan_cfg,
     )
     np.testing.assert_allclose(opportunity_mask, np.array([0.0, 0.0], dtype=np.float32))
+    no_info_hypothesis_mask, _, _, _ = _signal_target_hypothesis_label(
+        env,
+        uncertain_obs,
+        hypothesis_cfg,
+    )
+    np.testing.assert_allclose(no_info_hypothesis_mask, np.array([0.0, 0.0], dtype=np.float32))
     feedback_label_cfg = RecurrentConfig(
         scenario="signal_hunt",
         map_size=8,
@@ -2986,6 +3053,13 @@ def test_recurrent_signal_target_interact_label_weighting():
     )
     assert strict_decision_mask[0] == pytest.approx(1.0)
     assert strict_decision_label[0] == pytest.approx(0.0)
+    ambiguous_hypothesis_mask, ambiguous_hypothesis_xy, ambiguous_hypothesis_commit, ambiguous_hypothesis_ambiguity = (
+        _signal_target_hypothesis_label(env, ambiguous_obs, hypothesis_cfg)
+    )
+    np.testing.assert_allclose(ambiguous_hypothesis_mask, np.array([1.0, 0.0], dtype=np.float32))
+    np.testing.assert_allclose(ambiguous_hypothesis_xy[0], expected_hypothesis_xy)
+    assert ambiguous_hypothesis_commit[0] == pytest.approx(0.0)
+    assert ambiguous_hypothesis_ambiguity[0] > 0.0
     default_visible_clue_mask, default_visible_clue_action_id = _signal_visible_clue_action_label_mask(
         env,
         ambiguous_obs,
@@ -11535,6 +11609,8 @@ def test_recurrent_signal_hint_comm_bc_smoke(tmp_path):
         bc_signal_first_target_scan_action_weight=0.1,
         bc_signal_joint_target_scan_action_weight=0.1,
         bc_signal_target_aux_weight=0.1,
+        bc_signal_target_hypothesis_loss_weight=0.05,
+        bc_signal_target_hypothesis_min_map_size=8,
         dagger_rounds=1,
         dagger_episodes=1,
         dagger_retrain_from_scratch=False,
@@ -11759,6 +11835,7 @@ def test_recurrent_actor_checkpoint_init_for_rl_smoke(tmp_path):
             "signal_target_validity.",
             "signal_target_decision.",
             "signal_target_aux.",
+            "signal_target_hypothesis.",
             "pipeline_plan_policy.",
             "pipeline_event_policy.",
             "pipeline_navigation_policy.",
@@ -11771,6 +11848,7 @@ def test_recurrent_actor_checkpoint_init_for_rl_smoke(tmp_path):
     assert hasattr(legacy_loaded, "signal_target_validity")
     assert hasattr(legacy_loaded, "signal_target_decision")
     assert hasattr(legacy_loaded, "signal_target_aux")
+    assert hasattr(legacy_loaded, "signal_target_hypothesis")
     assert torch.allclose(
         legacy_loaded.pipeline_plan_policy.weight,
         legacy_loaded.policy.linear.weight,

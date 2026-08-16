@@ -577,6 +577,20 @@ Large-map Signal Hunt search auxiliary:
   only 60% mixed eval with a 75%/45% 16x16/32x32 split. It reduced wrong-target
   scans to zero, but did not improve large-map discovery, so it remains
   diagnostic rather than a promoted large-map default.
+- `--bc-signal-target-hypothesis-loss-weight` enables an opt-in recurrent
+  Signal auxiliary head that predicts whether the current evidence is enough to
+  commit, how ambiguous the target hypothesis remains, and the normalized true
+  target coordinate. Labels are emitted only when an observation or received
+  message contains target evidence compatible with the true target; no-info
+  observations stay masked out. Use
+  `--bc-signal-target-hypothesis-min-map-size` or the sweep flag
+  `--recurrent-bc-signal-target-hypothesis-min-map-size` to restrict this to
+  larger maps. W&B logs `bc/signal_target_hypothesis_count`,
+  `bc/signal_target_hypothesis_loss`,
+  `bc/signal_target_hypothesis_commit_acc`,
+  `bc/signal_target_hypothesis_ambiguity_l1`, and
+  `bc/signal_target_hypothesis_xy_l1`. This is implemented for measurement and
+  ablation; it is not yet used as a decoding override.
 - `--obs-signal-sector-features` appends a 10-value Signal observation block for
   role-aware search: assigned-frontier direction, global and assigned-sector
   explored fractions, whether an assigned frontier exists, whether the agent is

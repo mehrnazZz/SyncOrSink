@@ -252,6 +252,8 @@ class RecurrentConfig:
     bc_signal_ambiguous_target_search_labels: bool = False
     bc_signal_ambiguous_target_search_min_map_size: int = 16
     bc_signal_target_aux_weight: float = 0.0
+    bc_signal_target_hypothesis_loss_weight: float = 0.0
+    bc_signal_target_hypothesis_min_map_size: int = 16
     bc_signal_rejected_target_interact_loss_weight: float = 0.0
     bc_signal_rejected_target_interact_action_loss_weight: float = 0.0
     bc_signal_bad_redundant_target_interact_loss_weight: float = 0.0
@@ -7676,6 +7678,10 @@ def _new_episode_sequence() -> dict:
         "signal_target_decision_label": [],
         "signal_target_aux_mask": [],
         "signal_target_aux_xy": [],
+        "signal_target_hypothesis_mask": [],
+        "signal_target_hypothesis_xy": [],
+        "signal_target_hypothesis_commit_label": [],
+        "signal_target_hypothesis_ambiguity_label": [],
         "signal_decoy_drift_action_mask": [],
         "signal_decoy_drift_action_id": [],
         "signal_decoy_scan_action_mask": [],
@@ -7741,6 +7747,83 @@ def _signal_target_aux_label(env: SyncOrSinkEnv) -> tuple[np.ndarray, np.ndarray
     mask[:] = 1.0
     xy[:, :] = target_xy
     return mask, xy
+
+
+def _signal_constraint_candidate_count(
+    state: _SignalConstraintState,
+    observed_map_size: int,
+) -> int | None:
+    if state.exact_targets:
+        return len(state.exact_targets)
+    if not state.has_constraint:
+        return None
+    bounds = _signal_candidate_bounds_from_constraint_state(state, int(observed_map_size))
+    if bounds is None:
+        return 0
+    x_range, y_range = bounds
+    count = 0
+    for y in y_range:
+        for x in x_range:
+            if _signal_constraint_state_allows_target(state, (int(x), int(y))):
+                count += 1
+    return count
+
+
+def _signal_target_hypothesis_label(
+    env: SyncOrSinkEnv,
+    obs: dict,
+    cfg: RecurrentConfig,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    mask = np.zeros((env.num_agents,), dtype=np.float32)
+    xy = np.zeros((env.num_agents, 2), dtype=np.float32)
+    commit_label = np.zeros((env.num_agents,), dtype=np.float32)
+    ambiguity_label = np.zeros((env.num_agents,), dtype=np.float32)
+    if (
+        getattr(env.config, "scenario", None) != "signal_hunt"
+        or env.scenario_state is None
+        or int(env.map_size) < int(getattr(cfg, "bc_signal_target_hypothesis_min_map_size", 16))
+    ):
+        return mask, xy, commit_label, ambiguity_label
+    target = env.scenario_state.data.get("target")
+    if target is None:
+        return mask, xy, commit_label, ambiguity_label
+    true_target = (int(target[0]), int(target[1]))
+    denom = max(1.0, float(int(env.map_size) - 1))
+    target_xy = np.array(
+        [float(true_target[0]) / denom, float(true_target[1]) / denom],
+        dtype=np.float32,
+    )
+
+    for aid in range(env.num_agents):
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+        if not _signal_observation_has_target_information(obs_agent, state):
+            continue
+        if not _signal_constraint_state_allows_target(state, true_target):
+            continue
+
+        candidate_count = _signal_constraint_candidate_count(state, observed_map_size)
+        exact_targets = set(state.exact_targets)
+        commit = exact_targets == {true_target} or candidate_count == 1
+        if candidate_count is None or candidate_count <= 0:
+            ambiguity = 1.0
+        elif commit:
+            ambiguity = 0.0
+        else:
+            total_cells = max(2, int(observed_map_size) * int(observed_map_size))
+            ambiguity = min(
+                1.0,
+                math.log2(float(max(2, candidate_count))) / math.log2(float(total_cells)),
+            )
+
+        mask[int(aid)] = 1.0
+        xy[int(aid), :] = target_xy
+        commit_label[int(aid)] = 1.0 if commit else 0.0
+        ambiguity_label[int(aid)] = float(ambiguity)
+    return mask, xy, commit_label, ambiguity_label
 
 
 def _signal_target_validity_label(env: SyncOrSinkEnv, obs: dict) -> tuple[np.ndarray, np.ndarray]:
@@ -9070,6 +9153,12 @@ def _append_labeled_step(
         target_opportunity_kind_id=target_opportunity_kind_id,
     )
     target_aux_mask, target_aux_xy = _signal_target_aux_label(env)
+    (
+        target_hypothesis_mask,
+        target_hypothesis_xy,
+        target_hypothesis_commit_label,
+        target_hypothesis_ambiguity_label,
+    ) = _signal_target_hypothesis_label(env, obs, cfg)
     clue_interact_action_mask, clue_interact_action_id = (
         _signal_clue_interact_action_label_mask(env, obs, cfg)
     )
@@ -9242,6 +9331,16 @@ def _append_labeled_step(
         ep_data["signal_target_decision_label"].append(float(target_decision_label[aid]))
         ep_data["signal_target_aux_mask"].append(float(target_aux_mask[aid]))
         ep_data["signal_target_aux_xy"].append(target_aux_xy[aid].astype(np.float32, copy=True))
+        ep_data["signal_target_hypothesis_mask"].append(float(target_hypothesis_mask[aid]))
+        ep_data["signal_target_hypothesis_xy"].append(
+            target_hypothesis_xy[aid].astype(np.float32, copy=True)
+        )
+        ep_data["signal_target_hypothesis_commit_label"].append(
+            float(target_hypothesis_commit_label[aid])
+        )
+        ep_data["signal_target_hypothesis_ambiguity_label"].append(
+            float(target_hypothesis_ambiguity_label[aid])
+        )
         ep_data["signal_decoy_drift_action_mask"].append(0.0)
         ep_data["signal_decoy_drift_action_id"].append(-1)
         ep_data["signal_decoy_scan_action_mask"].append(0.0)
@@ -9488,6 +9587,30 @@ def _finalize_episode_sequence(
                 [np.zeros((2,), dtype=np.float32) for _ in ep_data["actions"]],
             )
         ).astype(np.float32).reshape(-1, env.num_agents, 2),
+        "signal_target_hypothesis_mask": np.array(
+            ep_data.get("signal_target_hypothesis_mask", [0.0 for _ in ep_data["actions"]]),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_target_hypothesis_xy": np.stack(
+            ep_data.get(
+                "signal_target_hypothesis_xy",
+                [np.zeros((2,), dtype=np.float32) for _ in ep_data["actions"]],
+            )
+        ).astype(np.float32).reshape(-1, env.num_agents, 2),
+        "signal_target_hypothesis_commit_label": np.array(
+            ep_data.get(
+                "signal_target_hypothesis_commit_label",
+                [0.0 for _ in ep_data["actions"]],
+            ),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
+        "signal_target_hypothesis_ambiguity_label": np.array(
+            ep_data.get(
+                "signal_target_hypothesis_ambiguity_label",
+                [0.0 for _ in ep_data["actions"]],
+            ),
+            dtype=np.float32,
+        ).reshape(-1, env.num_agents),
         "signal_decoy_drift_action_mask": np.array(
             ep_data.get("signal_decoy_drift_action_mask", []),
             dtype=np.float32,
@@ -10143,6 +10266,36 @@ def _slice_recurrent_episode(episode: dict, start: int, end: int, **metadata) ->
     else:
         base = episode["actions"][start:end]
         sliced["signal_target_aux_xy"] = np.zeros((*base.shape, 2), dtype=np.float32)
+    if "signal_target_hypothesis_mask" in episode:
+        sliced["signal_target_hypothesis_mask"] = episode["signal_target_hypothesis_mask"][start:end].copy()
+    else:
+        sliced["signal_target_hypothesis_mask"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_target_hypothesis_xy" in episode:
+        sliced["signal_target_hypothesis_xy"] = episode["signal_target_hypothesis_xy"][start:end].copy()
+    else:
+        base = episode["actions"][start:end]
+        sliced["signal_target_hypothesis_xy"] = np.zeros((*base.shape, 2), dtype=np.float32)
+    if "signal_target_hypothesis_commit_label" in episode:
+        sliced["signal_target_hypothesis_commit_label"] = episode[
+            "signal_target_hypothesis_commit_label"
+        ][start:end].copy()
+    else:
+        sliced["signal_target_hypothesis_commit_label"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
+    if "signal_target_hypothesis_ambiguity_label" in episode:
+        sliced["signal_target_hypothesis_ambiguity_label"] = episode[
+            "signal_target_hypothesis_ambiguity_label"
+        ][start:end].copy()
+    else:
+        sliced["signal_target_hypothesis_ambiguity_label"] = np.zeros_like(
+            episode["actions"][start:end],
+            dtype=np.float32,
+        )
     if "signal_decoy_drift_action_mask" in episode:
         sliced["signal_decoy_drift_action_mask"] = episode["signal_decoy_drift_action_mask"][start:end].copy()
     else:
@@ -12086,6 +12239,40 @@ def _signal_target_aux_loss(
     return present_loss + xy_loss
 
 
+def _signal_target_hypothesis_loss(
+    pred: torch.Tensor,
+    target_mask: torch.Tensor,
+    target_xy: torch.Tensor,
+    commit_label: torch.Tensor,
+    ambiguity_label: torch.Tensor,
+    sample_weight: torch.Tensor | None = None,
+) -> torch.Tensor:
+    pred = pred.reshape(-1, 4)
+    target_mask = target_mask.float().reshape(-1).clamp(0.0, 1.0)
+    target_xy = target_xy.float().reshape(-1, 2).clamp(0.0, 1.0)
+    commit_label = commit_label.float().reshape(-1).clamp(0.0, 1.0)
+    ambiguity_label = ambiguity_label.float().reshape(-1).clamp(0.0, 1.0)
+    if sample_weight is not None:
+        weights = sample_weight.float().reshape(-1) * target_mask
+    else:
+        weights = target_mask
+    if float(weights.detach().sum().item()) <= 0.0:
+        return torch.tensor(0.0, dtype=pred.dtype, device=pred.device)
+    commit_loss = nn.functional.binary_cross_entropy_with_logits(
+        pred[:, 0],
+        commit_label,
+        reduction="none",
+    )
+    ambiguity_loss = nn.functional.binary_cross_entropy_with_logits(
+        pred[:, 1],
+        ambiguity_label,
+        reduction="none",
+    )
+    xy_pred = torch.sigmoid(pred[:, 2:4])
+    xy_loss = ((xy_pred - target_xy) ** 2).mean(dim=-1)
+    return _weighted_mean(commit_loss + ambiguity_loss + xy_loss, weights)
+
+
 def _send_threshold_for_target_rate(probs, target_rate: float) -> float:
     probs = np.asarray(probs, dtype=np.float32).reshape(-1)
     if probs.size == 0:
@@ -12399,6 +12586,12 @@ def train_recurrent_bc(
         target_aux_present_correct = 0
         target_aux_present_total = 0
         target_aux_xy_l1_sum = 0.0
+        target_hypothesis_loss_sum = 0.0
+        target_hypothesis_steps = 0
+        target_hypothesis_count = 0
+        target_hypothesis_commit_correct = 0
+        target_hypothesis_ambiguity_l1_sum = 0.0
+        target_hypothesis_xy_l1_sum = 0.0
         decoy_drift_action_loss_sum = 0.0
         decoy_drift_action_loss_steps = 0
         decoy_drift_action_count = 0
@@ -12801,6 +12994,50 @@ def train_recurrent_bc(
             else:
                 target_aux_xy_seq = torch.zeros(
                     (*act_seq.shape, 2),
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "signal_target_hypothesis_mask" in ep_data:
+                target_hypothesis_mask_seq = torch.tensor(
+                    ep_data["signal_target_hypothesis_mask"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_hypothesis_mask_seq = torch.zeros_like(act_seq, dtype=torch.float32, device=device)
+            if "signal_target_hypothesis_xy" in ep_data:
+                target_hypothesis_xy_seq = torch.tensor(
+                    ep_data["signal_target_hypothesis_xy"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_hypothesis_xy_seq = torch.zeros(
+                    (*act_seq.shape, 2),
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "signal_target_hypothesis_commit_label" in ep_data:
+                target_hypothesis_commit_label_seq = torch.tensor(
+                    ep_data["signal_target_hypothesis_commit_label"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_hypothesis_commit_label_seq = torch.zeros_like(
+                    act_seq,
+                    dtype=torch.float32,
+                    device=device,
+                )
+            if "signal_target_hypothesis_ambiguity_label" in ep_data:
+                target_hypothesis_ambiguity_label_seq = torch.tensor(
+                    ep_data["signal_target_hypothesis_ambiguity_label"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            else:
+                target_hypothesis_ambiguity_label_seq = torch.zeros_like(
+                    act_seq,
                     dtype=torch.float32,
                     device=device,
                 )
@@ -15181,6 +15418,61 @@ def train_recurrent_bc(
                                     .sum()
                                     .item()
                                 )
+                    target_hypothesis_weight = float(
+                        cfg.bc_signal_target_hypothesis_loss_weight
+                    )
+                    if (
+                        target_hypothesis_weight > 0.0
+                        and hasattr(model, "signal_target_hypothesis")
+                    ):
+                        target_hypothesis_mask = target_hypothesis_mask_seq[t]
+                        target_hypothesis_xy = target_hypothesis_xy_seq[t]
+                        target_hypothesis_commit_label = target_hypothesis_commit_label_seq[t]
+                        target_hypothesis_ambiguity_label = (
+                            target_hypothesis_ambiguity_label_seq[t]
+                        )
+                        target_hypothesis_pred = model.signal_target_hypothesis(hidden[0])
+                        target_hypothesis_loss = _signal_target_hypothesis_loss(
+                            target_hypothesis_pred,
+                            target_hypothesis_mask,
+                            target_hypothesis_xy,
+                            target_hypothesis_commit_label,
+                            target_hypothesis_ambiguity_label,
+                            sample_weight=sample_weight,
+                        )
+                        loss = loss + target_hypothesis_weight * target_hypothesis_loss
+                        target_hypothesis_loss_sum += float(target_hypothesis_loss.item())
+                        target_hypothesis_steps += 1
+                        with torch.no_grad():
+                            hypothesis_bool = target_hypothesis_mask > 0.0
+                            hypothesis_count = int(hypothesis_bool.sum().item())
+                            target_hypothesis_count += hypothesis_count
+                            if hypothesis_count > 0:
+                                commit_prob = torch.sigmoid(target_hypothesis_pred[:, 0])
+                                commit_pred = commit_prob >= 0.5
+                                commit_label_bool = target_hypothesis_commit_label >= 0.5
+                                target_hypothesis_commit_correct += int(
+                                    (commit_pred == commit_label_bool)[hypothesis_bool]
+                                    .sum()
+                                    .item()
+                                )
+                                ambiguity_pred = torch.sigmoid(target_hypothesis_pred[:, 1])
+                                target_hypothesis_ambiguity_l1_sum += float(
+                                    torch.abs(
+                                        ambiguity_pred - target_hypothesis_ambiguity_label
+                                    )[hypothesis_bool]
+                                    .sum()
+                                    .item()
+                                )
+                                hypothesis_xy_pred = torch.sigmoid(
+                                    target_hypothesis_pred[:, 2:4]
+                                )
+                                target_hypothesis_xy_l1_sum += float(
+                                    torch.abs(hypothesis_xy_pred - target_hypothesis_xy)
+                                    .mean(dim=-1)[hypothesis_bool]
+                                    .sum()
+                                    .item()
+                                )
                     decoy_drift_action_mask = decoy_drift_action_mask_seq[t]
                     decoy_drift_action_id = decoy_drift_action_id_seq[t]
                     decoy_drift_action_weight = float(cfg.bc_signal_decoy_drift_action_loss_weight)
@@ -15639,6 +15931,22 @@ def train_recurrent_bc(
         target_aux_loss_mean = target_aux_loss_sum / max(target_aux_steps, 1)
         target_aux_present_acc = target_aux_present_correct / max(target_aux_present_total, 1)
         target_aux_xy_l1 = target_aux_xy_l1_sum / max(target_aux_count, 1)
+        target_hypothesis_loss_mean = target_hypothesis_loss_sum / max(
+            target_hypothesis_steps,
+            1,
+        )
+        target_hypothesis_commit_acc = target_hypothesis_commit_correct / max(
+            target_hypothesis_count,
+            1,
+        )
+        target_hypothesis_ambiguity_l1 = target_hypothesis_ambiguity_l1_sum / max(
+            target_hypothesis_count,
+            1,
+        )
+        target_hypothesis_xy_l1 = target_hypothesis_xy_l1_sum / max(
+            target_hypothesis_count,
+            1,
+        )
         decoy_drift_action_den = max(decoy_drift_action_count, 1)
         decoy_drift_pred_bad_action_rate = (
             decoy_drift_pred_bad_action_count / decoy_drift_action_den
@@ -15949,6 +16257,7 @@ def train_recurrent_bc(
             f"valid {target_validity_positive_pred_rate:.3f}/{target_validity_negative_pred_rate:.3f} | "
             f"decision {target_decision_positive_pred_rate:.3f}/{target_decision_negative_pred_rate:.3f} | "
             f"target_aux {target_aux_xy_l1:.3f} | "
+            f"hyp {target_hypothesis_commit_acc:.3f}/{target_hypothesis_xy_l1:.3f} | "
             f"decoy_bad {decoy_drift_pred_bad_action_rate:.3f} | "
             f"decoy_scan_bad {decoy_scan_pred_bad_action_rate:.3f} | "
             f"rej_drift_bad {rejected_target_drift_pred_bad_action_rate:.3f} | "
@@ -16787,6 +17096,27 @@ def train_recurrent_bc(
                     f"{log_prefix}/signal_target_aux_xy_l1": float(target_aux_xy_l1),
                     f"{log_prefix}/signal_target_aux_weight": float(
                         cfg.bc_signal_target_aux_weight
+                    ),
+                    f"{log_prefix}/signal_target_hypothesis_count": int(
+                        target_hypothesis_count
+                    ),
+                    f"{log_prefix}/signal_target_hypothesis_loss": float(
+                        target_hypothesis_loss_mean
+                    ),
+                    f"{log_prefix}/signal_target_hypothesis_commit_acc": float(
+                        target_hypothesis_commit_acc
+                    ),
+                    f"{log_prefix}/signal_target_hypothesis_ambiguity_l1": float(
+                        target_hypothesis_ambiguity_l1
+                    ),
+                    f"{log_prefix}/signal_target_hypothesis_xy_l1": float(
+                        target_hypothesis_xy_l1
+                    ),
+                    f"{log_prefix}/signal_target_hypothesis_weight": float(
+                        cfg.bc_signal_target_hypothesis_loss_weight
+                    ),
+                    f"{log_prefix}/signal_target_hypothesis_min_map_size": int(
+                        cfg.bc_signal_target_hypothesis_min_map_size
                     ),
                     f"{log_prefix}/signal_decoy_drift_action_count": int(decoy_drift_action_count),
                     f"{log_prefix}/signal_decoy_drift_action_loss": float(decoy_drift_action_loss_mean),
@@ -18044,6 +18374,10 @@ def collect_recurrent_dagger_episodes(
             episodes,
             "signal_target_opportunity_action_mask",
         ),
+        "target_hypothesis_labels": _episode_count_label_mask(
+            episodes,
+            "signal_target_hypothesis_mask",
+        ),
         "redundant_target_wait_action_aux_labels": _episode_count_label_mask(
             episodes,
             "signal_redundant_target_wait_action_mask",
@@ -18963,6 +19297,9 @@ def train_recurrent_bc_dagger(
                         ),
                         "dagger/collect_target_opportunity_action_labels": int(
                             collect_summary.get("target_opportunity_action_labels", 0)
+                        ),
+                        "dagger/collect_target_hypothesis_labels": int(
+                            collect_summary.get("target_hypothesis_labels", 0)
                         ),
                         "dagger/collect_redundant_target_wait_action_aux_labels": int(
                             collect_summary.get("redundant_target_wait_action_aux_labels", 0)
@@ -23260,6 +23597,7 @@ def _load_recurrent_actor_state(model: MAPPORecurrentActor, state: dict) -> None
         "signal_target_validity.",
         "signal_target_decision.",
         "signal_target_aux.",
+        "signal_target_hypothesis.",
         "pipeline_interact_gate.",
         "pipeline_event_policy.",
         "pipeline_navigation_policy.",
@@ -26301,6 +26639,20 @@ def main():
         default=0.0,
         help="Opt-in BC auxiliary loss that predicts the Signal Hunt true-target coordinate from recurrent state",
     )
+    p.add_argument(
+        "--bc-signal-target-hypothesis-loss-weight",
+        type=float,
+        default=RecurrentConfig.bc_signal_target_hypothesis_loss_weight,
+        help=(
+            "Opt-in BC auxiliary loss for Signal Hunt target hypothesis commit, "
+            "ambiguity, and coordinate predictions from recurrent state."
+        ),
+    )
+    p.add_argument(
+        "--bc-signal-target-hypothesis-min-map-size",
+        type=int,
+        default=RecurrentConfig.bc_signal_target_hypothesis_min_map_size,
+    )
     p.add_argument("--bc-signal-rejected-target-interact-loss-weight", type=float, default=0.0)
     p.add_argument("--bc-signal-rejected-target-interact-action-loss-weight", type=float, default=0.0)
     p.add_argument("--bc-signal-bad-redundant-target-interact-loss-weight", type=float, default=0.0)
@@ -27398,6 +27750,12 @@ def main():
             args.bc_signal_ambiguous_target_search_min_map_size
         ),
         bc_signal_target_aux_weight=args.bc_signal_target_aux_weight,
+        bc_signal_target_hypothesis_loss_weight=(
+            args.bc_signal_target_hypothesis_loss_weight
+        ),
+        bc_signal_target_hypothesis_min_map_size=(
+            args.bc_signal_target_hypothesis_min_map_size
+        ),
         bc_signal_rejected_target_interact_loss_weight=args.bc_signal_rejected_target_interact_loss_weight,
         bc_signal_rejected_target_interact_action_loss_weight=(
             args.bc_signal_rejected_target_interact_action_loss_weight
@@ -27822,6 +28180,12 @@ def main():
                         _episode_count_label_mask(
                             episodes,
                             "signal_scan_bridge_action_mask",
+                        )
+                    ),
+                    "demo/target_hypothesis_labels": int(
+                        _episode_count_label_mask(
+                            episodes,
+                            "signal_target_hypothesis_mask",
                         )
                     ),
                     "demo/pipeline_pickup_action_labels": int(

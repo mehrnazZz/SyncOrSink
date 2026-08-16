@@ -332,11 +332,23 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     signal_target_aux_idx = commands["signal_hunt"].index(
         "--bc-signal-target-aux-weight"
     )
+    signal_target_hypothesis_idx = commands["signal_hunt"].index(
+        "--bc-signal-target-hypothesis-loss-weight"
+    )
+    signal_target_hypothesis_min_idx = commands["signal_hunt"].index(
+        "--bc-signal-target-hypothesis-min-map-size"
+    )
     energy_target_aux_idx = commands["energy_grid"].index(
         "--bc-signal-target-aux-weight"
     )
+    energy_target_hypothesis_idx = commands["energy_grid"].index(
+        "--bc-signal-target-hypothesis-loss-weight"
+    )
     pipeline_target_aux_idx = commands["pipeline_assembly"].index(
         "--bc-signal-target-aux-weight"
+    )
+    pipeline_target_hypothesis_idx = commands["pipeline_assembly"].index(
+        "--bc-signal-target-hypothesis-loss-weight"
     )
     signal_target_pursuit_idx = commands["signal_hunt"].index(
         "--bc-signal-target-pursuit-action-weight"
@@ -472,8 +484,12 @@ def test_core_training_sweep_recurrent_defaults_are_guarded_and_scenario_aware(t
     assert commands["energy_grid"][energy_constraint_msg_loss_idx + 1] == "0.0"
     assert commands["pipeline_assembly"][pipeline_constraint_msg_loss_idx + 1] == "0.0"
     assert commands["signal_hunt"][signal_target_aux_idx + 1] == "0.25"
+    assert commands["signal_hunt"][signal_target_hypothesis_idx + 1] == "0.0"
+    assert commands["signal_hunt"][signal_target_hypothesis_min_idx + 1] == "16"
     assert commands["energy_grid"][energy_target_aux_idx + 1] == "0.0"
+    assert commands["energy_grid"][energy_target_hypothesis_idx + 1] == "0.0"
     assert commands["pipeline_assembly"][pipeline_target_aux_idx + 1] == "0.0"
+    assert commands["pipeline_assembly"][pipeline_target_hypothesis_idx + 1] == "0.0"
     assert commands["signal_hunt"][signal_target_pursuit_idx + 1] == "0.4"
     assert commands["signal_hunt"][signal_sync_response_idx + 1] == "0.2"
     assert commands["signal_hunt"][signal_active_scan_response_idx + 1] == "0.0"
@@ -1495,6 +1511,10 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "0.15",
         "--recurrent-bc-signal-target-aux-weight",
         "0.45",
+        "--recurrent-bc-signal-target-hypothesis-loss-weight",
+        "0.55",
+        "--recurrent-bc-signal-target-hypothesis-min-map-size",
+        "8",
         "--recurrent-bc-signal-constraint-message-loss-weight",
         "1.25",
         "--recurrent-bc-signal-target-pursuit-action-weight",
@@ -1795,6 +1815,8 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_bc_comm_send_rate_penalty_weight"] == 0.25
     assert payload["config"]["recurrent_bc_comm_send_rate_target"] == 0.15
     assert payload["config"]["recurrent_bc_signal_target_aux_weight"] == 0.45
+    assert payload["config"]["recurrent_bc_signal_target_hypothesis_loss_weight"] == 0.55
+    assert payload["config"]["recurrent_bc_signal_target_hypothesis_min_map_size"] == 8
     assert payload["config"]["recurrent_bc_signal_constraint_message_loss_weight"] == 1.25
     assert payload["config"]["recurrent_bc_signal_target_pursuit_action_weight"] == 0.6
     assert payload["config"]["recurrent_bc_signal_target_pursuit_trust_exact_memory"] is True
@@ -1828,6 +1850,8 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_bc_signal_target_decision_loss_weight"] == 1.7
     assert payload["config"]["recurrent_bc_signal_target_decision_pos_weight"] == 2.7
     assert payload["config"]["recurrent_bc_signal_target_decision_neg_weight"] == 3.7
+    assert command[command.index("--bc-signal-target-hypothesis-loss-weight") + 1] == "0.55"
+    assert command[command.index("--bc-signal-target-hypothesis-min-map-size") + 1] == "8"
     assert command[command.index("--bc-signal-scan-decision-loss-weight") + 1] == "1.4"
     assert command[command.index("--bc-signal-scan-decision-pos-weight") + 1] == "2.4"
     assert command[command.index("--bc-signal-scan-decision-neg-weight") + 1] == "3.4"

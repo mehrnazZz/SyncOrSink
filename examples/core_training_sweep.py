@@ -648,6 +648,16 @@ def _build_recurrent_command(
     bc_signal_target_aux_weight = args.recurrent_bc_signal_target_aux_weight
     if bc_signal_target_aux_weight is None:
         bc_signal_target_aux_weight = 0.25 if signal_specialist else 0.0
+    bc_signal_target_hypothesis_loss_weight = (
+        args.recurrent_bc_signal_target_hypothesis_loss_weight
+    )
+    if bc_signal_target_hypothesis_loss_weight is None:
+        bc_signal_target_hypothesis_loss_weight = 0.0
+    bc_signal_target_hypothesis_min_map_size = (
+        args.recurrent_bc_signal_target_hypothesis_min_map_size
+    )
+    if bc_signal_target_hypothesis_min_map_size is None:
+        bc_signal_target_hypothesis_min_map_size = 16
     bc_signal_target_pursuit_action_weight = (
         args.recurrent_bc_signal_target_pursuit_action_weight
     )
@@ -999,6 +1009,10 @@ def _build_recurrent_command(
         str(bc_signal_constraint_message_loss_weight),
         "--bc-signal-target-aux-weight",
         str(bc_signal_target_aux_weight),
+        "--bc-signal-target-hypothesis-loss-weight",
+        str(bc_signal_target_hypothesis_loss_weight),
+        "--bc-signal-target-hypothesis-min-map-size",
+        str(bc_signal_target_hypothesis_min_map_size),
         "--bc-signal-target-pursuit-action-weight",
         str(bc_signal_target_pursuit_action_weight),
         "--bc-signal-target-pursuit-max-agents",
@@ -1873,6 +1887,12 @@ def run_suite(args) -> dict:
             ),
             "recurrent_bc_signal_target_aux_weight": (
                 args.recurrent_bc_signal_target_aux_weight
+            ),
+            "recurrent_bc_signal_target_hypothesis_loss_weight": (
+                args.recurrent_bc_signal_target_hypothesis_loss_weight
+            ),
+            "recurrent_bc_signal_target_hypothesis_min_map_size": (
+                args.recurrent_bc_signal_target_hypothesis_min_map_size
             ),
             "recurrent_bc_signal_target_pursuit_action_weight": (
                 args.recurrent_bc_signal_target_pursuit_action_weight
@@ -2917,6 +2937,20 @@ def parse_args(argv: list[str] | None = None):
             "Signal specialist auxiliary loss for predicting fused exact target location from clues; "
             "defaults to 0.25 for the specialist preset"
         ),
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-hypothesis-loss-weight",
+        type=float,
+        default=None,
+        help=(
+            "Signal specialist auxiliary loss for target hypothesis commit, "
+            "ambiguity, and coordinate predictions"
+        ),
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-hypothesis-min-map-size",
+        type=int,
+        default=None,
     )
     parser.add_argument(
         "--recurrent-bc-signal-target-pursuit-action-weight",

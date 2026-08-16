@@ -117,6 +117,7 @@ class MAPPORecurrentActor(nn.Module):
         self.signal_target_validity = nn.Linear(hidden_dim, 1)
         self.signal_target_decision = nn.Linear(hidden_dim, 1)
         self.signal_target_aux = nn.Linear(hidden_dim, 3)
+        self.signal_target_hypothesis = nn.Linear(hidden_dim, 4)
         self.pipeline_interact_gate = nn.Linear(hidden_dim, 1)
         self.pipeline_event_policy = nn.Linear(hidden_dim, action_dim)
         self.pipeline_navigation_policy = nn.Linear(hidden_dim, action_dim)
