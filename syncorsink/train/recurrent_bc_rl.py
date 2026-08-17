@@ -20035,6 +20035,24 @@ def _signal_center_target_probe_candidate(
     return True
 
 
+def _signal_center_target_observation_bucket(obs_agent: dict, cfg: RecurrentConfig) -> str:
+    if cfg.scenario != "signal_hunt" or not isinstance(obs_agent, dict):
+        return "uncertain"
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    constraint_state = _signal_constraint_state_from_observation(obs_agent, observed_map_size)
+    if not _signal_observation_has_target_information(obs_agent, constraint_state):
+        return "no_info"
+    if _signal_center_rejected_target(obs_agent, observed_map_size, constraint_state):
+        return "rejected"
+    if _signal_center_target_scan_decoding_candidate(obs_agent, cfg):
+        return "candidate"
+    if _signal_center_compatible_target_scan_decoding_candidate(obs_agent, cfg):
+        return "compatible"
+    if _signal_center_ambiguous_target_scan_candidate(obs_agent, cfg):
+        return "ambiguous"
+    return "uncertain"
+
+
 def _apply_signal_target_probe_assist(
     cfg: RecurrentConfig,
     obs: dict,
@@ -22400,9 +22418,21 @@ _SIGNAL_EVAL_METRIC_KEYS = (
     "true_target_visits",
     "decoy_target_visits",
     "true_target_unscanned_visits",
+    "true_target_unscanned_obs_candidate",
+    "true_target_unscanned_obs_compatible",
+    "true_target_unscanned_obs_ambiguous",
+    "true_target_unscanned_obs_rejected",
+    "true_target_unscanned_obs_no_info",
+    "true_target_unscanned_obs_uncertain",
     "decoy_target_unscanned_visits",
     "target_first_scan_opportunities",
     "target_first_scan_misses",
+    "target_first_scan_miss_obs_candidate",
+    "target_first_scan_miss_obs_compatible",
+    "target_first_scan_miss_obs_ambiguous",
+    "target_first_scan_miss_obs_rejected",
+    "target_first_scan_miss_obs_no_info",
+    "target_first_scan_miss_obs_uncertain",
     "target_refresh_scan_opportunities",
     "target_refresh_scan_misses",
     "target_joint_completion_opportunities",
@@ -22473,9 +22503,21 @@ def _evaluate_recurrent_policy_single_map(cfg: RecurrentConfig, model, device) -
                 "true_target_visits": 0.0,
                 "decoy_target_visits": 0.0,
                 "true_target_unscanned_visits": 0.0,
+                "true_target_unscanned_obs_candidate": 0.0,
+                "true_target_unscanned_obs_compatible": 0.0,
+                "true_target_unscanned_obs_ambiguous": 0.0,
+                "true_target_unscanned_obs_rejected": 0.0,
+                "true_target_unscanned_obs_no_info": 0.0,
+                "true_target_unscanned_obs_uncertain": 0.0,
                 "decoy_target_unscanned_visits": 0.0,
                 "target_first_scan_opportunities": 0.0,
                 "target_first_scan_misses": 0.0,
+                "target_first_scan_miss_obs_candidate": 0.0,
+                "target_first_scan_miss_obs_compatible": 0.0,
+                "target_first_scan_miss_obs_ambiguous": 0.0,
+                "target_first_scan_miss_obs_rejected": 0.0,
+                "target_first_scan_miss_obs_no_info": 0.0,
+                "target_first_scan_miss_obs_uncertain": 0.0,
                 "target_refresh_scan_opportunities": 0.0,
                 "target_refresh_scan_misses": 0.0,
                 "target_joint_completion_opportunities": 0.0,
@@ -22546,10 +22588,22 @@ def _evaluate_recurrent_policy_single_map(cfg: RecurrentConfig, model, device) -
                                 reached_true_target = True
                                 signal_ep["true_target_visits"] += 1.0
                                 scan_kind = _signal_target_scan_kind(env, int(aid))
+                                obs_bucket = _signal_center_target_observation_bucket(obs_agent, cfg)
+                                if obs_bucket not in (
+                                    "candidate",
+                                    "compatible",
+                                    "ambiguous",
+                                    "rejected",
+                                    "no_info",
+                                ):
+                                    obs_bucket = "uncertain"
                                 if scan_kind == _SIGNAL_TARGET_SCAN_KIND_FIRST:
                                     signal_ep["target_first_scan_opportunities"] += 1.0
                                     if action_id != env.ACTION_INTERACT:
                                         signal_ep["target_first_scan_misses"] += 1.0
+                                        signal_ep[
+                                            f"target_first_scan_miss_obs_{obs_bucket}"
+                                        ] += 1.0
                                 elif scan_kind == _SIGNAL_TARGET_SCAN_KIND_REFRESH:
                                     signal_ep["target_refresh_scan_opportunities"] += 1.0
                                     if action_id != env.ACTION_INTERACT:
@@ -22564,6 +22618,7 @@ def _evaluate_recurrent_policy_single_map(cfg: RecurrentConfig, model, device) -
                                         signal_ep["target_redundant_active_scans"] += 1.0
                                 if action_id != env.ACTION_INTERACT:
                                     signal_ep["true_target_unscanned_visits"] += 1.0
+                                    signal_ep[f"true_target_unscanned_obs_{obs_bucket}"] += 1.0
                             if on_decoy_target:
                                 reached_decoy_target = True
                                 signal_ep["decoy_target_visits"] += 1.0

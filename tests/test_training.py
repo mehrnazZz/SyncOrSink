@@ -2414,6 +2414,7 @@ def test_recurrent_signal_target_interact_label_weighting():
         _signal_center_target_scan_decoding_candidate,
         _signal_center_compatible_target_scan_decoding_candidate,
         _signal_center_ambiguous_target_scan_candidate,
+        _signal_center_target_observation_bucket,
         _signal_frontier_exploration_action_label_mask,
         _signal_bad_redundant_target_interact_agents,
         _signal_bad_redundant_target_interact_loss,
@@ -2943,6 +2944,7 @@ def test_recurrent_signal_target_interact_label_weighting():
         hypothesis_cfg,
     )
     np.testing.assert_allclose(no_info_hypothesis_mask, np.array([0.0, 0.0], dtype=np.float32))
+    assert _signal_center_target_observation_bucket(uncertain_joint_obs, scan_cfg) == "no_info"
     feedback_label_cfg = RecurrentConfig(
         scenario="signal_hunt",
         map_size=8,
@@ -2979,6 +2981,7 @@ def test_recurrent_signal_target_interact_label_weighting():
     stay_actions = torch.full((2,), env.ACTION_STAY, dtype=torch.long)
 
     assert _signal_center_target_scan_decoding_candidate(decode_obs[0], scan_cfg)
+    assert _signal_center_target_observation_bucket(decode_obs[0], scan_cfg) == "candidate"
     assert not _signal_center_target_scan_decoding_candidate(decode_obs[1], scan_cfg)
     decoded_actions = _apply_signal_target_scan_decoding(scan_cfg, decode_obs, logits, stay_actions)
     assert decoded_actions.tolist() == [env.ACTION_INTERACT, env.ACTION_STAY]
@@ -6007,6 +6010,11 @@ def test_recurrent_signal_eval_summary_includes_target_failure_modes():
             "target_scans": 0.0,
             "true_target_visits": 3.0,
             "true_target_unscanned_visits": 3.0,
+            "true_target_unscanned_obs_candidate": 1.0,
+            "true_target_unscanned_obs_compatible": 1.0,
+            "target_first_scan_misses": 2.0,
+            "target_first_scan_miss_obs_candidate": 1.0,
+            "target_first_scan_miss_obs_no_info": 1.0,
             "reached_any_target": 1.0,
             "reached_true_target": 1.0,
             "no_target_reached": 0.0,
@@ -6028,6 +6036,11 @@ def test_recurrent_signal_eval_summary_includes_target_failure_modes():
     assert summary["avg_target_scans"] == pytest.approx(2.0 / 3.0)
     assert summary["avg_true_target_visits"] == pytest.approx(1.0)
     assert summary["avg_true_target_unscanned_visits"] == pytest.approx(1.0)
+    assert summary["avg_true_target_unscanned_obs_candidate"] == pytest.approx(1.0 / 3.0)
+    assert summary["avg_true_target_unscanned_obs_compatible"] == pytest.approx(1.0 / 3.0)
+    assert summary["avg_target_first_scan_misses"] == pytest.approx(2.0 / 3.0)
+    assert summary["avg_target_first_scan_miss_obs_candidate"] == pytest.approx(1.0 / 3.0)
+    assert summary["avg_target_first_scan_miss_obs_no_info"] == pytest.approx(1.0 / 3.0)
     assert summary["avg_reached_any_target"] == pytest.approx(2.0 / 3.0)
     assert summary["avg_no_target_reached"] == pytest.approx(1.0 / 3.0)
     assert summary["avg_true_target_reached_without_scan"] == pytest.approx(1.0 / 3.0)
