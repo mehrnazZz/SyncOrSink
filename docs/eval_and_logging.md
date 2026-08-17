@@ -596,7 +596,14 @@ Large-map Signal Hunt search auxiliary:
   `bc/signal_target_hypothesis_xy_l1`, plus demo/DAgger label mix fields for
   commit labels, ambiguous labels, commit rate, and mean ambiguity. This is
   implemented for measurement and ablation; it is not yet used as a decoding
-  override.
+  override. The all-components 0.05 run
+  `recurrent_signal_multisize_16_32_large_map_targethypothesis005_seed0` reached
+  65% mixed eval. The coordinate-only follow-up
+  `recurrent_signal_multisize_16_32_large_map_targethypothesis_xyonly005_seed0`
+  logged to `https://wandb.ai/orion8/syncorsink-core-training/runs/kwpy80zv` and
+  reached 70% mixed eval with an 85%/55% 16x16/32x32 split. Its DAgger label mix
+  was about 16.2k labels, 69.6% commit labels, and 0.115 mean ambiguity, so the
+  component split remains useful for ablation but is not a promoted default yet.
 - `--obs-signal-sector-features` appends a 10-value Signal observation block for
   role-aware search: assigned-frontier direction, global and assigned-sector
   explored fractions, whether an assigned frontier exists, whether the agent is
