@@ -1513,6 +1513,12 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "0.45",
         "--recurrent-bc-signal-target-hypothesis-loss-weight",
         "0.55",
+        "--recurrent-bc-signal-target-hypothesis-commit-loss-weight",
+        "0.25",
+        "--recurrent-bc-signal-target-hypothesis-ambiguity-loss-weight",
+        "0.5",
+        "--recurrent-bc-signal-target-hypothesis-xy-loss-weight",
+        "1.75",
         "--recurrent-bc-signal-target-hypothesis-min-map-size",
         "8",
         "--recurrent-bc-signal-constraint-message-loss-weight",
@@ -1816,6 +1822,9 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_bc_comm_send_rate_target"] == 0.15
     assert payload["config"]["recurrent_bc_signal_target_aux_weight"] == 0.45
     assert payload["config"]["recurrent_bc_signal_target_hypothesis_loss_weight"] == 0.55
+    assert payload["config"]["recurrent_bc_signal_target_hypothesis_commit_loss_weight"] == 0.25
+    assert payload["config"]["recurrent_bc_signal_target_hypothesis_ambiguity_loss_weight"] == 0.5
+    assert payload["config"]["recurrent_bc_signal_target_hypothesis_xy_loss_weight"] == 1.75
     assert payload["config"]["recurrent_bc_signal_target_hypothesis_min_map_size"] == 8
     assert payload["config"]["recurrent_bc_signal_constraint_message_loss_weight"] == 1.25
     assert payload["config"]["recurrent_bc_signal_target_pursuit_action_weight"] == 0.6
@@ -1851,6 +1860,9 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_bc_signal_target_decision_pos_weight"] == 2.7
     assert payload["config"]["recurrent_bc_signal_target_decision_neg_weight"] == 3.7
     assert command[command.index("--bc-signal-target-hypothesis-loss-weight") + 1] == "0.55"
+    assert command[command.index("--bc-signal-target-hypothesis-commit-loss-weight") + 1] == "0.25"
+    assert command[command.index("--bc-signal-target-hypothesis-ambiguity-loss-weight") + 1] == "0.5"
+    assert command[command.index("--bc-signal-target-hypothesis-xy-loss-weight") + 1] == "1.75"
     assert command[command.index("--bc-signal-target-hypothesis-min-map-size") + 1] == "8"
     assert command[command.index("--bc-signal-scan-decision-loss-weight") + 1] == "1.4"
     assert command[command.index("--bc-signal-scan-decision-pos-weight") + 1] == "2.4"

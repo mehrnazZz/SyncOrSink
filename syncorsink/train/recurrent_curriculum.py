@@ -159,6 +159,9 @@ class RecurrentCurriculumConfig:
     bc_signal_ambiguous_target_search_labels: bool = False
     bc_signal_ambiguous_target_search_min_map_size: int = 16
     bc_signal_target_hypothesis_loss_weight: float = 0.0
+    bc_signal_target_hypothesis_commit_loss_weight: float = 1.0
+    bc_signal_target_hypothesis_ambiguity_loss_weight: float = 1.0
+    bc_signal_target_hypothesis_xy_loss_weight: float = 1.0
     bc_signal_target_hypothesis_min_map_size: int = 16
     bc_signal_rejected_target_interact_loss_weight: float = 0.05
     bc_signal_rejected_target_interact_action_loss_weight: float = 0.0
@@ -761,6 +764,15 @@ def _stage_recurrent_config(
         bc_signal_target_aux_weight=cfg.bc_signal_target_aux_weight,
         bc_signal_target_hypothesis_loss_weight=(
             cfg.bc_signal_target_hypothesis_loss_weight
+        ),
+        bc_signal_target_hypothesis_commit_loss_weight=(
+            cfg.bc_signal_target_hypothesis_commit_loss_weight
+        ),
+        bc_signal_target_hypothesis_ambiguity_loss_weight=(
+            cfg.bc_signal_target_hypothesis_ambiguity_loss_weight
+        ),
+        bc_signal_target_hypothesis_xy_loss_weight=(
+            cfg.bc_signal_target_hypothesis_xy_loss_weight
         ),
         bc_signal_target_hypothesis_min_map_size=(
             cfg.bc_signal_target_hypothesis_min_map_size
@@ -1394,6 +1406,21 @@ def main() -> None:
     )
     parser.add_argument("--bc-signal-target-aux-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-target-hypothesis-loss-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--bc-signal-target-hypothesis-commit-loss-weight",
+        type=float,
+        default=RecurrentCurriculumConfig.bc_signal_target_hypothesis_commit_loss_weight,
+    )
+    parser.add_argument(
+        "--bc-signal-target-hypothesis-ambiguity-loss-weight",
+        type=float,
+        default=RecurrentCurriculumConfig.bc_signal_target_hypothesis_ambiguity_loss_weight,
+    )
+    parser.add_argument(
+        "--bc-signal-target-hypothesis-xy-loss-weight",
+        type=float,
+        default=RecurrentCurriculumConfig.bc_signal_target_hypothesis_xy_loss_weight,
+    )
     parser.add_argument("--bc-signal-target-hypothesis-min-map-size", type=int, default=16)
     parser.add_argument("--bc-signal-target-match-action-weight", type=float, default=0.0)
     parser.add_argument("--bc-signal-first-target-scan-action-weight", type=float, default=0.0)
@@ -1916,6 +1943,15 @@ def main() -> None:
         bc_signal_target_aux_weight=args.bc_signal_target_aux_weight,
         bc_signal_target_hypothesis_loss_weight=(
             args.bc_signal_target_hypothesis_loss_weight
+        ),
+        bc_signal_target_hypothesis_commit_loss_weight=(
+            args.bc_signal_target_hypothesis_commit_loss_weight
+        ),
+        bc_signal_target_hypothesis_ambiguity_loss_weight=(
+            args.bc_signal_target_hypothesis_ambiguity_loss_weight
+        ),
+        bc_signal_target_hypothesis_xy_loss_weight=(
+            args.bc_signal_target_hypothesis_xy_loss_weight
         ),
         bc_signal_target_hypothesis_min_map_size=(
             args.bc_signal_target_hypothesis_min_map_size

@@ -585,7 +585,11 @@ Large-map Signal Hunt search auxiliary:
   observations stay masked out. Use
   `--bc-signal-target-hypothesis-min-map-size` or the sweep flag
   `--recurrent-bc-signal-target-hypothesis-min-map-size` to restrict this to
-  larger maps. W&B logs `bc/signal_target_hypothesis_count`,
+  larger maps. The commit, ambiguity, and coordinate sub-losses can be balanced
+  with `--bc-signal-target-hypothesis-commit-loss-weight`,
+  `--bc-signal-target-hypothesis-ambiguity-loss-weight`, and
+  `--bc-signal-target-hypothesis-xy-loss-weight` while the top-level loss weight
+  remains the master switch. W&B logs `bc/signal_target_hypothesis_count`,
   `bc/signal_target_hypothesis_loss`,
   `bc/signal_target_hypothesis_commit_acc`,
   `bc/signal_target_hypothesis_ambiguity_l1`, and

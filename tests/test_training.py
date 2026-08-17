@@ -561,6 +561,9 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         bc_signal_target_decision_pos_weight=2.5,
         bc_signal_target_decision_neg_weight=1.75,
         bc_signal_target_hypothesis_loss_weight=0.45,
+        bc_signal_target_hypothesis_commit_loss_weight=0.25,
+        bc_signal_target_hypothesis_ambiguity_loss_weight=0.5,
+        bc_signal_target_hypothesis_xy_loss_weight=1.75,
         bc_signal_target_hypothesis_min_map_size=12,
         bc_signal_ambiguous_target_decision_negatives=True,
         bc_signal_ambiguous_target_decision_min_map_size=12,
@@ -719,6 +722,9 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["bc_signal_target_validity_loss_weight"] == pytest.approx(0.6)
     assert result["config"]["bc_signal_target_decision_loss_weight"] == pytest.approx(0.4)
     assert result["config"]["bc_signal_target_hypothesis_loss_weight"] == pytest.approx(0.45)
+    assert result["config"]["bc_signal_target_hypothesis_commit_loss_weight"] == pytest.approx(0.25)
+    assert result["config"]["bc_signal_target_hypothesis_ambiguity_loss_weight"] == pytest.approx(0.5)
+    assert result["config"]["bc_signal_target_hypothesis_xy_loss_weight"] == pytest.approx(1.75)
     assert result["config"]["bc_signal_target_hypothesis_min_map_size"] == 12
     assert result["config"]["bc_signal_evidence_sweep_action_weight"] == pytest.approx(0.75)
     assert result["config"]["bc_signal_evidence_sweep_min_map_size"] == 12
@@ -957,6 +963,9 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.bc_signal_target_decision_pos_weight == pytest.approx(2.5)
     assert stage_cfg.bc_signal_target_decision_neg_weight == pytest.approx(1.75)
     assert stage_cfg.bc_signal_target_hypothesis_loss_weight == pytest.approx(0.45)
+    assert stage_cfg.bc_signal_target_hypothesis_commit_loss_weight == pytest.approx(0.25)
+    assert stage_cfg.bc_signal_target_hypothesis_ambiguity_loss_weight == pytest.approx(0.5)
+    assert stage_cfg.bc_signal_target_hypothesis_xy_loss_weight == pytest.approx(1.75)
     assert stage_cfg.bc_signal_target_hypothesis_min_map_size == 12
     assert stage_cfg.bc_signal_evidence_sweep_action_weight == pytest.approx(0.75)
     assert stage_cfg.bc_signal_evidence_sweep_min_map_size == 12
@@ -2761,6 +2770,35 @@ def test_recurrent_signal_target_interact_label_weighting():
         hypothesis_xy,
         torch.tensor([1.0, 0.0], dtype=torch.float32),
         torch.tensor([0.0, 0.75], dtype=torch.float32),
+    ).item()
+    assert _signal_target_hypothesis_loss(
+        good_hypothesis_pred,
+        torch.tensor([1.0, 1.0], dtype=torch.float32),
+        hypothesis_xy,
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+        torch.tensor([0.0, 0.75], dtype=torch.float32),
+        commit_loss_weight=0.0,
+        ambiguity_loss_weight=0.0,
+        xy_loss_weight=0.0,
+    ).item() == pytest.approx(0.0)
+    assert _signal_target_hypothesis_loss(
+        good_hypothesis_pred,
+        torch.tensor([1.0, 1.0], dtype=torch.float32),
+        hypothesis_xy,
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+        torch.tensor([0.0, 0.75], dtype=torch.float32),
+        commit_loss_weight=0.0,
+        ambiguity_loss_weight=0.0,
+        xy_loss_weight=1.0,
+    ).item() < _signal_target_hypothesis_loss(
+        bad_hypothesis_pred,
+        torch.tensor([1.0, 1.0], dtype=torch.float32),
+        hypothesis_xy,
+        torch.tensor([1.0, 0.0], dtype=torch.float32),
+        torch.tensor([0.0, 0.75], dtype=torch.float32),
+        commit_loss_weight=0.0,
+        ambiguity_loss_weight=0.0,
+        xy_loss_weight=1.0,
     ).item()
 
     high_bad_logits = torch.zeros((2, 8), dtype=torch.float32)

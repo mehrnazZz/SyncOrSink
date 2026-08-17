@@ -253,6 +253,9 @@ class RecurrentConfig:
     bc_signal_ambiguous_target_search_min_map_size: int = 16
     bc_signal_target_aux_weight: float = 0.0
     bc_signal_target_hypothesis_loss_weight: float = 0.0
+    bc_signal_target_hypothesis_commit_loss_weight: float = 1.0
+    bc_signal_target_hypothesis_ambiguity_loss_weight: float = 1.0
+    bc_signal_target_hypothesis_xy_loss_weight: float = 1.0
     bc_signal_target_hypothesis_min_map_size: int = 16
     bc_signal_rejected_target_interact_loss_weight: float = 0.0
     bc_signal_rejected_target_interact_action_loss_weight: float = 0.0
@@ -12279,6 +12282,10 @@ def _signal_target_hypothesis_loss(
     commit_label: torch.Tensor,
     ambiguity_label: torch.Tensor,
     sample_weight: torch.Tensor | None = None,
+    *,
+    commit_loss_weight: float = 1.0,
+    ambiguity_loss_weight: float = 1.0,
+    xy_loss_weight: float = 1.0,
 ) -> torch.Tensor:
     pred = pred.reshape(-1, 4)
     target_mask = target_mask.float().reshape(-1).clamp(0.0, 1.0)
@@ -12303,7 +12310,12 @@ def _signal_target_hypothesis_loss(
     )
     xy_pred = torch.sigmoid(pred[:, 2:4])
     xy_loss = ((xy_pred - target_xy) ** 2).mean(dim=-1)
-    return _weighted_mean(commit_loss + ambiguity_loss + xy_loss, weights)
+    component_loss = (
+        max(0.0, float(commit_loss_weight)) * commit_loss
+        + max(0.0, float(ambiguity_loss_weight)) * ambiguity_loss
+        + max(0.0, float(xy_loss_weight)) * xy_loss
+    )
+    return _weighted_mean(component_loss, weights)
 
 
 def _send_threshold_for_target_rate(probs, target_rate: float) -> float:
@@ -15472,6 +15484,13 @@ def train_recurrent_bc(
                             target_hypothesis_commit_label,
                             target_hypothesis_ambiguity_label,
                             sample_weight=sample_weight,
+                            commit_loss_weight=(
+                                cfg.bc_signal_target_hypothesis_commit_loss_weight
+                            ),
+                            ambiguity_loss_weight=(
+                                cfg.bc_signal_target_hypothesis_ambiguity_loss_weight
+                            ),
+                            xy_loss_weight=cfg.bc_signal_target_hypothesis_xy_loss_weight,
                         )
                         loss = loss + target_hypothesis_weight * target_hypothesis_loss
                         target_hypothesis_loss_sum += float(target_hypothesis_loss.item())
@@ -17147,6 +17166,15 @@ def train_recurrent_bc(
                     ),
                     f"{log_prefix}/signal_target_hypothesis_weight": float(
                         cfg.bc_signal_target_hypothesis_loss_weight
+                    ),
+                    f"{log_prefix}/signal_target_hypothesis_commit_weight": float(
+                        cfg.bc_signal_target_hypothesis_commit_loss_weight
+                    ),
+                    f"{log_prefix}/signal_target_hypothesis_ambiguity_weight": float(
+                        cfg.bc_signal_target_hypothesis_ambiguity_loss_weight
+                    ),
+                    f"{log_prefix}/signal_target_hypothesis_xy_weight": float(
+                        cfg.bc_signal_target_hypothesis_xy_loss_weight
                     ),
                     f"{log_prefix}/signal_target_hypothesis_min_map_size": int(
                         cfg.bc_signal_target_hypothesis_min_map_size
@@ -26696,6 +26724,24 @@ def main():
         ),
     )
     p.add_argument(
+        "--bc-signal-target-hypothesis-commit-loss-weight",
+        type=float,
+        default=RecurrentConfig.bc_signal_target_hypothesis_commit_loss_weight,
+        help="Component multiplier for the target-hypothesis commit loss.",
+    )
+    p.add_argument(
+        "--bc-signal-target-hypothesis-ambiguity-loss-weight",
+        type=float,
+        default=RecurrentConfig.bc_signal_target_hypothesis_ambiguity_loss_weight,
+        help="Component multiplier for the target-hypothesis ambiguity loss.",
+    )
+    p.add_argument(
+        "--bc-signal-target-hypothesis-xy-loss-weight",
+        type=float,
+        default=RecurrentConfig.bc_signal_target_hypothesis_xy_loss_weight,
+        help="Component multiplier for the target-hypothesis coordinate loss.",
+    )
+    p.add_argument(
         "--bc-signal-target-hypothesis-min-map-size",
         type=int,
         default=RecurrentConfig.bc_signal_target_hypothesis_min_map_size,
@@ -27799,6 +27845,15 @@ def main():
         bc_signal_target_aux_weight=args.bc_signal_target_aux_weight,
         bc_signal_target_hypothesis_loss_weight=(
             args.bc_signal_target_hypothesis_loss_weight
+        ),
+        bc_signal_target_hypothesis_commit_loss_weight=(
+            args.bc_signal_target_hypothesis_commit_loss_weight
+        ),
+        bc_signal_target_hypothesis_ambiguity_loss_weight=(
+            args.bc_signal_target_hypothesis_ambiguity_loss_weight
+        ),
+        bc_signal_target_hypothesis_xy_loss_weight=(
+            args.bc_signal_target_hypothesis_xy_loss_weight
         ),
         bc_signal_target_hypothesis_min_map_size=(
             args.bc_signal_target_hypothesis_min_map_size

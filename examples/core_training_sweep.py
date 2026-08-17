@@ -653,6 +653,21 @@ def _build_recurrent_command(
     )
     if bc_signal_target_hypothesis_loss_weight is None:
         bc_signal_target_hypothesis_loss_weight = 0.0
+    bc_signal_target_hypothesis_commit_loss_weight = (
+        args.recurrent_bc_signal_target_hypothesis_commit_loss_weight
+    )
+    if bc_signal_target_hypothesis_commit_loss_weight is None:
+        bc_signal_target_hypothesis_commit_loss_weight = 1.0
+    bc_signal_target_hypothesis_ambiguity_loss_weight = (
+        args.recurrent_bc_signal_target_hypothesis_ambiguity_loss_weight
+    )
+    if bc_signal_target_hypothesis_ambiguity_loss_weight is None:
+        bc_signal_target_hypothesis_ambiguity_loss_weight = 1.0
+    bc_signal_target_hypothesis_xy_loss_weight = (
+        args.recurrent_bc_signal_target_hypothesis_xy_loss_weight
+    )
+    if bc_signal_target_hypothesis_xy_loss_weight is None:
+        bc_signal_target_hypothesis_xy_loss_weight = 1.0
     bc_signal_target_hypothesis_min_map_size = (
         args.recurrent_bc_signal_target_hypothesis_min_map_size
     )
@@ -1011,6 +1026,12 @@ def _build_recurrent_command(
         str(bc_signal_target_aux_weight),
         "--bc-signal-target-hypothesis-loss-weight",
         str(bc_signal_target_hypothesis_loss_weight),
+        "--bc-signal-target-hypothesis-commit-loss-weight",
+        str(bc_signal_target_hypothesis_commit_loss_weight),
+        "--bc-signal-target-hypothesis-ambiguity-loss-weight",
+        str(bc_signal_target_hypothesis_ambiguity_loss_weight),
+        "--bc-signal-target-hypothesis-xy-loss-weight",
+        str(bc_signal_target_hypothesis_xy_loss_weight),
         "--bc-signal-target-hypothesis-min-map-size",
         str(bc_signal_target_hypothesis_min_map_size),
         "--bc-signal-target-pursuit-action-weight",
@@ -1890,6 +1911,15 @@ def run_suite(args) -> dict:
             ),
             "recurrent_bc_signal_target_hypothesis_loss_weight": (
                 args.recurrent_bc_signal_target_hypothesis_loss_weight
+            ),
+            "recurrent_bc_signal_target_hypothesis_commit_loss_weight": (
+                args.recurrent_bc_signal_target_hypothesis_commit_loss_weight
+            ),
+            "recurrent_bc_signal_target_hypothesis_ambiguity_loss_weight": (
+                args.recurrent_bc_signal_target_hypothesis_ambiguity_loss_weight
+            ),
+            "recurrent_bc_signal_target_hypothesis_xy_loss_weight": (
+                args.recurrent_bc_signal_target_hypothesis_xy_loss_weight
             ),
             "recurrent_bc_signal_target_hypothesis_min_map_size": (
                 args.recurrent_bc_signal_target_hypothesis_min_map_size
@@ -2946,6 +2976,24 @@ def parse_args(argv: list[str] | None = None):
             "Signal specialist auxiliary loss for target hypothesis commit, "
             "ambiguity, and coordinate predictions"
         ),
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-hypothesis-commit-loss-weight",
+        type=float,
+        default=None,
+        help="Component multiplier for target-hypothesis commit supervision",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-hypothesis-ambiguity-loss-weight",
+        type=float,
+        default=None,
+        help="Component multiplier for target-hypothesis ambiguity supervision",
+    )
+    parser.add_argument(
+        "--recurrent-bc-signal-target-hypothesis-xy-loss-weight",
+        type=float,
+        default=None,
+        help="Component multiplier for target-hypothesis coordinate supervision",
     )
     parser.add_argument(
         "--recurrent-bc-signal-target-hypothesis-min-map-size",
