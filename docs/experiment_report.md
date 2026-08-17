@@ -664,6 +664,14 @@ Signal specialist sweep runs and forwards
 messages with canonical structured constraints from the sender's current
 `goal_hint`, preventing learned token errors from poisoning teammate target
 inference.
+`--recurrent-eval-signal-constraint-message-guard` now defaults on for the
+large-map Signal preset after the matched eval-only ablation
+`recurrent_signal_multisize_16_32_large_map_targethypothesis_xyonly005_constraintguard_eval_seed0`
+(W&B `https://wandb.ai/orion8/syncorsink-core-training/runs/buj2ngiq`) improved
+mixed 16/32 success from 70.0% to 77.5%. It held 16x16 at 85%, raised 32x32
+from 55% to 70%, and removed rejected-observation target misses on the 32x32
+split, confirming that unsupported learned constraint messages were blocking
+valid true targets.
 Signal inferred-target features and eval decoding now compile each observation's
 structured clue/message constraints once and reuse that compiled state for
 target filtering. The 32x32 100-episode audit completed in 39.90s after this
@@ -761,24 +769,18 @@ available for reproduction but default-off after the first audit.
 
 ## 18. Next Steps
 
-1. **Signal 32x32 scan gating** — the post-clue constraint-message diagnostic
-   (`recurrent_signal_multisize_16_32_large_map_constraintmsg_seed0`,
-   W&B `https://wandb.ai/orion8/syncorsink-core-training/runs/rc4pmvoq`) reached
-   67.5% mixed eval with an 85%/50% 16x16/32x32 split, but 32x32 wrong-target
-   scans rose to `7.55` on average. The matched negative-memory scan-guard
-   rerun (`recurrent_signal_multisize_16_32_large_map_constraintmsg_negguard_seed0`,
-   W&B `https://wandb.ai/orion8/syncorsink-core-training/runs/8i0re2bp`) kept
-   the same 67.5% mixed eval and 85%/50% split, but cut 32x32 wrong scans to
-   `0.5`, so the next implementation target is true-target acquisition and
-   coordinated scan completion rather than more decoy suppression. A direct
-   32x32 checkpoint audit with the sweep-exposed scan-refresh assist still
-   landed at 10/20 successes, and the target-probe diagnostic also stayed flat.
-   Retesting clue-found replay with the guard regressed to 47.5% mixed eval, so
-   the next core implementation target is a better large-map evidence/search
-   policy rather than more replay, refresh, or one-step probe overrides.
+1. **Signal 32x32 candidate target conversion** — the constraint-message guard
+   promoted into the large-map preset fixed rejected true-target observations
+   and lifted the xy-only target-hypothesis checkpoint to a 77.5% mixed score
+   with an 85%/70% 16x16/32x32 split. The remaining large-map failures are now
+   candidate true-target visits without timely scan start/refresh/joint
+   completion, so the next implementation target is stronger large-map target
+   conversion and teammate scan completion, not broader replay or more decoy
+   suppression.
 2. **Signal clue collection/execution audit** — compare clue-found, target-reach,
-   refresh-scan, and joint-scan breakdowns for the sector/confidence diagnostics
-   versus the guarded run to preserve the 16x16 gain while lifting 32x32 success.
+   refresh-scan, first-scan-miss, and joint-scan breakdowns for the guarded
+   large-map run versus sector/confidence diagnostics to preserve the 16x16 gain
+   while lifting 32x32 success.
 3. **Pipeline assembly training** — continue the staged curriculum once Signal
    large-map communication behavior is understood.
 4. **Model zoo breadth** — resume MAPPO/Comm-MAT/TarMAC comparisons after the

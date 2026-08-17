@@ -744,6 +744,13 @@ messages with canonical structured constraints from the sender's current
 reject a true target that satisfies the actual private/collected clues. On the
 rolefix-handoff 16x16 checkpoint, the matched seed-3000 audit improved from
 56/100 to 77/100 and reduced `no_target_scan` failures from 23 to 9.
+The separate `--recurrent-eval-signal-constraint-message-guard` forwards
+`--eval-signal-constraint-message-guard` and drops learned structured
+constraint-message segments when the sender has no current private/collected
+constraint to support them. It now defaults on for `--recurrent-signal-preset
+large_map`: the matched xy-only target-hypothesis eval improved mixed 16/32
+success from 70.0% to 77.5%, held 16x16 at 85%, raised 32x32 from 55% to 70%,
+and removed the 32x32 true-target rejected-observation bucket.
 A fresh comparable rolefix-profile training run with this default enabled
 (`recurrent_signal16_constraintcopy_rolefix_profile_seed0`) reached 79/100 on
 the same 100-episode seed-3000 audit, with failure mix

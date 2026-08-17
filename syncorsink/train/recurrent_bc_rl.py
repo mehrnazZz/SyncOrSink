@@ -447,6 +447,7 @@ class RecurrentConfig:
     eval_signal_scan_sync_force_first: bool = False
     eval_signal_scan_broadcast_assist: bool = False
     eval_signal_constraint_message_copy_assist: bool = False
+    eval_signal_constraint_message_guard: bool = False
     eval_signal_exact_target_message_guard: bool = False
     eval_signal_initial_exact_message_copy_assist: bool = False
     eval_signal_exact_target_navigation_assist: bool = False
@@ -7439,6 +7440,10 @@ def _signal_constraint_message_from_observation(
 def _signal_constraint_message_label(raw_tokens, current_step: int) -> bool:
     if int(current_step) <= 0:
         return False
+    return _signal_has_constraint_message(raw_tokens)
+
+
+def _signal_has_constraint_message(raw_tokens) -> bool:
     return any(
         int(segment[0]) in _SIGNAL_MESSAGE_CONSTRAINT_CODES
         for segment in _signal_segments(raw_tokens)
@@ -7446,13 +7451,39 @@ def _signal_constraint_message_label(raw_tokens, current_step: int) -> bool:
     )
 
 
+def _signal_without_constraint_message_segments(
+    raw_tokens,
+    *,
+    comm_token_limit: int,
+) -> list[int]:
+    tokens: list[int] = []
+    removed = False
+    for segment in _signal_segments(raw_tokens):
+        if not segment:
+            continue
+        if int(segment[0]) in _SIGNAL_MESSAGE_CONSTRAINT_CODES:
+            removed = True
+            continue
+        if len(tokens) + len(segment) > int(comm_token_limit):
+            break
+        tokens.extend(int(token) for token in segment)
+    if not removed:
+        try:
+            return [int(token) for token in np.asarray(raw_tokens).reshape(-1)]
+        except (TypeError, ValueError):
+            return []
+    return tokens[: int(comm_token_limit)]
+
+
 def _apply_signal_constraint_message_copy_assist(
     cfg: RecurrentConfig,
     obs: dict | None,
     actions: dict[int, dict],
 ) -> dict[int, dict]:
+    copy_assist = bool(getattr(cfg, "eval_signal_constraint_message_copy_assist", False))
+    guard = bool(getattr(cfg, "eval_signal_constraint_message_guard", False))
     if (
-        not bool(getattr(cfg, "eval_signal_constraint_message_copy_assist", False))
+        (not copy_assist and not guard)
         or getattr(cfg, "scenario", None) != "signal_hunt"
         or not cfg.comm
         or not isinstance(obs, dict)
@@ -7470,8 +7501,13 @@ def _apply_signal_constraint_message_copy_assist(
         if not isinstance(action, dict) or not action.get("message_tokens"):
             continue
         message = _signal_constraint_message_from_observation(cfg, obs_agent)
-        if message:
+        if copy_assist and message:
             action["message_tokens"] = list(message)
+        elif guard and not message and _signal_has_constraint_message(action.get("message_tokens")):
+            action["message_tokens"] = _signal_without_constraint_message_segments(
+                action.get("message_tokens"),
+                comm_token_limit=cfg.comm_token_limit,
+            )
     return corrected
 
 
@@ -23086,6 +23122,9 @@ class RecurrentCheckpointPolicy:
             "eval_signal_constraint_message_copy_assist": (
                 self.cfg.eval_signal_constraint_message_copy_assist
             ),
+            "eval_signal_constraint_message_guard": (
+                self.cfg.eval_signal_constraint_message_guard
+            ),
             "eval_signal_exact_target_message_guard": self.cfg.eval_signal_exact_target_message_guard,
             "eval_signal_initial_exact_message_copy_assist": (
                 self.cfg.eval_signal_initial_exact_message_copy_assist
@@ -23203,6 +23242,7 @@ def load_recurrent_checkpoint_policy(
     eval_signal_scan_sync_force_first: bool | None = None,
     eval_signal_scan_broadcast_assist: bool | None = None,
     eval_signal_constraint_message_copy_assist: bool | None = None,
+    eval_signal_constraint_message_guard: bool | None = None,
     eval_signal_exact_target_message_guard: bool | None = None,
     eval_signal_initial_exact_message_copy_assist: bool | None = None,
     eval_signal_exact_target_navigation_assist: bool | None = None,
@@ -23265,6 +23305,8 @@ def load_recurrent_checkpoint_policy(
         cfg.eval_signal_scan_broadcast_assist = bool(eval_signal_scan_broadcast_assist)
     if eval_signal_constraint_message_copy_assist is not None:
         cfg.eval_signal_constraint_message_copy_assist = bool(eval_signal_constraint_message_copy_assist)
+    if eval_signal_constraint_message_guard is not None:
+        cfg.eval_signal_constraint_message_guard = bool(eval_signal_constraint_message_guard)
     if eval_signal_exact_target_message_guard is not None:
         cfg.eval_signal_exact_target_message_guard = bool(eval_signal_exact_target_message_guard)
     if eval_signal_initial_exact_message_copy_assist is not None:
@@ -27577,6 +27619,12 @@ def main():
         help="Replace sent Signal clue messages with canonical structured constraints from the agent goal hint",
     )
     p.add_argument(
+        "--eval-signal-constraint-message-guard",
+        action=argparse.BooleanOptionalAction,
+        default=RecurrentConfig.eval_signal_constraint_message_guard,
+        help="Drop unsupported learned Signal structured constraint messages during evaluation",
+    )
+    p.add_argument(
         "--eval-signal-exact-target-message-guard",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -28169,6 +28217,7 @@ def main():
         eval_signal_scan_sync_force_first=args.eval_signal_scan_sync_force_first,
         eval_signal_scan_broadcast_assist=args.eval_signal_scan_broadcast_assist,
         eval_signal_constraint_message_copy_assist=args.eval_signal_constraint_message_copy_assist,
+        eval_signal_constraint_message_guard=args.eval_signal_constraint_message_guard,
         eval_signal_exact_target_message_guard=args.eval_signal_exact_target_message_guard,
         eval_signal_initial_exact_message_copy_assist=(
             args.eval_signal_initial_exact_message_copy_assist

@@ -335,6 +335,7 @@ class RecurrentCurriculumConfig:
     eval_signal_scan_sync_force_first: bool = False
     eval_signal_scan_broadcast_assist: bool = False
     eval_signal_constraint_message_copy_assist: bool = False
+    eval_signal_constraint_message_guard: bool = False
     eval_signal_exact_target_message_guard: bool = False
     eval_signal_initial_exact_message_copy_assist: bool = True
     eval_signal_exact_target_navigation_assist: bool = False
@@ -1034,6 +1035,7 @@ def _stage_recurrent_config(
         eval_signal_scan_sync_force_first=cfg.eval_signal_scan_sync_force_first,
         eval_signal_scan_broadcast_assist=cfg.eval_signal_scan_broadcast_assist,
         eval_signal_constraint_message_copy_assist=cfg.eval_signal_constraint_message_copy_assist,
+        eval_signal_constraint_message_guard=cfg.eval_signal_constraint_message_guard,
         eval_signal_exact_target_message_guard=cfg.eval_signal_exact_target_message_guard,
         eval_signal_initial_exact_message_copy_assist=(
             cfg.eval_signal_initial_exact_message_copy_assist
@@ -1766,6 +1768,7 @@ def main() -> None:
     parser.add_argument("--eval-signal-scan-sync-force-first", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--eval-signal-scan-broadcast-assist", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--eval-signal-constraint-message-copy-assist", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--eval-signal-constraint-message-guard", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--eval-signal-exact-target-message-guard", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--eval-signal-initial-exact-message-copy-assist",
@@ -2220,6 +2223,7 @@ def main() -> None:
         eval_signal_scan_sync_force_first=args.eval_signal_scan_sync_force_first,
         eval_signal_scan_broadcast_assist=args.eval_signal_scan_broadcast_assist,
         eval_signal_constraint_message_copy_assist=args.eval_signal_constraint_message_copy_assist,
+        eval_signal_constraint_message_guard=args.eval_signal_constraint_message_guard,
         eval_signal_exact_target_message_guard=args.eval_signal_exact_target_message_guard,
         eval_signal_initial_exact_message_copy_assist=(
             args.eval_signal_initial_exact_message_copy_assist

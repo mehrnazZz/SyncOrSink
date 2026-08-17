@@ -606,6 +606,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         eval_signal_negative_memory_scan_guard=True,
         eval_signal_target_probe_assist=True,
         eval_signal_scan_broadcast_assist=True,
+        eval_signal_constraint_message_guard=True,
         eval_signal_exact_target_message_guard=True,
         eval_signal_initial_exact_message_copy_assist=True,
         eval_signal_exact_target_navigation_assist=True,
@@ -763,6 +764,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["eval_signal_negative_memory_scan_guard"] is True
     assert result["config"]["eval_signal_target_probe_assist"] is True
     assert result["config"]["eval_signal_scan_broadcast_assist"] is True
+    assert result["config"]["eval_signal_constraint_message_guard"] is True
     assert result["config"]["eval_signal_exact_target_message_guard"] is True
     assert result["config"]["eval_signal_initial_exact_message_copy_assist"] is True
     assert result["config"]["eval_signal_exact_target_navigation_assist"] is True
@@ -995,6 +997,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.eval_signal_target_decision_threshold == pytest.approx(0.6)
     assert stage_cfg.eval_signal_target_decision_suppress is False
     assert stage_cfg.eval_signal_scan_broadcast_assist is True
+    assert stage_cfg.eval_signal_constraint_message_guard is True
     assert stage_cfg.eval_signal_exact_target_message_guard is True
     assert stage_cfg.eval_signal_initial_exact_message_copy_assist is True
     assert stage_cfg.eval_signal_exact_target_navigation_assist is True
@@ -3335,6 +3338,26 @@ def test_recurrent_signal_target_interact_label_weighting():
     )
     assert copied_messages[0]["message_tokens"] == [24, 1]
     assert copied_messages[1]["message_tokens"] == [21, 1, 2, 3, 4]
+    constraint_guard_cfg = RecurrentConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        agents=2,
+        comm=True,
+        comm_token_limit=8,
+        comm_vocab_size=32,
+        eval_signal_constraint_message_copy_assist=True,
+        eval_signal_constraint_message_guard=True,
+    )
+    guarded_messages = _apply_signal_constraint_message_copy_assist(
+        constraint_guard_cfg,
+        constraint_copy_obs,
+        {
+            0: {"action": env.ACTION_STAY, "message_tokens": [24, 0]},
+            1: {"action": env.ACTION_STAY, "message_tokens": [21, 1, 2, 3, 4, 26, 2, 3]},
+        },
+    )
+    assert guarded_messages[0]["message_tokens"] == [24, 1]
+    assert guarded_messages[1]["message_tokens"] == [26, 2, 3]
     scan_cfg.eval_signal_exact_target_scan_lock = True
     exact_locked_gate_actions = _apply_signal_scan_gate_decoding(
         scan_cfg,
@@ -11787,6 +11810,7 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
         eval_signal_negative_memory_scan_guard=True,
         eval_signal_target_probe_assist=True,
         eval_signal_constraint_message_copy_assist=True,
+        eval_signal_constraint_message_guard=True,
         eval_pipeline_frontier_exploration_assist=True,
         eval_pipeline_interact_gate_threshold=0.37,
         eval_pipeline_event_head_threshold=0.62,
@@ -11805,6 +11829,7 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
     assert calls[0][1]["eval_signal_negative_memory_scan_guard"] is None
     assert calls[0][1]["eval_signal_target_probe_assist"] is None
     assert calls[0][1]["eval_signal_constraint_message_copy_assist"] is None
+    assert calls[0][1]["eval_signal_constraint_message_guard"] is None
     assert calls[0][1]["eval_pipeline_frontier_exploration_assist"] is None
     assert calls[0][1]["eval_pipeline_event_head_threshold"] is None
     assert calls[0][1]["eval_pipeline_navigation_head_threshold"] is None
@@ -11820,6 +11845,7 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
     assert calls[1][1]["eval_signal_negative_memory_scan_guard"] is True
     assert calls[1][1]["eval_signal_target_probe_assist"] is True
     assert calls[1][1]["eval_signal_constraint_message_copy_assist"] is True
+    assert calls[1][1]["eval_signal_constraint_message_guard"] is True
     assert calls[1][1]["eval_pipeline_frontier_exploration_assist"] is True
     assert calls[1][1]["eval_pipeline_interact_gate_threshold"] == pytest.approx(0.37)
     assert calls[1][1]["eval_pipeline_event_head_threshold"] == pytest.approx(0.62)

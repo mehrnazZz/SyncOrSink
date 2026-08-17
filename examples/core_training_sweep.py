@@ -889,6 +889,9 @@ def _build_recurrent_command(
     )
     if constraint_message_copy_assist is None:
         constraint_message_copy_assist = signal_specialist
+    constraint_message_guard = args.recurrent_eval_signal_constraint_message_guard
+    if constraint_message_guard is None:
+        constraint_message_guard = signal_large_map
     recurrent_obs_agent_id_features = args.recurrent_obs_agent_id_features
     if recurrent_obs_agent_id_features is None:
         recurrent_obs_agent_id_features = signal_specialist
@@ -1312,6 +1315,8 @@ def _build_recurrent_command(
         ])
     if case.scenario == "signal_hunt" and constraint_message_copy_assist:
         cmd.append("--eval-signal-constraint-message-copy-assist")
+    if case.scenario == "signal_hunt" and constraint_message_guard:
+        cmd.append("--eval-signal-constraint-message-guard")
     if args.recurrent_dagger_seed_list:
         cmd.extend(["--dagger-seed-list", args.recurrent_dagger_seed_list])
     if (
@@ -2331,6 +2336,11 @@ def run_suite(args) -> dict:
             ),
             "recurrent_eval_signal_constraint_message_copy_assist": (
                 args.recurrent_eval_signal_constraint_message_copy_assist
+            ),
+            "recurrent_eval_signal_constraint_message_guard": (
+                bool(args.recurrent_eval_signal_constraint_message_guard)
+                if args.recurrent_eval_signal_constraint_message_guard is not None
+                else args.recurrent_signal_preset == "large_map"
             ),
         },
         "cases": [asdict(case) for case in cases],
@@ -3688,6 +3698,16 @@ def parse_args(argv: list[str] | None = None):
         help=(
             "Canonicalize sent Signal clue messages from the agent's private/collected "
             "structured goal-hint constraints. Defaults on for Signal specialist runs."
+        ),
+    )
+    parser.add_argument(
+        "--recurrent-eval-signal-constraint-message-guard",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Opt-in Signal ablation: drop learned structured constraint messages unless "
+            "the sender currently observes a supporting Signal constraint. Defaults on "
+            "for the large_map Signal preset."
         ),
     )
     parser.add_argument(
