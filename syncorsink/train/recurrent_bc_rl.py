@@ -20498,6 +20498,33 @@ def _update_signal_exact_target_memory(
         memory[aid] = {"pos": [int(target[0]), int(target[1])], "step": current_step}
 
 
+def _update_signal_navigation_terrain_memory(
+    cfg: RecurrentConfig,
+    scan_state: Mapping[str, Any] | None,
+    obs: dict,
+) -> None:
+    if (
+        cfg.scenario != "signal_hunt"
+        or not isinstance(scan_state, MutableMapping)
+        or not isinstance(obs, dict)
+    ):
+        return
+    for obs_agent in obs.values():
+        if not isinstance(obs_agent, dict):
+            continue
+        pos = _signal_xy(obs_agent.get("self_pos"))
+        if pos is None:
+            continue
+        observed_map_size = _observed_map_size(obs_agent, cfg)
+        _update_pipeline_terrain_memory_from_obs_agent(
+            cfg,
+            scan_state,
+            obs_agent,
+            pos,
+            observed_map_size,
+        )
+
+
 _SIGNAL_NAV_ACTION_DELTAS = (
     (int(SyncOrSinkEnv.ACTION_UP), 0, -1),
     (int(SyncOrSinkEnv.ACTION_DOWN), 0, 1),
@@ -20561,8 +20588,13 @@ def _signal_local_navigation_action_from_obs(
     target: tuple[int, int],
     *,
     blocked_actions: set[int] | None = None,
+    avoid_positions: set[tuple[int, int]] | None = None,
 ) -> int | None:
     blocked = {int(action_id) for action_id in (blocked_actions or set())}
+    avoided = {
+        (int(pos[0]), int(pos[1]))
+        for pos in (avoid_positions or set())
+    }
     local_ids = _recurrent_local_grid_ids(obs_agent.get("local_grid", np.zeros((1, 1), dtype=np.int16)))
     if local_ids.ndim != 2 or local_ids.size == 0:
         return None
@@ -20614,6 +20646,9 @@ def _signal_local_navigation_action_from_obs(
             tile_id = int(local_ids[ny, nx])
             if tile_id in (int(TILE_WALL), int(TILE_DOOR)):
                 continue
+            global_pos = (sx + int(nx) - cx, sy + int(ny) - cy)
+            if global_pos in avoided and global_pos != target:
+                continue
             next_first = int(first_action) if first_action is not None else int(action_id)
             if first_action is None and next_first in blocked:
                 continue
@@ -20635,6 +20670,8 @@ def _signal_navigation_action_from_obs(
     target: tuple[int, int],
     *,
     blocked_actions: set[int] | None = None,
+    avoid_positions: set[tuple[int, int]] | None = None,
+    navigation_state: Mapping[str, Any] | None = None,
 ) -> int | None:
     blocked = {int(action_id) for action_id in (blocked_actions or set())}
     pos_arr = np.asarray(obs_agent.get("self_pos", np.zeros((2,), dtype=np.int16)), dtype=np.int64).reshape(-1)
@@ -20644,10 +20681,20 @@ def _signal_navigation_action_from_obs(
     tx, ty = int(target[0]), int(target[1])
     if (x, y) == (tx, ty):
         return int(SyncOrSinkEnv.ACTION_INTERACT)
+    memory_action = _pipeline_memory_navigation_action_from_obs(
+        obs_agent,
+        target,
+        navigation_state,
+        blocked_actions=blocked,
+        avoid_positions=avoid_positions,
+    )
+    if memory_action is not None and _action_allowed_from_obs(obs_agent, int(memory_action)):
+        return int(memory_action)
     local_action = _signal_local_navigation_action_from_obs(
         obs_agent,
         target,
         blocked_actions=blocked,
+        avoid_positions=avoid_positions,
     )
     if local_action is not None and _action_allowed_from_obs(obs_agent, int(local_action)):
         return int(local_action)
@@ -20681,35 +20728,84 @@ def _signal_memory_adjusted_navigation_action(
         nav_memory = {}
         scan_state["exact_target_navigation"] = nav_memory
     row = nav_memory.get(int(agent_id), nav_memory.get(str(int(agent_id))))
+    target = (int(target[0]), int(target[1]))
     adjusted = int(action_id)
     dest = _signal_navigation_destination(pos, int(action_id))
     previous_pos = None
     previous_target_matches = False
+    blocked_actions: set[int] = set()
+    avoid_positions: set[tuple[int, int]] = set()
+    recent_rows: list[dict[str, Any]] = []
     if dest is not None and isinstance(row, Mapping):
         previous_target = _signal_xy(row.get("target"))
         row_previous_pos = _signal_xy(row.get("pos"))
         if previous_target == tuple(target) and row_previous_pos is not None:
             previous_pos = row_previous_pos
             previous_target_matches = True
+        raw_recent = row.get("recent", [])
+        if isinstance(raw_recent, Iterable) and not isinstance(raw_recent, (str, bytes)):
+            for raw_step in raw_recent:
+                if not isinstance(raw_step, Mapping):
+                    continue
+                step_pos = _signal_xy(raw_step.get("pos"))
+                step_target = _signal_xy(raw_step.get("target"))
+                if step_pos is None or step_target is None:
+                    continue
+                try:
+                    step_action = int(raw_step.get("action"))
+                except (TypeError, ValueError):
+                    continue
+                recent_rows.append({
+                    "target": [int(step_target[0]), int(step_target[1])],
+                    "pos": [int(step_pos[0]), int(step_pos[1])],
+                    "action": int(step_action),
+                })
+                if step_target != target:
+                    continue
+                if step_pos == pos:
+                    blocked_actions.add(int(step_action))
+                else:
+                    avoid_positions.add(step_pos)
     if previous_pos is None:
         prev_positions = scan_state.get("prev_positions")
         if isinstance(prev_positions, Mapping):
             previous_pos = _signal_xy(prev_positions.get(int(agent_id), prev_positions.get(str(int(agent_id)))))
     if dest is not None and previous_pos == dest and dest != tuple(target):
+        blocked_actions.add(int(action_id))
+        avoid_positions.add(previous_pos)
+    if blocked_actions:
         order = _signal_navigation_action_order(pos, target)
         primary_blocked = bool(order) and not _action_allowed_from_obs(obs_agent, int(order[0]))
         if previous_target_matches or primary_blocked:
             alternative = _signal_navigation_action_from_obs(
                 obs_agent,
                 target,
-                blocked_actions={int(action_id)},
+                blocked_actions=blocked_actions,
+                avoid_positions=avoid_positions,
+                navigation_state=scan_state,
             )
             if alternative is not None:
                 adjusted = int(alternative)
+        elif int(action_id) in blocked_actions:
+            alternative = _signal_navigation_action_from_obs(
+                obs_agent,
+                target,
+                blocked_actions=blocked_actions,
+                avoid_positions=avoid_positions,
+                navigation_state=scan_state,
+            )
+            if alternative is not None:
+                adjusted = int(alternative)
+    recent_rows.append({
+        "target": [int(target[0]), int(target[1])],
+        "pos": [int(pos[0]), int(pos[1])],
+        "action": int(adjusted),
+    })
     nav_memory[int(agent_id)] = {
         "target": [int(target[0]), int(target[1])],
         "pos": [int(pos[0]), int(pos[1])],
         "action": int(adjusted),
+        "recent": recent_rows[-16:],
         "step": int(scan_state.get("step", 0)),
     }
     return int(adjusted)
@@ -20853,6 +20949,7 @@ def _apply_signal_exact_target_navigation_assist(
     ):
         return acts
     _update_signal_exact_target_memory(cfg, obs, scan_state)
+    _update_signal_navigation_terrain_memory(cfg, scan_state, obs)
     corrected = acts.clone()
     for aid in range(int(acts.shape[0])):
         obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
@@ -20862,11 +20959,19 @@ def _apply_signal_exact_target_navigation_assist(
         exact_targets = _signal_exact_targets_from_observation(obs_agent, observed_map_size)
         exact_targets.update(_signal_exact_target_memory_targets(cfg, scan_state, int(aid)))
         trusted_targets = _signal_trusted_exact_message_targets(cfg, obs_agent, scan_state, agent_id=int(aid))
-        candidate_targets = sorted(exact_targets & trusted_targets)
+        candidate_targets = set(exact_targets & trusted_targets)
+        own_target = _signal_initial_exact_target_from_observation(cfg, obs_agent)
+        if own_target is not None:
+            candidate_targets.add(tuple(own_target))
+        candidate_targets = sorted(candidate_targets)
         if len(candidate_targets) != 1:
             continue
         target = candidate_targets[0]
-        action_id = _signal_navigation_action_from_obs(obs_agent, target)
+        action_id = _signal_navigation_action_from_obs(
+            obs_agent,
+            target,
+            navigation_state=scan_state,
+        )
         if action_id is None or not _action_allowed_from_obs(obs_agent, action_id):
             continue
         if int(action_id) != int(SyncOrSinkEnv.ACTION_INTERACT):

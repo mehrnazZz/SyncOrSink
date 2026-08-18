@@ -4857,6 +4857,25 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         scan_state=trusted_scan_state,
     )
     assert trusted_nav.tolist() == [large_env.ACTION_STAY, large_env.ACTION_RIGHT]
+    private_target_obs = {
+        0: dict(nav_obs[0]),
+        1: dict(nav_obs[1]),
+    }
+    private_target_obs[1]["goal_hint"] = np.array(
+        [26, large_target[0], large_target[1], -1, -1, -1, -1, -1],
+        dtype=np.int16,
+    )
+    private_target_obs[1]["messages_tokens"] = np.full_like(
+        nav_obs[1]["messages_tokens"],
+        -1,
+    )
+    private_target_nav = _apply_signal_exact_target_navigation_assist(
+        nav_cfg,
+        private_target_obs,
+        idle_acts,
+        scan_state=None,
+    )
+    assert private_target_nav.tolist() == [large_env.ACTION_STAY, large_env.ACTION_RIGHT]
     remembered_obs = {
         0: dict(nav_obs[0]),
         1: dict(nav_obs[1]),
@@ -5060,6 +5079,27 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         scan_state=reverse_scan_state,
     )
     assert reverse_detour_nav.tolist() == [large_env.ACTION_UP, large_env.ACTION_STAY]
+    memory_route_obs = {
+        "self_pos": np.array([2, 1], dtype=np.int16),
+        "local_grid": np.full((3, 3), TILE_UNKNOWN, dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    memory_route_state = {
+        "terrain_memory": {
+            "passable": {(2, 1), (2, 2), (3, 2), (4, 2), (4, 1)},
+            "blocked": {(3, 1)},
+            "doors": set(),
+            "map_size": 8,
+        },
+    }
+    assert (
+        _signal_navigation_action_from_obs(
+            memory_route_obs,
+            (4, 1),
+            navigation_state=memory_route_state,
+        )
+        == large_env.ACTION_DOWN
+    )
     nav_obs[1]["self_pos"] = np.array([large_target[0], large_target[1]], dtype=np.int16)
     nav_obs[1]["action_mask"] = np.asarray(nav_obs[1]["action_mask"], dtype=np.float32).copy()
     nav_obs[1]["action_mask"][large_env.ACTION_INTERACT] = 1.0

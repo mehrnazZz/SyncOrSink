@@ -1431,6 +1431,11 @@ def _signal_lifecycle_from_trace(env: SyncOrSinkEnv, trace: list[Mapping[str, An
     first_teammate_move_step: int | None = None
     first_teammate_reach_step: int | None = None
     first_teammate_scan_step: int | None = None
+    first_exact_target_message_step: int | None = None
+    first_exact_target_message_agents: list[int] = []
+    first_teammate_move_after_exact_message_step: int | None = None
+    first_teammate_reach_after_exact_message_step: int | None = None
+    first_teammate_scan_after_exact_message_step: int | None = None
 
     target_scan_events = 0
     joint_target_scan_events = 0
@@ -1441,9 +1446,17 @@ def _signal_lifecycle_from_trace(env: SyncOrSinkEnv, trace: list[Mapping[str, An
     message_steps_before_first_scan = 0
     message_steps_after_first_scan = 0
     message_steps_at_first_scan = 0
+    exact_target_message_steps_before_first_scan = 0
+    exact_target_message_steps_after_first_scan = 0
+    exact_target_message_steps_at_first_scan = 0
 
     for row in trace:
         step = int(row.get("step", 0))
+        exact_message_agents = _trace_exact_target_message_agents(row, target)
+        if exact_message_agents and first_exact_target_message_step is None:
+            first_exact_target_message_step = step
+            first_exact_target_message_agents = sorted(exact_message_agents)
+
         on_target_before = _int_list(row.get("on_target_before", []))
         on_target_after = _int_list(row.get("on_target_after", []))
         for agent_id in sorted(on_target_before + on_target_after):
@@ -1512,16 +1525,45 @@ def _signal_lifecycle_from_trace(env: SyncOrSinkEnv, trace: list[Mapping[str, An
                         first_teammate_scan_step = step
                         break
 
+        if first_exact_target_message_step is not None and step > first_exact_target_message_step:
+            messenger_ids = set(first_exact_target_message_agents)
+            receiver_ids = [aid for aid in range(env.num_agents) if int(aid) not in messenger_ids]
+            for agent_id in receiver_ids:
+                before = _mapping_get(row.get("target_distance_before", {}), int(agent_id))
+                after = _mapping_get(row.get("target_distance_after", {}), int(agent_id))
+                if (
+                    first_teammate_move_after_exact_message_step is None
+                    and before is not None
+                    and after is not None
+                    and float(after) < float(before)
+                ):
+                    first_teammate_move_after_exact_message_step = step
+                if first_teammate_reach_after_exact_message_step is None and int(agent_id) in on_target_after:
+                    first_teammate_reach_after_exact_message_step = step
+                if first_teammate_scan_after_exact_message_step is None:
+                    for agent_id in receiver_ids:
+                        if int(agent_id) in target_scanners_this_step:
+                            first_teammate_scan_after_exact_message_step = step
+                            break
+
     for row in trace:
         step = int(row.get("step", 0))
-        if not _trace_has_message(row):
-            continue
-        if first_target_scan_step is None or step < first_target_scan_step:
-            message_steps_before_first_scan += 1
-        elif step == first_target_scan_step:
-            message_steps_at_first_scan += 1
-        else:
-            message_steps_after_first_scan += 1
+        has_message = _trace_has_message(row)
+        has_exact_target_message = bool(_trace_exact_target_message_agents(row, target))
+        if has_message:
+            if first_target_scan_step is None or step < first_target_scan_step:
+                message_steps_before_first_scan += 1
+            elif step == first_target_scan_step:
+                message_steps_at_first_scan += 1
+            else:
+                message_steps_after_first_scan += 1
+        if has_exact_target_message:
+            if first_target_scan_step is None or step < first_target_scan_step:
+                exact_target_message_steps_before_first_scan += 1
+            elif step == first_target_scan_step:
+                exact_target_message_steps_at_first_scan += 1
+            else:
+                exact_target_message_steps_after_first_scan += 1
 
     diagnoses: list[str] = []
     if first_target_reach_step is None:
@@ -1547,6 +1589,24 @@ def _signal_lifecycle_from_trace(env: SyncOrSinkEnv, trace: list[Mapping[str, An
     if not diagnoses:
         diagnoses.append("no_issue_detected")
 
+    rendezvous_diagnoses = _signal_rendezvous_diagnoses(
+        success=bool(first_joint_target_scan_step is not None),
+        first_exact_target_message_step=first_exact_target_message_step,
+        first_target_reach_step=first_target_reach_step,
+        first_target_scan_step=first_target_scan_step,
+        first_joint_target_scan_step=first_joint_target_scan_step,
+        first_teammate_move_after_exact_message_step=(
+            first_teammate_move_after_exact_message_step
+        ),
+        first_teammate_reach_after_exact_message_step=(
+            first_teammate_reach_after_exact_message_step
+        ),
+        first_teammate_scan_after_exact_message_step=(
+            first_teammate_scan_after_exact_message_step
+        ),
+        target_reach_without_scan_agent_steps=target_reach_without_scan_agent_steps,
+    )
+
     return {
         "target": list(target) if target is not None else None,
         "scan_window": scan_window,
@@ -1556,11 +1616,34 @@ def _signal_lifecycle_from_trace(env: SyncOrSinkEnv, trace: list[Mapping[str, An
         "first_target_scan_agent": first_target_scan_agent,
         "first_joint_target_scan_step": first_joint_target_scan_step,
         "first_joint_target_scan_agents": first_joint_target_scan_agents,
+        "first_exact_target_message_step": first_exact_target_message_step,
+        "first_exact_target_message_agents": first_exact_target_message_agents,
         "first_teammate_move_toward_target_step_after_first_scan": first_teammate_move_step,
         "first_teammate_target_reach_step_after_first_scan": first_teammate_reach_step,
         "first_teammate_target_scan_step_after_first_scan": first_teammate_scan_step,
+        "first_teammate_move_toward_target_step_after_exact_message": (
+            first_teammate_move_after_exact_message_step
+        ),
+        "first_teammate_target_reach_step_after_exact_message": (
+            first_teammate_reach_after_exact_message_step
+        ),
+        "first_teammate_target_scan_step_after_exact_message": (
+            first_teammate_scan_after_exact_message_step
+        ),
         "steps_reach_to_first_scan": _step_delta(first_target_reach_step, first_target_scan_step),
         "steps_first_scan_to_joint": _step_delta(first_target_scan_step, first_joint_target_scan_step),
+        "steps_exact_message_to_teammate_move": _step_delta(
+            first_exact_target_message_step,
+            first_teammate_move_after_exact_message_step,
+        ),
+        "steps_exact_message_to_teammate_reach": _step_delta(
+            first_exact_target_message_step,
+            first_teammate_reach_after_exact_message_step,
+        ),
+        "steps_exact_message_to_teammate_scan": _step_delta(
+            first_exact_target_message_step,
+            first_teammate_scan_after_exact_message_step,
+        ),
         "target_scan_events": target_scan_events,
         "joint_target_scan_events": joint_target_scan_events,
         "decoy_scan_events": decoy_scan_events,
@@ -1570,8 +1653,58 @@ def _signal_lifecycle_from_trace(env: SyncOrSinkEnv, trace: list[Mapping[str, An
         "message_steps_before_first_scan": message_steps_before_first_scan,
         "message_steps_at_first_scan": message_steps_at_first_scan,
         "message_steps_after_first_scan": message_steps_after_first_scan,
+        "exact_target_message_steps_before_first_scan": (
+            exact_target_message_steps_before_first_scan
+        ),
+        "exact_target_message_steps_at_first_scan": exact_target_message_steps_at_first_scan,
+        "exact_target_message_steps_after_first_scan": (
+            exact_target_message_steps_after_first_scan
+        ),
         "diagnoses": diagnoses,
+        "rendezvous_diagnoses": rendezvous_diagnoses,
     }
+
+
+def _signal_rendezvous_diagnoses(
+    *,
+    success: bool,
+    first_exact_target_message_step: int | None,
+    first_target_reach_step: int | None,
+    first_target_scan_step: int | None,
+    first_joint_target_scan_step: int | None,
+    first_teammate_move_after_exact_message_step: int | None,
+    first_teammate_reach_after_exact_message_step: int | None,
+    first_teammate_scan_after_exact_message_step: int | None,
+    target_reach_without_scan_agent_steps: int,
+) -> list[str]:
+    if success:
+        return ["success"]
+    diagnoses: list[str] = []
+    if first_exact_target_message_step is None:
+        diagnoses.append("no_exact_target_evidence_message")
+    elif first_target_scan_step is not None and first_exact_target_message_step >= first_target_scan_step:
+        diagnoses.append("exact_target_message_sent_too_late")
+
+    if first_exact_target_message_step is not None:
+        if (
+            first_teammate_move_after_exact_message_step is None
+            and first_teammate_scan_after_exact_message_step is None
+        ):
+            diagnoses.append("teammate_received_exact_target_but_did_not_route")
+        elif first_teammate_reach_after_exact_message_step is None:
+            diagnoses.append("teammate_routed_but_arrived_too_late")
+        elif first_teammate_scan_after_exact_message_step is None:
+            diagnoses.append("teammate_arrived_but_did_not_scan")
+    if (
+        first_target_reach_step is not None
+        and first_target_scan_step is not None
+        and first_joint_target_scan_step is None
+        and int(target_reach_without_scan_agent_steps) <= 0
+    ):
+        diagnoses.append("solo_scanner_coordination_gap")
+    if not diagnoses:
+        diagnoses.append("unclassified_rendezvous_gap")
+    return diagnoses
 
 
 def _positions_by_agent(env: SyncOrSinkEnv) -> dict[int, list[int]]:
@@ -1708,18 +1841,56 @@ def _trace_has_message(row: Mapping[str, Any]) -> bool:
     return False
 
 
+def _trace_exact_target_message_agents(
+    row: Mapping[str, Any],
+    target: tuple[int, int] | None,
+) -> list[int]:
+    if target is None:
+        return []
+    actions = row.get("actions", {})
+    if not isinstance(actions, Mapping):
+        return []
+    target_x, target_y = int(target[0]), int(target[1])
+    agents: list[int] = []
+    for raw_agent_id, action in actions.items():
+        if not isinstance(action, Mapping):
+            continue
+        tokens = action.get("message_tokens", [])
+        if not isinstance(tokens, list):
+            continue
+        for idx in range(max(0, len(tokens) - 2)):
+            try:
+                code = int(tokens[idx])
+                tx = int(tokens[idx + 1])
+                ty = int(tokens[idx + 2])
+            except (TypeError, ValueError):
+                continue
+            if code == 26 and tx == target_x and ty == target_y:
+                try:
+                    agents.append(int(raw_agent_id))
+                except (TypeError, ValueError):
+                    pass
+                break
+    return sorted(set(agents))
+
+
 def _compact_signal_lifecycle(lifecycle: Mapping[str, Any]) -> dict[str, Any]:
     keys = (
         "first_target_reach_step",
         "first_target_scan_step",
         "first_joint_target_scan_step",
+        "first_exact_target_message_step",
         "steps_reach_to_first_scan",
         "steps_first_scan_to_joint",
+        "steps_exact_message_to_teammate_move",
+        "steps_exact_message_to_teammate_reach",
+        "steps_exact_message_to_teammate_scan",
         "target_scan_events",
         "redundant_active_target_scans",
         "refresh_target_scans",
         "target_reach_without_scan_agent_steps",
         "diagnoses",
+        "rendezvous_diagnoses",
     )
     return {key: lifecycle.get(key) for key in keys if key in lifecycle}
 
@@ -1824,12 +1995,33 @@ def _summarize_episode_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 for lifecycle in lifecycle_rows
                 for diagnosis in lifecycle.get("diagnoses", [])
             )
+            rendezvous_diagnosis_counts = Counter(
+                str(diagnosis)
+                for lifecycle in lifecycle_rows
+                for diagnosis in lifecycle.get("rendezvous_diagnoses", [])
+            )
             diagnostics["signal_lifecycle"] = {
                 "avg_first_target_reach_step": _avg_key(lifecycle_rows, "first_target_reach_step"),
                 "avg_first_target_scan_step": _avg_key(lifecycle_rows, "first_target_scan_step"),
                 "avg_first_joint_target_scan_step": _avg_key(lifecycle_rows, "first_joint_target_scan_step"),
+                "avg_first_exact_target_message_step": _avg_key(
+                    lifecycle_rows,
+                    "first_exact_target_message_step",
+                ),
                 "avg_steps_reach_to_first_scan": _avg_key(lifecycle_rows, "steps_reach_to_first_scan"),
                 "avg_steps_first_scan_to_joint": _avg_key(lifecycle_rows, "steps_first_scan_to_joint"),
+                "avg_steps_exact_message_to_teammate_move": _avg_key(
+                    lifecycle_rows,
+                    "steps_exact_message_to_teammate_move",
+                ),
+                "avg_steps_exact_message_to_teammate_reach": _avg_key(
+                    lifecycle_rows,
+                    "steps_exact_message_to_teammate_reach",
+                ),
+                "avg_steps_exact_message_to_teammate_scan": _avg_key(
+                    lifecycle_rows,
+                    "steps_exact_message_to_teammate_scan",
+                ),
                 "avg_target_scan_events": _avg_key(lifecycle_rows, "target_scan_events"),
                 "avg_joint_target_scan_events": _avg_key(lifecycle_rows, "joint_target_scan_events"),
                 "avg_redundant_active_target_scans": _avg_key(lifecycle_rows, "redundant_active_target_scans"),
@@ -1841,12 +2033,30 @@ def _summarize_episode_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "avg_message_steps_before_first_scan": _avg_key(lifecycle_rows, "message_steps_before_first_scan"),
                 "avg_message_steps_at_first_scan": _avg_key(lifecycle_rows, "message_steps_at_first_scan"),
                 "avg_message_steps_after_first_scan": _avg_key(lifecycle_rows, "message_steps_after_first_scan"),
+                "avg_exact_target_message_steps_before_first_scan": _avg_key(
+                    lifecycle_rows,
+                    "exact_target_message_steps_before_first_scan",
+                ),
+                "avg_exact_target_message_steps_at_first_scan": _avg_key(
+                    lifecycle_rows,
+                    "exact_target_message_steps_at_first_scan",
+                ),
+                "avg_exact_target_message_steps_after_first_scan": _avg_key(
+                    lifecycle_rows,
+                    "exact_target_message_steps_after_first_scan",
+                ),
                 "episodes_with_joint_target_scan": sum(
                     1
                     for lifecycle in lifecycle_rows
                     if lifecycle.get("first_joint_target_scan_step") is not None
                 ),
+                "episodes_with_exact_target_message": sum(
+                    1
+                    for lifecycle in lifecycle_rows
+                    if lifecycle.get("first_exact_target_message_step") is not None
+                ),
                 "diagnosis_counts": dict(sorted(diagnosis_counts.items())),
+                "rendezvous_diagnosis_counts": dict(sorted(rendezvous_diagnosis_counts.items())),
             }
     pipeline_rows = [row["pipeline"] for row in rows if "pipeline" in row]
     if pipeline_rows:

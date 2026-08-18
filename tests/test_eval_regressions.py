@@ -144,6 +144,110 @@ def test_signal_trajectory_audit_failure_classifier():
     }) == "unsynchronized_target_scan"
 
 
+def test_signal_trajectory_audit_exact_message_rendezvous_lifecycle():
+    from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv
+    from syncorsink.eval.trajectory_audit import (
+        _signal_lifecycle_from_trace,
+        _summarize_episode_rows,
+    )
+
+    env = SyncOrSinkEnv(SyncOrSinkConfig(
+        scenario="signal_hunt",
+        map_size=8,
+        num_agents=2,
+        fov_preset="easy",
+        max_steps=10,
+        comm_token_limit=8,
+        token_vocab_size=32,
+        max_messages=8,
+    ))
+    env.reset(seed=0)
+    env.scenario_state.data["target"] = (4, 5)
+    env.scenario_state.data["scan_window"] = 3
+
+    trace = [
+        {
+            "step": 0,
+            "env_step_after": 1,
+            "target_distance_before": {0: 2, 1: 6},
+            "target_distance_after": {0: 2, 1: 6},
+            "on_target_before": [],
+            "on_target_after": [],
+            "scan_log_before": {},
+            "events": {},
+            "actions": {
+                0: {"action": 4, "message_len": 3, "message_tokens": [26, 4, 5]},
+                1: {"action": 4, "message_len": 0, "message_tokens": []},
+            },
+        },
+        {
+            "step": 1,
+            "env_step_after": 2,
+            "target_distance_before": {0: 2, 1: 6},
+            "target_distance_after": {0: 2, 1: 5},
+            "on_target_before": [],
+            "on_target_after": [],
+            "scan_log_before": {},
+            "events": {},
+            "actions": {
+                0: {"action": 4, "message_len": 0, "message_tokens": []},
+                1: {"action": 3, "message_len": 0, "message_tokens": []},
+            },
+        },
+        {
+            "step": 2,
+            "env_step_after": 3,
+            "target_distance_before": {0: 1, 1: 1},
+            "target_distance_after": {0: 0, 1: 0},
+            "on_target_before": [],
+            "on_target_after": [0, 1],
+            "scan_log_before": {},
+            "events": {},
+            "actions": {
+                0: {"action": 3, "message_len": 0, "message_tokens": []},
+                1: {"action": 3, "message_len": 0, "message_tokens": []},
+            },
+        },
+        {
+            "step": 3,
+            "env_step_after": 4,
+            "target_distance_before": {0: 0, 1: 0},
+            "target_distance_after": {0: 0, 1: 0},
+            "on_target_before": [0, 1],
+            "on_target_after": [0, 1],
+            "scan_log_before": {},
+            "events": {
+                0: ["target_scan", "joint_target_scan"],
+                1: ["target_scan", "joint_target_scan"],
+            },
+            "actions": {
+                0: {"action": 5, "message_len": 0, "message_tokens": []},
+                1: {"action": 5, "message_len": 0, "message_tokens": []},
+            },
+        },
+    ]
+
+    lifecycle = _signal_lifecycle_from_trace(env, trace)
+
+    assert lifecycle["first_exact_target_message_step"] == 0
+    assert lifecycle["first_exact_target_message_agents"] == [0]
+    assert lifecycle["steps_exact_message_to_teammate_move"] == 1
+    assert lifecycle["steps_exact_message_to_teammate_reach"] == 2
+    assert lifecycle["steps_exact_message_to_teammate_scan"] == 3
+    assert lifecycle["exact_target_message_steps_before_first_scan"] == 1
+    assert lifecycle["rendezvous_diagnoses"] == ["success"]
+
+    summary = _summarize_episode_rows([{
+        "failure_type": "success",
+        "event_counts": {},
+        "action_counts": {},
+        "signal": {"lifecycle": lifecycle},
+    }])
+    assert summary["signal_lifecycle"]["episodes_with_exact_target_message"] == 1
+    assert summary["signal_lifecycle"]["rendezvous_diagnosis_counts"] == {"success": 1}
+    assert summary["signal_lifecycle"]["avg_steps_exact_message_to_teammate_scan"] == 3.0
+
+
 def test_pipeline_trajectory_audit_failure_classifier():
     from syncorsink.eval.trajectory_audit import pipeline_failure_type
 

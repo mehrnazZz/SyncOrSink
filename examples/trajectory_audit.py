@@ -156,12 +156,22 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
     )
     parser.add_argument(
+        "--recurrent-signal-constraint-message-guard",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
         "--recurrent-signal-exact-target-message-guard",
         action=argparse.BooleanOptionalAction,
         default=None,
     )
     parser.add_argument(
         "--recurrent-signal-initial-exact-message-copy-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--recurrent-signal-exact-target-message-copy-assist",
         action=argparse.BooleanOptionalAction,
         default=None,
     )
@@ -392,9 +402,13 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 eval_signal_constraint_message_copy_assist=(
                     args.recurrent_signal_constraint_message_copy_assist
                 ),
+                eval_signal_constraint_message_guard=args.recurrent_signal_constraint_message_guard,
                 eval_signal_exact_target_message_guard=args.recurrent_signal_exact_target_message_guard,
                 eval_signal_initial_exact_message_copy_assist=(
                     args.recurrent_signal_initial_exact_message_copy_assist
+                ),
+                eval_signal_exact_target_message_copy_assist=(
+                    args.recurrent_signal_exact_target_message_copy_assist
                 ),
                 eval_signal_exact_target_navigation_assist=(
                     args.recurrent_signal_exact_target_navigation_assist
@@ -470,9 +484,15 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 "eval_signal_constraint_message_copy_assist": (
                     args.recurrent_signal_constraint_message_copy_assist
                 ),
+                "eval_signal_constraint_message_guard": (
+                    args.recurrent_signal_constraint_message_guard
+                ),
                 "eval_signal_exact_target_message_guard": args.recurrent_signal_exact_target_message_guard,
                 "eval_signal_initial_exact_message_copy_assist": (
                     args.recurrent_signal_initial_exact_message_copy_assist
+                ),
+                "eval_signal_exact_target_message_copy_assist": (
+                    args.recurrent_signal_exact_target_message_copy_assist
                 ),
                 "eval_signal_exact_target_navigation_assist": (
                     args.recurrent_signal_exact_target_navigation_assist
