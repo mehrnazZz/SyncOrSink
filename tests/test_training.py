@@ -614,6 +614,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         eval_signal_exact_target_memory_steps=24,
         eval_signal_scan_refresh_assist=True,
         eval_signal_scan_refresh_threshold=0.5,
+        eval_signal_evidence_sweep_assist=True,
         eval_signal_frontier_exploration_assist=True,
         eval_pipeline_navigation_assist=True,
         eval_pipeline_navigation_assist_trust_messages=True,
@@ -773,6 +774,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["eval_signal_exact_target_memory_steps"] == 24
     assert result["config"]["eval_signal_scan_refresh_assist"] is True
     assert result["config"]["eval_signal_scan_refresh_threshold"] == pytest.approx(0.5)
+    assert result["config"]["eval_signal_evidence_sweep_assist"] is True
     assert result["config"]["eval_signal_frontier_exploration_assist"] is True
     assert result["config"]["eval_pipeline_navigation_assist"] is True
     assert result["config"]["eval_pipeline_navigation_assist_trust_messages"] is True
@@ -1007,6 +1009,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.eval_signal_exact_target_memory_steps == 24
     assert stage_cfg.eval_signal_scan_refresh_assist is True
     assert stage_cfg.eval_signal_scan_refresh_threshold == pytest.approx(0.5)
+    assert stage_cfg.eval_signal_evidence_sweep_assist is True
     assert stage_cfg.eval_signal_frontier_exploration_assist is True
     assert stage_cfg.eval_pipeline_navigation_assist is True
     assert stage_cfg.eval_pipeline_navigation_assist_trust_messages is True
@@ -3705,6 +3708,7 @@ def test_recurrent_signal_target_pursuit_label_weighting():
     from syncorsink.train.recurrent_bc_rl import (
         RecurrentConfig,
         _append_labeled_step,
+        _apply_signal_evidence_sweep_assist,
         _apply_signal_exact_target_message_copy_assist,
         _apply_signal_exact_target_navigation_assist,
         _apply_signal_frontier_exploration_assist,
@@ -3716,6 +3720,7 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         _apply_signal_target_scan_broadcast_overrides,
         _feedback_matrix,
         _finalize_episode_sequence,
+        _initial_signal_scan_state,
         _label_latest_signal_decoy_drift_actions,
         _label_latest_signal_decoy_scan_actions,
         _label_latest_signal_rejected_target_drift_actions,
@@ -3753,6 +3758,7 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         _signal_visible_clue_miss_agents,
         _signal_visible_target_match_features,
         _slice_recurrent_episode,
+        _update_signal_scan_state_from_info,
     )
 
     env = SyncOrSinkEnv(SyncOrSinkConfig(
@@ -4084,6 +4090,25 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         sweep_action_id,
         np.array([large_env.ACTION_LEFT, large_env.ACTION_RIGHT], dtype=np.int64),
     )
+    default_sweep_assist = _apply_signal_evidence_sweep_assist(
+        sweep_cfg,
+        sweep_obs,
+        torch.tensor([large_env.ACTION_STAY, large_env.ACTION_STAY], dtype=torch.long),
+    )
+    assert default_sweep_assist.tolist() == [large_env.ACTION_STAY, large_env.ACTION_STAY]
+    sweep_assist_cfg = RecurrentConfig(
+        **{
+            **vars(sweep_cfg),
+            "bc_signal_evidence_sweep_action_weight": 0.0,
+            "eval_signal_evidence_sweep_assist": True,
+        }
+    )
+    assisted_sweep = _apply_signal_evidence_sweep_assist(
+        sweep_assist_cfg,
+        sweep_obs,
+        torch.tensor([large_env.ACTION_STAY, large_env.ACTION_STAY], dtype=torch.long),
+    )
+    assert assisted_sweep.tolist() == [large_env.ACTION_LEFT, large_env.ACTION_RIGHT]
     assert _signal_evidence_sweep_miss_agents(
         large_env,
         sweep_obs,
@@ -4159,6 +4184,29 @@ def test_recurrent_signal_target_pursuit_label_weighting():
     clue_obs[0]["local_grid"] = np.zeros_like(frontier_obs[0]["local_grid"], dtype=np.int16)
     cy, cx = clue_obs[0]["local_grid"].shape[0] // 2, clue_obs[0]["local_grid"].shape[1] // 2
     clue_obs[0]["local_grid"][cy, cx] = TILE_CLUE
+    assisted_visible_clue = _apply_signal_evidence_sweep_assist(
+        sweep_assist_cfg,
+        clue_obs,
+        torch.tensor([large_env.ACTION_STAY, large_env.ACTION_STAY], dtype=torch.long),
+    )
+    assert assisted_visible_clue.tolist() == [large_env.ACTION_INTERACT, large_env.ACTION_STAY]
+    claimed_clue_assist = _apply_signal_evidence_sweep_assist(
+        sweep_assist_cfg,
+        clue_obs,
+        torch.tensor([large_env.ACTION_STAY, large_env.ACTION_STAY], dtype=torch.long),
+        scan_state={"clue_claimed": {(8, 8)}},
+    )
+    assert claimed_clue_assist.tolist() == [large_env.ACTION_RIGHT, large_env.ACTION_STAY]
+    clue_scan_state = _initial_signal_scan_state(sweep_assist_cfg)
+    _update_signal_scan_state_from_info(
+        sweep_assist_cfg,
+        clue_scan_state,
+        {"events": {0: [{"event": "clue_found"}]}},
+        2,
+        {0: (8, 8), 1: (9, 8)},
+        has_policy_step=True,
+    )
+    assert (8, 8) in clue_scan_state["clue_claimed"]
     clue_mask, clue_action_id = _signal_frontier_exploration_action_label_mask(
         large_env,
         clue_obs,
@@ -11905,6 +11953,7 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
         eval_send_threshold=0.42,
         eval_pipeline_station_interact_guard=True,
         eval_pipeline_plan_broadcast_assist=True,
+        eval_signal_evidence_sweep_assist=True,
         eval_signal_frontier_exploration_assist=True,
         eval_signal_exact_target_scan_lock=True,
         eval_signal_compatible_target_scan_assist=True,
@@ -11925,6 +11974,7 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
     assert calls[0][1]["eval_send_threshold"] is None
     assert calls[0][1]["eval_pipeline_station_interact_guard"] is None
     assert calls[0][1]["eval_pipeline_plan_broadcast_assist"] is None
+    assert calls[0][1]["eval_signal_evidence_sweep_assist"] is None
     assert calls[0][1]["eval_signal_frontier_exploration_assist"] is None
     assert calls[0][1]["eval_signal_exact_target_scan_lock"] is None
     assert calls[0][1]["eval_signal_compatible_target_scan_assist"] is None
@@ -11942,6 +11992,7 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
     assert calls[1][1]["eval_send_threshold"] == pytest.approx(0.42)
     assert calls[1][1]["eval_pipeline_station_interact_guard"] is True
     assert calls[1][1]["eval_pipeline_plan_broadcast_assist"] is True
+    assert calls[1][1]["eval_signal_evidence_sweep_assist"] is True
     assert calls[1][1]["eval_signal_frontier_exploration_assist"] is True
     assert calls[1][1]["eval_signal_exact_target_scan_lock"] is True
     assert calls[1][1]["eval_signal_compatible_target_scan_assist"] is True

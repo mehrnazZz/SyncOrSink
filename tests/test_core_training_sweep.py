@@ -123,6 +123,7 @@ def test_core_training_sweep_can_run_official_benchmark_cases(tmp_path):
     assert "--eval-signal-compatible-target-scan-assist" not in command
     assert "--eval-signal-negative-memory-scan-guard" not in command
     assert "--eval-signal-target-probe-assist" not in command
+    assert "--eval-signal-evidence-sweep-assist" not in command
     assert "--eval-signal-frontier-exploration-assist" not in command
     assert "--eval-signal-scan-refresh-assist" not in command
     assert "--eval-signal-constraint-message-copy-assist" in command
@@ -1505,6 +1506,7 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "--recurrent-eval-signal-constraint-message-copy-assist",
         "--recurrent-eval-signal-constraint-message-guard",
         "--recurrent-eval-signal-exact-target-message-copy-assist",
+        "--recurrent-eval-signal-evidence-sweep-assist",
         "--recurrent-eval-signal-frontier-exploration-assist",
         "--recurrent-eval-signal-scan-refresh-assist",
         "--recurrent-eval-signal-scan-refresh-threshold",
@@ -1821,6 +1823,7 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_eval_signal_compatible_target_scan_min_strength"] == 4
     assert payload["config"]["recurrent_eval_signal_negative_memory_scan_guard"] is True
     assert payload["config"]["recurrent_eval_signal_target_probe_assist"] is True
+    assert payload["config"]["recurrent_eval_signal_evidence_sweep_assist"] is True
     assert payload["config"]["recurrent_eval_signal_frontier_exploration_assist"] is True
     assert payload["config"]["recurrent_eval_signal_scan_refresh_assist"] is True
     assert payload["config"]["recurrent_eval_signal_scan_refresh_threshold"] == 0.35
@@ -2022,6 +2025,7 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert command[command.index("--bc-signal-target-aux-weight") + 1] == "0.45"
     assert command[command.index("--bc-signal-target-pursuit-action-weight") + 1] == "0.6"
     assert "--bc-signal-target-pursuit-trust-exact-memory" in command
+    assert "--eval-signal-evidence-sweep-assist" in command
     assert "--eval-signal-frontier-exploration-assist" in command
     assert command[
         command.index("--bc-signal-sync-response-action-loss-weight") + 1

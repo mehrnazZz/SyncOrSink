@@ -1310,6 +1310,8 @@ def _build_recurrent_command(
         cmd.append("--eval-signal-negative-memory-scan-guard")
     if case.scenario == "signal_hunt" and eval_signal_target_probe_assist:
         cmd.append("--eval-signal-target-probe-assist")
+    if case.scenario == "signal_hunt" and args.recurrent_eval_signal_evidence_sweep_assist:
+        cmd.append("--eval-signal-evidence-sweep-assist")
     if case.scenario == "signal_hunt" and args.recurrent_eval_signal_frontier_exploration_assist:
         cmd.append("--eval-signal-frontier-exploration-assist")
     if case.scenario == "signal_hunt" and args.recurrent_eval_signal_scan_refresh_assist:
@@ -2328,6 +2330,9 @@ def run_suite(args) -> dict:
             ),
             "recurrent_eval_signal_target_probe_assist": (
                 bool(args.recurrent_eval_signal_target_probe_assist)
+            ),
+            "recurrent_eval_signal_evidence_sweep_assist": (
+                bool(args.recurrent_eval_signal_evidence_sweep_assist)
             ),
             "recurrent_eval_signal_frontier_exploration_assist": (
                 bool(args.recurrent_eval_signal_frontier_exploration_assist)
@@ -3730,6 +3735,15 @@ def parse_args(argv: list[str] | None = None):
             "Opt-in Signal ablation: drop learned structured constraint messages unless "
             "the sender currently observes a supporting Signal constraint. Defaults on "
             "for the large_map Signal preset."
+        ),
+    )
+    parser.add_argument(
+        "--recurrent-eval-signal-evidence-sweep-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Opt-in Signal ablation: during eval, use exploration-memory evidence "
+            "sweeps toward unresolved clue/constraint regions."
         ),
     )
     parser.add_argument(

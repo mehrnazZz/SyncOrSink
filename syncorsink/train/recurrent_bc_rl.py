@@ -455,6 +455,7 @@ class RecurrentConfig:
     eval_signal_exact_target_memory_steps: int = 0
     eval_signal_scan_refresh_assist: bool = False
     eval_signal_scan_refresh_threshold: float = 0.5
+    eval_signal_evidence_sweep_assist: bool = False
     eval_signal_frontier_exploration_assist: bool = False
     eval_pipeline_navigation_assist: bool = False
     eval_pipeline_navigation_assist_trust_messages: bool = False
@@ -4765,6 +4766,7 @@ def _initial_signal_scan_state(cfg: RecurrentConfig) -> dict:
         "scan_log": {},
         "scan_pos": {},
         "scan_broadcast_log": {},
+        "clue_claimed": set(),
         "scan_window": int(cfg.scan_window),
         "negative_target_log": [],
         "negative_memory_window": int(cfg.obs_signal_negative_memory_window),
@@ -4798,8 +4800,9 @@ def _update_signal_scan_state_from_info(
     *,
     has_policy_step: bool,
 ) -> bool:
+    track_clues = bool(getattr(cfg, "eval_signal_evidence_sweep_assist", False))
     if cfg.scenario != "signal_hunt" or not (
-        cfg.obs_signal_scan_state or cfg.obs_signal_negative_memory
+        cfg.obs_signal_scan_state or cfg.obs_signal_negative_memory or track_clues
     ):
         return True
     if not has_policy_step:
@@ -4819,6 +4822,14 @@ def _update_signal_scan_state_from_info(
                     "pos": tuple(pos),
                     "step": int(scan_state["step"]),
                 })
+        if track_clues and "clue_found" in names:
+            pos = prev_positions.get(int(aid))
+            if pos is not None:
+                claimed = scan_state.setdefault("clue_claimed", set())
+                if isinstance(claimed, set):
+                    claimed.add(tuple(pos))
+                elif isinstance(claimed, list):
+                    claimed.append(tuple(pos))
     if cfg.obs_signal_negative_memory:
         window = max(1, int(cfg.obs_signal_negative_memory_window))
         current_step = int(scan_state.get("step", 0))
@@ -8186,6 +8197,85 @@ def _signal_visible_clue_action_label_mask(
     return mask, action_ids
 
 
+def _signal_claimed_clues_from_scan_state(
+    scan_state: Mapping[str, Any] | None,
+) -> set[tuple[int, int]]:
+    if not isinstance(scan_state, Mapping):
+        return set()
+    raw = scan_state.get("clue_claimed", set())
+    if isinstance(raw, Mapping):
+        raw_iter = raw.values()
+    elif isinstance(raw, Iterable) and not isinstance(raw, (str, bytes)):
+        raw_iter = raw
+    else:
+        return set()
+    claimed: set[tuple[int, int]] = set()
+    for item in raw_iter:
+        pos = _signal_xy(item)
+        if pos is not None:
+            claimed.add(pos)
+    return claimed
+
+
+def _signal_visible_clue_action_from_obs(
+    cfg: RecurrentConfig,
+    obs_agent: dict,
+    *,
+    claimed_clues: set[tuple[int, int]] | None = None,
+    scan_state: Mapping[str, Any] | None = None,
+) -> int | None:
+    if cfg.scenario != "signal_hunt" or not isinstance(obs_agent, dict):
+        return None
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    if int(observed_map_size) < int(getattr(cfg, "bc_signal_visible_clue_min_map_size", 16)):
+        return None
+    if _signal_unique_known_target(obs_agent, cfg, observed_map_size):
+        return None
+    ambiguous_search = _signal_ambiguous_target_search_candidate(obs_agent, cfg)
+    if _signal_center_visible_target_tile(obs_agent, cfg) and not ambiguous_search:
+        return None
+    pos = _signal_xy(obs_agent.get("self_pos"))
+    if pos is None:
+        return None
+    claimed = set(claimed_clues or set())
+    clues = [
+        clue
+        for clue in _visible_signal_clues(
+            obs_agent,
+            np.asarray(pos, dtype=np.int64),
+            observed_map_size,
+        )
+        if tuple(clue) not in claimed
+    ]
+    if not clues:
+        return None
+    clue = min(
+        clues,
+        key=lambda xy: (
+            abs(int(xy[0]) - pos[0]) + abs(int(xy[1]) - pos[1]),
+            int(xy[1]),
+            int(xy[0]),
+        ),
+    )
+    action_id = _signal_navigation_action_from_obs(
+        obs_agent,
+        clue,
+        navigation_state=scan_state,
+    )
+    move_or_interact = {
+        int(SyncOrSinkEnv.ACTION_UP),
+        int(SyncOrSinkEnv.ACTION_DOWN),
+        int(SyncOrSinkEnv.ACTION_LEFT),
+        int(SyncOrSinkEnv.ACTION_RIGHT),
+        int(SyncOrSinkEnv.ACTION_INTERACT),
+    }
+    if action_id is None or int(action_id) not in move_or_interact:
+        return None
+    if not _action_allowed_from_obs(obs_agent, int(action_id)):
+        return None
+    return int(action_id)
+
+
 def _signal_visible_clue_miss_agents(
     env: SyncOrSinkEnv,
     obs: dict,
@@ -8323,25 +8413,35 @@ def _signal_evidence_sweep_action_from_obs(
     agent_id: int | None = None,
     num_agents: int | None = None,
     true_target: tuple[int, int] | None = None,
+    scan_state: Mapping[str, Any] | None = None,
+    require_eval_assist: bool = False,
 ) -> int | None:
     if (
         cfg.scenario != "signal_hunt"
         or not bool(getattr(cfg, "obs_exploration_memory", False))
-        or float(getattr(cfg, "bc_signal_evidence_sweep_action_weight", 0.0)) <= 0.0
         or not isinstance(obs_agent, dict)
     ):
+        return None
+    if require_eval_assist:
+        if not bool(getattr(cfg, "eval_signal_evidence_sweep_assist", False)):
+            return None
+    elif float(getattr(cfg, "bc_signal_evidence_sweep_action_weight", 0.0)) <= 0.0:
         return None
     observed_map_size = _observed_map_size(obs_agent, cfg)
     if int(observed_map_size) < int(getattr(cfg, "bc_signal_evidence_sweep_min_map_size", 16)):
         return None
     ambiguous_search = _signal_ambiguous_target_search_candidate(obs_agent, cfg)
     if _signal_visible_search_goal(obs_agent):
-        if not ambiguous_search:
-            return None
         local_ids = _recurrent_local_grid_ids(
             obs_agent.get("local_grid", np.zeros((1, 1), dtype=np.int16))
         )
-        if local_ids.ndim == 2 and bool(np.isin(local_ids, [int(TILE_CLUE)]).any()):
+        has_visible_clue = local_ids.ndim == 2 and bool(np.isin(local_ids, [int(TILE_CLUE)]).any())
+        if require_eval_assist:
+            if _signal_center_visible_target_tile(obs_agent, cfg) and not ambiguous_search:
+                return None
+        elif not ambiguous_search:
+            return None
+        elif has_visible_clue:
             return None
     if _signal_unique_known_target(obs_agent, cfg, observed_map_size):
         return None
@@ -8385,7 +8485,11 @@ def _signal_evidence_sweep_action_from_obs(
         int(SyncOrSinkEnv.ACTION_LEFT),
         int(SyncOrSinkEnv.ACTION_RIGHT),
     }
-    action_id = _signal_navigation_action_from_obs(obs_agent, goal)
+    action_id = _signal_navigation_action_from_obs(
+        obs_agent,
+        goal,
+        navigation_state=scan_state,
+    )
     if action_id is None or int(action_id) not in move_actions:
         action_id = _signal_frontier_exploration_action_from_obs(
             cfg,
@@ -8393,10 +8497,20 @@ def _signal_evidence_sweep_action_from_obs(
             agent_id=agent_id,
             num_agents=agent_count,
             true_target=true_target,
+            scan_state=scan_state,
         )
     if action_id is None or int(action_id) not in move_actions:
         return None
     if not _action_allowed_from_obs(obs_agent, int(action_id)):
+        return None
+    action_id = _signal_frontier_memory_adjusted_navigation_action(
+        obs_agent,
+        goal,
+        int(action_id),
+        scan_state,
+        agent_id,
+    )
+    if int(action_id) not in move_actions or not _action_allowed_from_obs(obs_agent, int(action_id)):
         return None
     return int(action_id)
 
@@ -8935,7 +9049,11 @@ def _signal_frontier_exploration_action_from_obs(
             )
         if frontier is None:
             return None
-        action_id = _signal_navigation_action_from_obs(obs_agent, frontier)
+        action_id = _signal_navigation_action_from_obs(
+            obs_agent,
+            frontier,
+            navigation_state=scan_state,
+        )
         if use_coordinated_frontier and (action_id is None or int(action_id) not in move_actions):
             action_id = _pipeline_greedy_frontier_step_from_obs(obs_agent, frontier)
     else:
@@ -9015,6 +9133,48 @@ def _apply_signal_frontier_exploration_assist(
         if not isinstance(obs_agent, dict):
             continue
         action_id = _signal_frontier_exploration_action_from_obs(
+            cfg,
+            obs_agent,
+            agent_id=int(aid),
+            num_agents=int(acts.shape[0]),
+            scan_state=scan_state,
+            require_eval_assist=True,
+        )
+        if action_id is None:
+            continue
+        corrected[aid] = int(action_id)
+    return corrected
+
+
+def _apply_signal_evidence_sweep_assist(
+    cfg: RecurrentConfig,
+    obs: dict,
+    acts: torch.Tensor,
+    scan_state: Mapping[str, Any] | None = None,
+) -> torch.Tensor:
+    if (
+        cfg.scenario != "signal_hunt"
+        or not bool(getattr(cfg, "eval_signal_evidence_sweep_assist", False))
+        or not isinstance(obs, dict)
+    ):
+        return acts
+    _update_signal_navigation_terrain_memory(cfg, scan_state, obs)
+    corrected = acts.clone()
+    claimed_clues = _signal_claimed_clues_from_scan_state(scan_state)
+    for aid in range(int(acts.shape[0])):
+        obs_agent = obs.get(aid, obs.get(str(aid)))
+        if not isinstance(obs_agent, dict):
+            continue
+        clue_action_id = _signal_visible_clue_action_from_obs(
+            cfg,
+            obs_agent,
+            claimed_clues=claimed_clues,
+            scan_state=scan_state,
+        )
+        if clue_action_id is not None:
+            corrected[aid] = int(clue_action_id)
+            continue
+        action_id = _signal_evidence_sweep_action_from_obs(
             cfg,
             obs_agent,
             agent_id=int(aid),
@@ -22248,6 +22408,7 @@ def _decode_recurrent_actions(
     acts = _apply_signal_scan_sync_decoding(cfg, obs, acts, feedback, scan_state=scan_state)
     acts = _apply_signal_scan_refresh_decoding(cfg, obs, acts, feedback)
     acts = _apply_signal_exact_target_navigation_assist(cfg, obs, acts, scan_state)
+    acts = _apply_signal_evidence_sweep_assist(cfg, obs, acts, scan_state=scan_state)
     acts = _apply_signal_frontier_exploration_assist(cfg, obs, acts, scan_state=scan_state)
     pipeline_interact_gate_logits = None
     if hasattr(model, "pipeline_interact_gate"):
@@ -22493,6 +22654,12 @@ def _apply_recurrent_rollout_eval_decoding(
         obs,
         corrected_acts,
         scan_state,
+    )
+    corrected_acts = _apply_signal_evidence_sweep_assist(
+        cfg,
+        obs,
+        corrected_acts,
+        scan_state=scan_state,
     )
     corrected_acts = _apply_signal_frontier_exploration_assist(
         cfg,
@@ -23367,6 +23534,9 @@ class RecurrentCheckpointPolicy:
             "eval_signal_exact_target_memory_steps": self.cfg.eval_signal_exact_target_memory_steps,
             "eval_signal_scan_refresh_assist": self.cfg.eval_signal_scan_refresh_assist,
             "eval_signal_scan_refresh_threshold": self.cfg.eval_signal_scan_refresh_threshold,
+            "eval_signal_evidence_sweep_assist": (
+                self.cfg.eval_signal_evidence_sweep_assist
+            ),
             "eval_signal_frontier_exploration_assist": (
                 self.cfg.eval_signal_frontier_exploration_assist
             ),
@@ -23484,6 +23654,7 @@ def load_recurrent_checkpoint_policy(
     eval_signal_exact_target_memory_steps: int | None = None,
     eval_signal_scan_refresh_assist: bool | None = None,
     eval_signal_scan_refresh_threshold: float | None = None,
+    eval_signal_evidence_sweep_assist: bool | None = None,
     eval_signal_frontier_exploration_assist: bool | None = None,
     eval_pipeline_navigation_assist: bool | None = None,
     eval_pipeline_navigation_assist_trust_messages: bool | None = None,
@@ -23560,6 +23731,8 @@ def load_recurrent_checkpoint_policy(
         cfg.eval_signal_scan_refresh_assist = bool(eval_signal_scan_refresh_assist)
     if eval_signal_scan_refresh_threshold is not None:
         cfg.eval_signal_scan_refresh_threshold = float(eval_signal_scan_refresh_threshold)
+    if eval_signal_evidence_sweep_assist is not None:
+        cfg.eval_signal_evidence_sweep_assist = bool(eval_signal_evidence_sweep_assist)
     if eval_signal_frontier_exploration_assist is not None:
         cfg.eval_signal_frontier_exploration_assist = bool(eval_signal_frontier_exploration_assist)
     if eval_pipeline_navigation_assist is not None:
@@ -27909,6 +28082,15 @@ def main():
         help="Remaining scan-window fraction at or below which refresh assist forces interact",
     )
     p.add_argument(
+        "--eval-signal-evidence-sweep-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use exploration-memory evidence sweeps to force Signal Hunt movement "
+            "toward unresolved clue/constraint regions during eval."
+        ),
+    )
+    p.add_argument(
         "--eval-signal-frontier-exploration-assist",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -28474,6 +28656,7 @@ def main():
         eval_signal_exact_target_memory_steps=args.eval_signal_exact_target_memory_steps,
         eval_signal_scan_refresh_assist=args.eval_signal_scan_refresh_assist,
         eval_signal_scan_refresh_threshold=args.eval_signal_scan_refresh_threshold,
+        eval_signal_evidence_sweep_assist=args.eval_signal_evidence_sweep_assist,
         eval_signal_frontier_exploration_assist=args.eval_signal_frontier_exploration_assist,
         eval_pipeline_navigation_assist=args.eval_pipeline_navigation_assist,
         eval_pipeline_navigation_assist_trust_messages=args.eval_pipeline_navigation_assist_trust_messages,

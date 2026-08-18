@@ -188,6 +188,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--recurrent-signal-scan-refresh-threshold", type=float, default=None)
     parser.add_argument(
+        "--recurrent-signal-evidence-sweep-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
         "--recurrent-signal-frontier-exploration-assist",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -416,6 +421,9 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 eval_signal_exact_target_memory_steps=args.recurrent_signal_exact_target_memory_steps,
                 eval_signal_scan_refresh_assist=args.recurrent_signal_scan_refresh_assist,
                 eval_signal_scan_refresh_threshold=args.recurrent_signal_scan_refresh_threshold,
+                eval_signal_evidence_sweep_assist=(
+                    args.recurrent_signal_evidence_sweep_assist
+                ),
                 eval_signal_frontier_exploration_assist=(
                     args.recurrent_signal_frontier_exploration_assist
                 ),
@@ -500,6 +508,9 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 "eval_signal_exact_target_memory_steps": args.recurrent_signal_exact_target_memory_steps,
                 "eval_signal_scan_refresh_assist": args.recurrent_signal_scan_refresh_assist,
                 "eval_signal_scan_refresh_threshold": args.recurrent_signal_scan_refresh_threshold,
+                "eval_signal_evidence_sweep_assist": (
+                    args.recurrent_signal_evidence_sweep_assist
+                ),
                 "eval_signal_frontier_exploration_assist": (
                     args.recurrent_signal_frontier_exploration_assist
                 ),

@@ -343,6 +343,7 @@ class RecurrentCurriculumConfig:
     eval_signal_exact_target_memory_steps: int = 0
     eval_signal_scan_refresh_assist: bool = False
     eval_signal_scan_refresh_threshold: float = 0.5
+    eval_signal_evidence_sweep_assist: bool = False
     eval_signal_frontier_exploration_assist: bool = False
     eval_pipeline_navigation_assist: bool = False
     eval_pipeline_navigation_assist_trust_messages: bool = False
@@ -1048,6 +1049,7 @@ def _stage_recurrent_config(
         eval_signal_exact_target_memory_steps=cfg.eval_signal_exact_target_memory_steps,
         eval_signal_scan_refresh_assist=cfg.eval_signal_scan_refresh_assist,
         eval_signal_scan_refresh_threshold=cfg.eval_signal_scan_refresh_threshold,
+        eval_signal_evidence_sweep_assist=cfg.eval_signal_evidence_sweep_assist,
         eval_signal_frontier_exploration_assist=cfg.eval_signal_frontier_exploration_assist,
         eval_pipeline_navigation_assist=cfg.eval_pipeline_navigation_assist,
         eval_pipeline_navigation_assist_trust_messages=cfg.eval_pipeline_navigation_assist_trust_messages,
@@ -1793,6 +1795,11 @@ def main() -> None:
     parser.add_argument("--eval-signal-scan-refresh-assist", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--eval-signal-scan-refresh-threshold", type=float, default=0.5)
     parser.add_argument(
+        "--eval-signal-evidence-sweep-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
         "--eval-signal-frontier-exploration-assist",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -2244,6 +2251,7 @@ def main() -> None:
         eval_signal_exact_target_memory_steps=args.eval_signal_exact_target_memory_steps,
         eval_signal_scan_refresh_assist=args.eval_signal_scan_refresh_assist,
         eval_signal_scan_refresh_threshold=args.eval_signal_scan_refresh_threshold,
+        eval_signal_evidence_sweep_assist=args.eval_signal_evidence_sweep_assist,
         eval_signal_frontier_exploration_assist=args.eval_signal_frontier_exploration_assist,
         eval_pipeline_navigation_assist=args.eval_pipeline_navigation_assist,
         eval_pipeline_navigation_assist_trust_messages=args.eval_pipeline_navigation_assist_trust_messages,
