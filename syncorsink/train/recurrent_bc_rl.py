@@ -1750,21 +1750,20 @@ def _pipeline_plan_sync_interact_ready(
         stage_id = int(plan.get("stage", -1))
     except (TypeError, ValueError):
         stage_id = -1
-    plan_required_values: list[int] = []
-    for raw in plan.get("required", []):
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if value > 0:
-            plan_required_values.append(value)
+    plan_required_values = _pipeline_positive_int_values(plan.get("required", []))
     if isinstance(stage, Mapping):
-        requirements_met = len(_pipeline_stage_needs(stage)) == 0
+        required_values = _pipeline_positive_int_values(stage.get("required", []))
+        delivered_values = _pipeline_positive_int_values(stage.get("delivered", []))
     else:
-        required_remaining = _pipeline_required_for_plan_stage(
-            plan,
-            pipeline_state=pipeline_state,
-        )
+        required_values = plan_required_values
+        delivered_values = _pipeline_stage_delivered_resources(pipeline_state, stage_id)
+    carried_values = _pipeline_stage_carried_resources(pipeline_state, stage_id)
+    requirements_met = _pipeline_multiset_covered(
+        required_values,
+        [*delivered_values, *carried_values],
+    )
+    if not requirements_met and not isinstance(stage, Mapping):
+        required_remaining = _pipeline_required_for_plan_stage(plan, pipeline_state=pipeline_state)
         delivered_count = _pipeline_stage_delivered_count(pipeline_state, stage_id)
         requirements_met = bool(
             plan_required_values
@@ -1774,6 +1773,64 @@ def _pipeline_plan_sync_interact_ready(
             )
         )
     return bool(requirements_met or stage_id in _pipeline_sync_wait_stages(pipeline_state))
+
+
+def _pipeline_positive_int_values(raw: Any) -> list[int]:
+    values: list[int] = []
+    if not isinstance(raw, Iterable) or isinstance(raw, (str, bytes)):
+        return values
+    for raw_value in raw:
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            values.append(value)
+    return values
+
+
+def _pipeline_stage_carried_resources(
+    pipeline_state: Mapping[str, Any] | None,
+    stage_id: int,
+) -> list[int]:
+    if not isinstance(pipeline_state, Mapping) or int(stage_id) < 0:
+        return []
+    carry_targets = pipeline_state.get("carry_targets")
+    if not isinstance(carry_targets, Mapping):
+        return []
+    carried: list[int] = []
+    for raw_target in carry_targets.values():
+        if not isinstance(raw_target, Mapping):
+            continue
+        try:
+            target_stage = int(raw_target.get("stage", -1))
+            resource_type = int(raw_target.get("resource_type", 0))
+        except (TypeError, ValueError):
+            continue
+        if target_stage == int(stage_id) and resource_type > 0:
+            carried.append(resource_type)
+    return carried
+
+
+def _pipeline_multiset_covered(required: Sequence[int], available: Sequence[int]) -> bool:
+    remaining: list[int] = []
+    for value in required:
+        try:
+            int_value = int(value)
+        except (TypeError, ValueError):
+            continue
+        if int_value > 0:
+            remaining.append(int_value)
+    for value in available:
+        try:
+            int_value = int(value)
+        except (TypeError, ValueError):
+            continue
+        try:
+            remaining.remove(int_value)
+        except ValueError:
+            continue
+    return not remaining
 
 
 def _pipeline_station_escape_action(obs_agent: dict) -> int | None:

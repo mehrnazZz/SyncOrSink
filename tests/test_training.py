@@ -7602,6 +7602,46 @@ def test_recurrent_pipeline_navigation_assist_coordinates_sync_rendezvous():
 
     assert completed.tolist() == [SyncOrSinkEnv.ACTION_STAY, SyncOrSinkEnv.ACTION_STAY]
 
+    pre_delivery_state = {
+        "completed_stages": set(),
+        "delivered_counts": {},
+        "delivered_resources": {},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+        "carry_targets": {
+            0: {
+                "stage": 0,
+                "station": station,
+                "resource_type": 2,
+                "required": [2],
+            },
+        },
+    }
+    pre_delivery_obs = {
+        **one_ready_obs,
+        0: {
+            **one_ready_obs[0],
+            "self_pos": np.array([3, 3], dtype=np.int16),
+            "inventory": np.array([2], dtype=np.int16),
+            "local_grid": open_grid,
+        },
+        1: {
+            **one_ready_obs[1],
+            "self_pos": np.array([3, 3], dtype=np.int16),
+        },
+    }
+    pre_delivery = _apply_pipeline_navigation_assist(
+        cfg,
+        pre_delivery_obs,
+        torch.tensor(
+            [SyncOrSinkEnv.ACTION_STAY, SyncOrSinkEnv.ACTION_STAY],
+            dtype=torch.long,
+        ),
+        pipeline_state=pre_delivery_state,
+    )
+
+    assert pre_delivery.tolist() == [SyncOrSinkEnv.ACTION_RIGHT, SyncOrSinkEnv.ACTION_RIGHT]
+
 
 def test_recurrent_pipeline_sync_rendezvous_uses_navigation_memory_to_break_loop():
     from syncorsink.envs import SyncOrSinkEnv
