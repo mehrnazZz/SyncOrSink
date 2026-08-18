@@ -615,6 +615,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         eval_signal_scan_refresh_assist=True,
         eval_signal_scan_refresh_threshold=0.5,
         eval_signal_evidence_sweep_assist=True,
+        eval_signal_evidence_sweep_min_step=12,
         eval_signal_frontier_exploration_assist=True,
         eval_pipeline_navigation_assist=True,
         eval_pipeline_navigation_assist_trust_messages=True,
@@ -775,6 +776,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["eval_signal_scan_refresh_assist"] is True
     assert result["config"]["eval_signal_scan_refresh_threshold"] == pytest.approx(0.5)
     assert result["config"]["eval_signal_evidence_sweep_assist"] is True
+    assert result["config"]["eval_signal_evidence_sweep_min_step"] == 12
     assert result["config"]["eval_signal_frontier_exploration_assist"] is True
     assert result["config"]["eval_pipeline_navigation_assist"] is True
     assert result["config"]["eval_pipeline_navigation_assist_trust_messages"] is True
@@ -1010,6 +1012,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.eval_signal_scan_refresh_assist is True
     assert stage_cfg.eval_signal_scan_refresh_threshold == pytest.approx(0.5)
     assert stage_cfg.eval_signal_evidence_sweep_assist is True
+    assert stage_cfg.eval_signal_evidence_sweep_min_step == 12
     assert stage_cfg.eval_signal_frontier_exploration_assist is True
     assert stage_cfg.eval_pipeline_navigation_assist is True
     assert stage_cfg.eval_pipeline_navigation_assist_trust_messages is True
@@ -4101,8 +4104,30 @@ def test_recurrent_signal_target_pursuit_label_weighting():
             **vars(sweep_cfg),
             "bc_signal_evidence_sweep_action_weight": 0.0,
             "eval_signal_evidence_sweep_assist": True,
+            "eval_signal_evidence_sweep_min_step": 0,
         }
     )
+    gated_sweep_cfg = RecurrentConfig(
+        **{
+            **vars(sweep_cfg),
+            "bc_signal_evidence_sweep_action_weight": 0.0,
+            "eval_signal_evidence_sweep_assist": True,
+        }
+    )
+    gated_sweep = _apply_signal_evidence_sweep_assist(
+        gated_sweep_cfg,
+        sweep_obs,
+        torch.tensor([large_env.ACTION_STAY, large_env.ACTION_STAY], dtype=torch.long),
+        scan_state={"step": 0},
+    )
+    assert gated_sweep.tolist() == [large_env.ACTION_STAY, large_env.ACTION_STAY]
+    scanned_sweep = _apply_signal_evidence_sweep_assist(
+        sweep_assist_cfg,
+        sweep_obs,
+        torch.tensor([large_env.ACTION_STAY, large_env.ACTION_STAY], dtype=torch.long),
+        scan_state={"step": 60, "scan_log": {0: 55}},
+    )
+    assert scanned_sweep.tolist() == [large_env.ACTION_STAY, large_env.ACTION_STAY]
     assisted_sweep = _apply_signal_evidence_sweep_assist(
         sweep_assist_cfg,
         sweep_obs,
@@ -11954,6 +11979,7 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
         eval_pipeline_station_interact_guard=True,
         eval_pipeline_plan_broadcast_assist=True,
         eval_signal_evidence_sweep_assist=True,
+        eval_signal_evidence_sweep_min_step=12,
         eval_signal_frontier_exploration_assist=True,
         eval_signal_exact_target_scan_lock=True,
         eval_signal_compatible_target_scan_assist=True,
@@ -11975,6 +12001,7 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
     assert calls[0][1]["eval_pipeline_station_interact_guard"] is None
     assert calls[0][1]["eval_pipeline_plan_broadcast_assist"] is None
     assert calls[0][1]["eval_signal_evidence_sweep_assist"] is None
+    assert calls[0][1]["eval_signal_evidence_sweep_min_step"] is None
     assert calls[0][1]["eval_signal_frontier_exploration_assist"] is None
     assert calls[0][1]["eval_signal_exact_target_scan_lock"] is None
     assert calls[0][1]["eval_signal_compatible_target_scan_assist"] is None
@@ -11993,6 +12020,7 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
     assert calls[1][1]["eval_pipeline_station_interact_guard"] is True
     assert calls[1][1]["eval_pipeline_plan_broadcast_assist"] is True
     assert calls[1][1]["eval_signal_evidence_sweep_assist"] is True
+    assert calls[1][1]["eval_signal_evidence_sweep_min_step"] == 12
     assert calls[1][1]["eval_signal_frontier_exploration_assist"] is True
     assert calls[1][1]["eval_signal_exact_target_scan_lock"] is True
     assert calls[1][1]["eval_signal_compatible_target_scan_assist"] is True

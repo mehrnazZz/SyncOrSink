@@ -918,6 +918,9 @@ def _build_recurrent_command(
         args.recurrent_eval_signal_negative_memory_scan_guard
     )
     eval_signal_target_probe_assist = args.recurrent_eval_signal_target_probe_assist
+    eval_signal_evidence_sweep_assist = args.recurrent_eval_signal_evidence_sweep_assist
+    if eval_signal_evidence_sweep_assist is None:
+        eval_signal_evidence_sweep_assist = signal_large_map
     dagger_focus_events = args.recurrent_dagger_focus_events
     dagger_replay_event_weights = args.recurrent_dagger_replay_event_weights
     dagger_replay_priority_events = args.recurrent_dagger_replay_priority_events
@@ -1310,8 +1313,12 @@ def _build_recurrent_command(
         cmd.append("--eval-signal-negative-memory-scan-guard")
     if case.scenario == "signal_hunt" and eval_signal_target_probe_assist:
         cmd.append("--eval-signal-target-probe-assist")
-    if case.scenario == "signal_hunt" and args.recurrent_eval_signal_evidence_sweep_assist:
+    if case.scenario == "signal_hunt" and eval_signal_evidence_sweep_assist:
         cmd.append("--eval-signal-evidence-sweep-assist")
+        cmd.extend([
+            "--eval-signal-evidence-sweep-min-step",
+            str(args.recurrent_eval_signal_evidence_sweep_min_step),
+        ])
     if case.scenario == "signal_hunt" and args.recurrent_eval_signal_frontier_exploration_assist:
         cmd.append("--eval-signal-frontier-exploration-assist")
     if case.scenario == "signal_hunt" and args.recurrent_eval_signal_scan_refresh_assist:
@@ -2333,6 +2340,11 @@ def run_suite(args) -> dict:
             ),
             "recurrent_eval_signal_evidence_sweep_assist": (
                 bool(args.recurrent_eval_signal_evidence_sweep_assist)
+                if args.recurrent_eval_signal_evidence_sweep_assist is not None
+                else args.recurrent_signal_preset == "large_map"
+            ),
+            "recurrent_eval_signal_evidence_sweep_min_step": (
+                int(args.recurrent_eval_signal_evidence_sweep_min_step)
             ),
             "recurrent_eval_signal_frontier_exploration_assist": (
                 bool(args.recurrent_eval_signal_frontier_exploration_assist)
@@ -3740,11 +3752,17 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument(
         "--recurrent-eval-signal-evidence-sweep-assist",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=None,
         help=(
-            "Opt-in Signal ablation: during eval, use exploration-memory evidence "
-            "sweeps toward unresolved clue/constraint regions."
+            "Signal eval rescue: during eval, use exploration-memory evidence sweeps "
+            "after the rescue step. Defaults on for the large_map Signal preset."
         ),
+    )
+    parser.add_argument(
+        "--recurrent-eval-signal-evidence-sweep-min-step",
+        type=int,
+        default=40,
+        help="First eval step where recurrent Signal evidence-sweep rescue may override actions.",
     )
     parser.add_argument(
         "--recurrent-eval-signal-frontier-exploration-assist",

@@ -344,6 +344,7 @@ class RecurrentCurriculumConfig:
     eval_signal_scan_refresh_assist: bool = False
     eval_signal_scan_refresh_threshold: float = 0.5
     eval_signal_evidence_sweep_assist: bool = False
+    eval_signal_evidence_sweep_min_step: int = 40
     eval_signal_frontier_exploration_assist: bool = False
     eval_pipeline_navigation_assist: bool = False
     eval_pipeline_navigation_assist_trust_messages: bool = False
@@ -1050,6 +1051,7 @@ def _stage_recurrent_config(
         eval_signal_scan_refresh_assist=cfg.eval_signal_scan_refresh_assist,
         eval_signal_scan_refresh_threshold=cfg.eval_signal_scan_refresh_threshold,
         eval_signal_evidence_sweep_assist=cfg.eval_signal_evidence_sweep_assist,
+        eval_signal_evidence_sweep_min_step=cfg.eval_signal_evidence_sweep_min_step,
         eval_signal_frontier_exploration_assist=cfg.eval_signal_frontier_exploration_assist,
         eval_pipeline_navigation_assist=cfg.eval_pipeline_navigation_assist,
         eval_pipeline_navigation_assist_trust_messages=cfg.eval_pipeline_navigation_assist_trust_messages,
@@ -1799,6 +1801,7 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=False,
     )
+    parser.add_argument("--eval-signal-evidence-sweep-min-step", type=int, default=40)
     parser.add_argument(
         "--eval-signal-frontier-exploration-assist",
         action=argparse.BooleanOptionalAction,
@@ -2252,6 +2255,7 @@ def main() -> None:
         eval_signal_scan_refresh_assist=args.eval_signal_scan_refresh_assist,
         eval_signal_scan_refresh_threshold=args.eval_signal_scan_refresh_threshold,
         eval_signal_evidence_sweep_assist=args.eval_signal_evidence_sweep_assist,
+        eval_signal_evidence_sweep_min_step=args.eval_signal_evidence_sweep_min_step,
         eval_signal_frontier_exploration_assist=args.eval_signal_frontier_exploration_assist,
         eval_pipeline_navigation_assist=args.eval_pipeline_navigation_assist,
         eval_pipeline_navigation_assist_trust_messages=args.eval_pipeline_navigation_assist_trust_messages,

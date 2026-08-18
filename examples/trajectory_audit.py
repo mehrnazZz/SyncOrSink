@@ -192,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         action=argparse.BooleanOptionalAction,
         default=None,
     )
+    parser.add_argument("--recurrent-signal-evidence-sweep-min-step", type=int, default=None)
     parser.add_argument(
         "--recurrent-signal-frontier-exploration-assist",
         action=argparse.BooleanOptionalAction,
@@ -424,6 +425,9 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 eval_signal_evidence_sweep_assist=(
                     args.recurrent_signal_evidence_sweep_assist
                 ),
+                eval_signal_evidence_sweep_min_step=(
+                    args.recurrent_signal_evidence_sweep_min_step
+                ),
                 eval_signal_frontier_exploration_assist=(
                     args.recurrent_signal_frontier_exploration_assist
                 ),
@@ -510,6 +514,9 @@ def _policy_specs(args, env_config: SyncOrSinkConfig) -> list[AuditPolicySpec]:
                 "eval_signal_scan_refresh_threshold": args.recurrent_signal_scan_refresh_threshold,
                 "eval_signal_evidence_sweep_assist": (
                     args.recurrent_signal_evidence_sweep_assist
+                ),
+                "eval_signal_evidence_sweep_min_step": (
+                    args.recurrent_signal_evidence_sweep_min_step
                 ),
                 "eval_signal_frontier_exploration_assist": (
                     args.recurrent_signal_frontier_exploration_assist

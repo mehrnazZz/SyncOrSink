@@ -456,6 +456,7 @@ class RecurrentConfig:
     eval_signal_scan_refresh_assist: bool = False
     eval_signal_scan_refresh_threshold: float = 0.5
     eval_signal_evidence_sweep_assist: bool = False
+    eval_signal_evidence_sweep_min_step: int = 40
     eval_signal_frontier_exploration_assist: bool = False
     eval_pipeline_navigation_assist: bool = False
     eval_pipeline_navigation_assist_trust_messages: bool = False
@@ -4809,7 +4810,7 @@ def _update_signal_scan_state_from_info(
         return True
     scan_state["step"] = int(scan_state.get("step", 0)) + 1
     for aid, names in _event_names_by_agent(info or {}, num_agents).items():
-        if cfg.obs_signal_scan_state and "target_scan" in names:
+        if (cfg.obs_signal_scan_state or track_clues) and "target_scan" in names:
             scan_state.setdefault("scan_log", {})[int(aid)] = int(scan_state["step"])
             pos = prev_positions.get(int(aid))
             if pos is not None:
@@ -8276,6 +8277,25 @@ def _signal_visible_clue_action_from_obs(
     return int(action_id)
 
 
+def _signal_evidence_sweep_rescue_active(
+    cfg: RecurrentConfig,
+    scan_state: Mapping[str, Any] | None,
+) -> bool:
+    if not bool(getattr(cfg, "eval_signal_evidence_sweep_assist", False)):
+        return False
+    min_step = max(0, int(getattr(cfg, "eval_signal_evidence_sweep_min_step", 40)))
+    current_step = int(scan_state.get("step", 0)) if isinstance(scan_state, Mapping) else 0
+    if current_step < min_step:
+        return False
+    scan_log = scan_state.get("scan_log") if isinstance(scan_state, Mapping) else None
+    if isinstance(scan_log, Mapping) and bool(scan_log):
+        return False
+    exact_memory = scan_state.get("exact_target_memory") if isinstance(scan_state, Mapping) else None
+    if isinstance(exact_memory, Mapping) and bool(exact_memory):
+        return False
+    return True
+
+
 def _signal_visible_clue_miss_agents(
     env: SyncOrSinkEnv,
     obs: dict,
@@ -9157,6 +9177,8 @@ def _apply_signal_evidence_sweep_assist(
         or not bool(getattr(cfg, "eval_signal_evidence_sweep_assist", False))
         or not isinstance(obs, dict)
     ):
+        return acts
+    if not _signal_evidence_sweep_rescue_active(cfg, scan_state):
         return acts
     _update_signal_navigation_terrain_memory(cfg, scan_state, obs)
     corrected = acts.clone()
@@ -23537,6 +23559,9 @@ class RecurrentCheckpointPolicy:
             "eval_signal_evidence_sweep_assist": (
                 self.cfg.eval_signal_evidence_sweep_assist
             ),
+            "eval_signal_evidence_sweep_min_step": (
+                self.cfg.eval_signal_evidence_sweep_min_step
+            ),
             "eval_signal_frontier_exploration_assist": (
                 self.cfg.eval_signal_frontier_exploration_assist
             ),
@@ -23655,6 +23680,7 @@ def load_recurrent_checkpoint_policy(
     eval_signal_scan_refresh_assist: bool | None = None,
     eval_signal_scan_refresh_threshold: float | None = None,
     eval_signal_evidence_sweep_assist: bool | None = None,
+    eval_signal_evidence_sweep_min_step: int | None = None,
     eval_signal_frontier_exploration_assist: bool | None = None,
     eval_pipeline_navigation_assist: bool | None = None,
     eval_pipeline_navigation_assist_trust_messages: bool | None = None,
@@ -23733,6 +23759,8 @@ def load_recurrent_checkpoint_policy(
         cfg.eval_signal_scan_refresh_threshold = float(eval_signal_scan_refresh_threshold)
     if eval_signal_evidence_sweep_assist is not None:
         cfg.eval_signal_evidence_sweep_assist = bool(eval_signal_evidence_sweep_assist)
+    if eval_signal_evidence_sweep_min_step is not None:
+        cfg.eval_signal_evidence_sweep_min_step = int(eval_signal_evidence_sweep_min_step)
     if eval_signal_frontier_exploration_assist is not None:
         cfg.eval_signal_frontier_exploration_assist = bool(eval_signal_frontier_exploration_assist)
     if eval_pipeline_navigation_assist is not None:
@@ -28091,6 +28119,15 @@ def main():
         ),
     )
     p.add_argument(
+        "--eval-signal-evidence-sweep-min-step",
+        type=int,
+        default=RecurrentConfig.eval_signal_evidence_sweep_min_step,
+        help=(
+            "First eval step where --eval-signal-evidence-sweep-assist can override "
+            "actions; this keeps the assist as a late rescue instead of an always-on decoder."
+        ),
+    )
+    p.add_argument(
         "--eval-signal-frontier-exploration-assist",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -28657,6 +28694,7 @@ def main():
         eval_signal_scan_refresh_assist=args.eval_signal_scan_refresh_assist,
         eval_signal_scan_refresh_threshold=args.eval_signal_scan_refresh_threshold,
         eval_signal_evidence_sweep_assist=args.eval_signal_evidence_sweep_assist,
+        eval_signal_evidence_sweep_min_step=args.eval_signal_evidence_sweep_min_step,
         eval_signal_frontier_exploration_assist=args.eval_signal_frontier_exploration_assist,
         eval_pipeline_navigation_assist=args.eval_pipeline_navigation_assist,
         eval_pipeline_navigation_assist_trust_messages=args.eval_pipeline_navigation_assist_trust_messages,
