@@ -609,6 +609,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
         eval_signal_constraint_message_guard=True,
         eval_signal_exact_target_message_guard=True,
         eval_signal_initial_exact_message_copy_assist=True,
+        eval_signal_exact_target_message_copy_assist=True,
         eval_signal_exact_target_navigation_assist=True,
         eval_signal_exact_target_memory_steps=24,
         eval_signal_scan_refresh_assist=True,
@@ -767,6 +768,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert result["config"]["eval_signal_constraint_message_guard"] is True
     assert result["config"]["eval_signal_exact_target_message_guard"] is True
     assert result["config"]["eval_signal_initial_exact_message_copy_assist"] is True
+    assert result["config"]["eval_signal_exact_target_message_copy_assist"] is True
     assert result["config"]["eval_signal_exact_target_navigation_assist"] is True
     assert result["config"]["eval_signal_exact_target_memory_steps"] == 24
     assert result["config"]["eval_signal_scan_refresh_assist"] is True
@@ -1000,6 +1002,7 @@ def test_recurrent_curriculum_dry_run(tmp_path):
     assert stage_cfg.eval_signal_constraint_message_guard is True
     assert stage_cfg.eval_signal_exact_target_message_guard is True
     assert stage_cfg.eval_signal_initial_exact_message_copy_assist is True
+    assert stage_cfg.eval_signal_exact_target_message_copy_assist is True
     assert stage_cfg.eval_signal_exact_target_navigation_assist is True
     assert stage_cfg.eval_signal_exact_target_memory_steps == 24
     assert stage_cfg.eval_signal_scan_refresh_assist is True
@@ -3702,6 +3705,7 @@ def test_recurrent_signal_target_pursuit_label_weighting():
     from syncorsink.train.recurrent_bc_rl import (
         RecurrentConfig,
         _append_labeled_step,
+        _apply_signal_exact_target_message_copy_assist,
         _apply_signal_exact_target_navigation_assist,
         _apply_signal_frontier_exploration_assist,
         _apply_signal_initial_exact_message_copy_assist,
@@ -4604,6 +4608,31 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         current_step=1,
     )
     assert copied_late_messages[0]["message_tokens"] == [1, 2, 3]
+    exact_copy_cfg = RecurrentConfig(
+        **{
+            **vars(initial_broadcast_cfg),
+            "eval_signal_exact_target_message_copy_assist": True,
+        }
+    )
+    copied_exact_messages = _apply_signal_exact_target_message_copy_assist(
+        exact_copy_cfg,
+        handoff_obs,
+        {
+            0: {"action": large_env.ACTION_STAY, "message_tokens": []},
+            1: {"action": large_env.ACTION_STAY, "message_tokens": [7]},
+        },
+        None,
+    )
+    assert copied_exact_messages[0]["message_tokens"] == [
+        26,
+        large_target[0],
+        large_target[1],
+    ]
+    assert copied_exact_messages[1]["message_tokens"] == [
+        26,
+        large_target[0],
+        large_target[1],
+    ]
     late_broadcasted, late_broadcast_agents = _apply_signal_initial_target_broadcast_overrides(
         initial_broadcast_cfg,
         handoff_obs,
@@ -5064,6 +5093,39 @@ def test_recurrent_signal_target_pursuit_label_weighting():
         scan_state=trusted_scan_state,
     )
     assert active_scan_nav.tolist() == [large_env.ACTION_STAY, large_env.ACTION_INTERACT]
+    expiring_scan_state = {
+        "step": 7,
+        "scan_window": 3,
+        "scan_log": {0: 5},
+        "scan_pos": {0: [large_target[0], large_target[1]]},
+    }
+    refresh_nav_cfg = RecurrentConfig(
+        **{
+            **vars(nav_cfg),
+            "eval_signal_scan_refresh_assist": True,
+            "eval_signal_scan_refresh_threshold": 0.5,
+        }
+    )
+    refresh_scan_nav = _apply_signal_exact_target_navigation_assist(
+        refresh_nav_cfg,
+        scanner_obs,
+        torch.tensor([large_env.ACTION_STAY, large_env.ACTION_STAY], dtype=torch.long),
+        scan_state=expiring_scan_state,
+    )
+    assert refresh_scan_nav.tolist() == [large_env.ACTION_INTERACT, large_env.ACTION_INTERACT]
+    strict_refresh_nav_cfg = RecurrentConfig(
+        **{
+            **vars(refresh_nav_cfg),
+            "eval_signal_scan_refresh_threshold": 0.25,
+        }
+    )
+    strict_refresh_scan_nav = _apply_signal_exact_target_navigation_assist(
+        strict_refresh_nav_cfg,
+        scanner_obs,
+        torch.tensor([large_env.ACTION_STAY, large_env.ACTION_STAY], dtype=torch.long),
+        scan_state=expiring_scan_state,
+    )
+    assert strict_refresh_scan_nav.tolist() == [large_env.ACTION_STAY, large_env.ACTION_INTERACT]
     joint_scan_state = {
         "step": 6,
         "scan_window": 3,
@@ -11811,6 +11873,7 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
         eval_signal_target_probe_assist=True,
         eval_signal_constraint_message_copy_assist=True,
         eval_signal_constraint_message_guard=True,
+        eval_signal_exact_target_message_copy_assist=True,
         eval_pipeline_frontier_exploration_assist=True,
         eval_pipeline_interact_gate_threshold=0.37,
         eval_pipeline_event_head_threshold=0.62,
@@ -11830,6 +11893,7 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
     assert calls[0][1]["eval_signal_target_probe_assist"] is None
     assert calls[0][1]["eval_signal_constraint_message_copy_assist"] is None
     assert calls[0][1]["eval_signal_constraint_message_guard"] is None
+    assert calls[0][1]["eval_signal_exact_target_message_copy_assist"] is None
     assert calls[0][1]["eval_pipeline_frontier_exploration_assist"] is None
     assert calls[0][1]["eval_pipeline_event_head_threshold"] is None
     assert calls[0][1]["eval_pipeline_navigation_head_threshold"] is None
@@ -11846,6 +11910,7 @@ def test_recurrent_audit_factory_inherits_checkpoint_send_threshold(monkeypatch,
     assert calls[1][1]["eval_signal_target_probe_assist"] is True
     assert calls[1][1]["eval_signal_constraint_message_copy_assist"] is True
     assert calls[1][1]["eval_signal_constraint_message_guard"] is True
+    assert calls[1][1]["eval_signal_exact_target_message_copy_assist"] is True
     assert calls[1][1]["eval_pipeline_frontier_exploration_assist"] is True
     assert calls[1][1]["eval_pipeline_interact_gate_threshold"] == pytest.approx(0.37)
     assert calls[1][1]["eval_pipeline_event_head_threshold"] == pytest.approx(0.62)

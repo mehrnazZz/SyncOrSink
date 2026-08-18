@@ -884,6 +884,11 @@ def _build_recurrent_command(
     )
     if initial_exact_message_copy_assist is None:
         initial_exact_message_copy_assist = signal_specialist
+    exact_target_message_copy_assist = (
+        args.recurrent_eval_signal_exact_target_message_copy_assist
+    )
+    if exact_target_message_copy_assist is None:
+        exact_target_message_copy_assist = signal_large_map
     constraint_message_copy_assist = (
         args.recurrent_eval_signal_constraint_message_copy_assist
     )
@@ -1602,6 +1607,8 @@ def _build_recurrent_command(
             cmd.append("--obs-exploration-age")
     if case.scenario == "signal_hunt" and initial_exact_message_copy_assist:
         cmd.append("--eval-signal-initial-exact-message-copy-assist")
+    if case.scenario == "signal_hunt" and exact_target_message_copy_assist:
+        cmd.append("--eval-signal-exact-target-message-copy-assist")
     cmd.extend(_learning_profile_args(args.learning_profile, "recurrent_bc_rl", case))
     if args.wandb:
         cmd.append("--wandb")
@@ -2333,6 +2340,11 @@ def run_suite(args) -> dict:
             ),
             "recurrent_eval_signal_initial_exact_message_copy_assist": (
                 args.recurrent_eval_signal_initial_exact_message_copy_assist
+            ),
+            "recurrent_eval_signal_exact_target_message_copy_assist": (
+                bool(args.recurrent_eval_signal_exact_target_message_copy_assist)
+                if args.recurrent_eval_signal_exact_target_message_copy_assist is not None
+                else args.recurrent_signal_preset == "large_map"
             ),
             "recurrent_eval_signal_constraint_message_copy_assist": (
                 args.recurrent_eval_signal_constraint_message_copy_assist
@@ -3690,6 +3702,16 @@ def parse_args(argv: list[str] | None = None):
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Canonicalize Signal specialist step-0 exact-target messages from private exact hints",
+    )
+    parser.add_argument(
+        "--recurrent-eval-signal-exact-target-message-copy-assist",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Opt-in Signal ablation: broadcast a canonical exact-target message from "
+            "any single trusted Signal exact target during evaluation. Defaults on "
+            "for the large_map Signal preset."
+        ),
     )
     parser.add_argument(
         "--recurrent-eval-signal-constraint-message-copy-assist",

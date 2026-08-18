@@ -450,6 +450,7 @@ class RecurrentConfig:
     eval_signal_constraint_message_guard: bool = False
     eval_signal_exact_target_message_guard: bool = False
     eval_signal_initial_exact_message_copy_assist: bool = False
+    eval_signal_exact_target_message_copy_assist: bool = False
     eval_signal_exact_target_navigation_assist: bool = False
     eval_signal_exact_target_memory_steps: int = 0
     eval_signal_scan_refresh_assist: bool = False
@@ -7405,6 +7406,70 @@ def _apply_signal_initial_exact_message_copy_assist(
         message = _signal_exact_target_message_for_pos(cfg, target)
         if message:
             action["message_tokens"] = list(message)
+    return corrected
+
+
+def _signal_trusted_exact_target_message_from_observation(
+    cfg: RecurrentConfig,
+    obs_agent: dict,
+    scan_state: Mapping[str, Any] | None,
+    *,
+    agent_id: int | None = None,
+) -> list[int]:
+    if getattr(cfg, "scenario", None) != "signal_hunt" or not cfg.comm:
+        return []
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    targets: set[tuple[int, int]] = set()
+    own_target = _signal_initial_exact_target_from_observation(cfg, obs_agent)
+    if own_target is not None:
+        targets.add(tuple(own_target))
+    exact_targets = _signal_exact_targets_from_observation(obs_agent, observed_map_size)
+    trusted_targets = _signal_trusted_exact_message_targets(
+        cfg,
+        obs_agent,
+        scan_state,
+        agent_id=agent_id,
+    )
+    targets.update(exact_targets & trusted_targets)
+    if agent_id is not None:
+        targets.update(_signal_exact_target_memory_targets(cfg, scan_state, int(agent_id)))
+    if len(targets) != 1:
+        return []
+    return _signal_exact_target_message_for_pos(cfg, next(iter(targets)))
+
+
+def _apply_signal_exact_target_message_copy_assist(
+    cfg: RecurrentConfig,
+    obs: dict | None,
+    actions: dict[int, dict],
+    scan_state: Mapping[str, Any] | None,
+) -> dict[int, dict]:
+    if (
+        not bool(getattr(cfg, "eval_signal_exact_target_message_copy_assist", False))
+        or getattr(cfg, "scenario", None) != "signal_hunt"
+        or not cfg.comm
+        or not isinstance(obs, dict)
+    ):
+        return actions
+    _update_signal_exact_target_memory(cfg, obs, scan_state)
+    corrected = {int(aid): dict(action) for aid, action in actions.items()}
+    for raw_aid, obs_agent in obs.items():
+        if not isinstance(obs_agent, dict):
+            continue
+        try:
+            aid = int(raw_aid)
+        except (TypeError, ValueError):
+            continue
+        message = _signal_trusted_exact_target_message_from_observation(
+            cfg,
+            obs_agent,
+            scan_state,
+            agent_id=aid,
+        )
+        if not message:
+            continue
+        action = corrected.setdefault(aid, {"action": int(SyncOrSinkEnv.ACTION_STAY)})
+        action["message_tokens"] = list(message)
     return corrected
 
 
@@ -20685,6 +20750,52 @@ def _signal_scan_activity_at_position(
     return self_active, teammate_active
 
 
+def _signal_scan_remaining_fraction_at_position(
+    cfg: RecurrentConfig,
+    scan_state: Mapping[str, Any] | None,
+    *,
+    agent_id: int,
+    pos: tuple[int, int],
+) -> float:
+    if scan_state is None:
+        return 0.0
+    scan_log = scan_state.get("scan_log") or {}
+    scan_positions = scan_state.get("scan_pos") or {}
+    if not isinstance(scan_log, Mapping) or not isinstance(scan_positions, Mapping):
+        return 0.0
+    last_scan = _scan_log_value(dict(scan_log), int(agent_id))
+    if last_scan is None:
+        return 0.0
+    scan_pos = _signal_xy(scan_positions.get(int(agent_id), scan_positions.get(str(int(agent_id)))))
+    if scan_pos != tuple(pos):
+        return 0.0
+    current_step = int(scan_state.get("step", 0))
+    scan_window = int(scan_state.get("scan_window", getattr(cfg, "scan_window", 3)))
+    age = int(current_step) - int(last_scan)
+    if age < 0 or age > scan_window:
+        return 0.0
+    return float(scan_window - age + 1) / max(1.0, float(scan_window + 1))
+
+
+def _signal_active_scan_refresh_due(
+    cfg: RecurrentConfig,
+    scan_state: Mapping[str, Any] | None,
+    *,
+    agent_id: int,
+    pos: tuple[int, int],
+) -> bool:
+    if not bool(getattr(cfg, "eval_signal_scan_refresh_assist", False)):
+        return False
+    threshold = min(1.0, max(0.0, float(getattr(cfg, "eval_signal_scan_refresh_threshold", 0.5))))
+    remaining = _signal_scan_remaining_fraction_at_position(
+        cfg,
+        scan_state,
+        agent_id=int(agent_id),
+        pos=tuple(pos),
+    )
+    return 0.0 < float(remaining) <= threshold
+
+
 def _signal_active_scan_positions(
     cfg: RecurrentConfig,
     scan_state: Mapping[str, Any] | None,
@@ -20781,6 +20892,14 @@ def _apply_signal_exact_target_navigation_assist(
                 and not teammate_active
                 and _action_allowed_from_obs(obs_agent, SyncOrSinkEnv.ACTION_STAY)
             ):
+                if _signal_active_scan_refresh_due(
+                    cfg,
+                    scan_state,
+                    agent_id=int(aid),
+                    pos=target,
+                ):
+                    corrected[aid] = int(SyncOrSinkEnv.ACTION_INTERACT)
+                    continue
                 corrected[aid] = int(SyncOrSinkEnv.ACTION_STAY)
                 continue
         corrected[aid] = int(action_id)
@@ -22162,6 +22281,7 @@ def _decode_recurrent_actions(
         actions,
         current_step=current_step,
     )
+    actions = _apply_signal_exact_target_message_copy_assist(cfg, obs, actions, scan_state)
     actions = _apply_signal_scan_broadcast_assist(cfg, actions, scan_state)
     actions = _apply_signal_exact_target_message_guard(cfg, obs, actions, scan_state)
     actions = _apply_pipeline_plan_broadcast_assist(
@@ -22430,6 +22550,12 @@ def _apply_recurrent_rollout_eval_decoding(
             obs,
             corrected_actions,
             current_step=current_step,
+        )
+        corrected_actions = _apply_signal_exact_target_message_copy_assist(
+            cfg,
+            obs,
+            corrected_actions,
+            scan_state,
         )
         corrected_actions = _apply_signal_scan_broadcast_assist(cfg, corrected_actions, scan_state)
         corrected_actions = _apply_signal_exact_target_message_guard(cfg, obs, corrected_actions, scan_state)
@@ -23129,6 +23255,9 @@ class RecurrentCheckpointPolicy:
             "eval_signal_initial_exact_message_copy_assist": (
                 self.cfg.eval_signal_initial_exact_message_copy_assist
             ),
+            "eval_signal_exact_target_message_copy_assist": (
+                self.cfg.eval_signal_exact_target_message_copy_assist
+            ),
             "eval_signal_exact_target_navigation_assist": self.cfg.eval_signal_exact_target_navigation_assist,
             "eval_signal_exact_target_memory_steps": self.cfg.eval_signal_exact_target_memory_steps,
             "eval_signal_scan_refresh_assist": self.cfg.eval_signal_scan_refresh_assist,
@@ -23245,6 +23374,7 @@ def load_recurrent_checkpoint_policy(
     eval_signal_constraint_message_guard: bool | None = None,
     eval_signal_exact_target_message_guard: bool | None = None,
     eval_signal_initial_exact_message_copy_assist: bool | None = None,
+    eval_signal_exact_target_message_copy_assist: bool | None = None,
     eval_signal_exact_target_navigation_assist: bool | None = None,
     eval_signal_exact_target_memory_steps: int | None = None,
     eval_signal_scan_refresh_assist: bool | None = None,
@@ -23312,6 +23442,10 @@ def load_recurrent_checkpoint_policy(
     if eval_signal_initial_exact_message_copy_assist is not None:
         cfg.eval_signal_initial_exact_message_copy_assist = bool(
             eval_signal_initial_exact_message_copy_assist
+        )
+    if eval_signal_exact_target_message_copy_assist is not None:
+        cfg.eval_signal_exact_target_message_copy_assist = bool(
+            eval_signal_exact_target_message_copy_assist
         )
     if eval_signal_exact_target_navigation_assist is not None:
         cfg.eval_signal_exact_target_navigation_assist = bool(eval_signal_exact_target_navigation_assist)
@@ -27640,6 +27774,12 @@ def main():
         ),
     )
     p.add_argument(
+        "--eval-signal-exact-target-message-copy-assist",
+        action=argparse.BooleanOptionalAction,
+        default=RecurrentConfig.eval_signal_exact_target_message_copy_assist,
+        help="Broadcast a canonical Signal exact-target message from any single trusted exact target during evaluation",
+    )
+    p.add_argument(
         "--eval-signal-exact-target-navigation-assist",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -28221,6 +28361,9 @@ def main():
         eval_signal_exact_target_message_guard=args.eval_signal_exact_target_message_guard,
         eval_signal_initial_exact_message_copy_assist=(
             args.eval_signal_initial_exact_message_copy_assist
+        ),
+        eval_signal_exact_target_message_copy_assist=(
+            args.eval_signal_exact_target_message_copy_assist
         ),
         eval_signal_exact_target_navigation_assist=args.eval_signal_exact_target_navigation_assist,
         eval_signal_exact_target_memory_steps=args.eval_signal_exact_target_memory_steps,

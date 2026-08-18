@@ -672,6 +672,16 @@ mixed 16/32 success from 70.0% to 77.5%. It held 16x16 at 85%, raised 32x32
 from 55% to 70%, and removed rejected-observation target misses on the 32x32
 split, confirming that unsupported learned constraint messages were blocking
 valid true targets.
+`--recurrent-eval-signal-exact-target-message-copy-assist` now also defaults on
+for the large-map preset. It canonicalizes/broadcasts `[26, x, y]` from any
+single trusted exact target so the first target finder can call teammates before
+the scan-broadcast path has an active scan to report. The matched ablation
+`recurrent_signal_multisize_16_32_large_map_targethypothesis_xyonly005_guard_exactmsg_eval_seed0`
+(W&B `https://wandb.ai/orion8/syncorsink-core-training/runs/a3lqu8q6`) improved
+mixed eval to 80.0%, kept 16x16 at 85%, and raised 32x32 to 75%. The combined
+exact-message plus scan-refresh run (`gfcsjawy`) fell back to 77.5%, so scan
+refresh remains opt-in even though exact-target navigation now allows expiring
+solo-scan refreshes when that diagnostic flag is enabled.
 Signal inferred-target features and eval decoding now compile each observation's
 structured clue/message constraints once and reuse that compiled state for
 target filtering. The 32x32 100-episode audit completed in 39.90s after this
@@ -770,13 +780,13 @@ available for reproduction but default-off after the first audit.
 ## 18. Next Steps
 
 1. **Signal 32x32 candidate target conversion** — the constraint-message guard
-   promoted into the large-map preset fixed rejected true-target observations
-   and lifted the xy-only target-hypothesis checkpoint to a 77.5% mixed score
-   with an 85%/70% 16x16/32x32 split. The remaining large-map failures are now
-   candidate true-target visits without timely scan start/refresh/joint
-   completion, so the next implementation target is stronger large-map target
-   conversion and teammate scan completion, not broader replay or more decoy
-   suppression.
+   and trusted exact-message copy promoted into the large-map preset fixed
+   rejected true-target observations and lifted the xy-only target-hypothesis
+   checkpoint to an 80.0% mixed score with an 85%/75% 16x16/32x32 split. The
+   remaining large-map failures are now mostly episodes that never collect or
+   route enough exact target evidence early enough, so the next implementation
+   target is stronger large-map evidence acquisition and teammate rendezvous,
+   not broader replay, refresh spam, or more decoy suppression.
 2. **Signal clue collection/execution audit** — compare clue-found, target-reach,
    refresh-scan, first-scan-miss, and joint-scan breakdowns for the guarded
    large-map run versus sector/confidence diagnostics to preserve the 16x16 gain

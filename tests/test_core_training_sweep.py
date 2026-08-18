@@ -918,6 +918,7 @@ def test_core_training_sweep_recurrent_large_map_signal_preset_targets_32x_failu
     energy = commands["energy_grid"]
     assert payload["config"]["recurrent_signal_preset"] == "large_map"
     assert payload["config"]["recurrent_eval_signal_constraint_message_guard"] is True
+    assert payload["config"]["recurrent_eval_signal_exact_target_message_copy_assist"] is True
     assert payload["config"]["recurrent_obs_signal_confidence_features"] is False
     assert payload["config"]["recurrent_obs_signal_sector_features"] is False
     assert arg_value(signal, "--bc-signal-decoy-drift-action-loss-weight") == "0.1"
@@ -946,6 +947,7 @@ def test_core_training_sweep_recurrent_large_map_signal_preset_targets_32x_failu
     assert "--obs-signal-sector-features" not in signal
     assert "--eval-signal-constraint-message-copy-assist" in signal
     assert "--eval-signal-constraint-message-guard" in signal
+    assert "--eval-signal-exact-target-message-copy-assist" in signal
 
     signal_focus_events = arg_value(signal, "--dagger-focus-events")
     signal_replay_weights = arg_value(signal, "--dagger-replay-event-weights")
@@ -1502,6 +1504,7 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
         "--recurrent-eval-signal-target-probe-assist",
         "--recurrent-eval-signal-constraint-message-copy-assist",
         "--recurrent-eval-signal-constraint-message-guard",
+        "--recurrent-eval-signal-exact-target-message-copy-assist",
         "--recurrent-eval-signal-frontier-exploration-assist",
         "--recurrent-eval-signal-scan-refresh-assist",
         "--recurrent-eval-signal-scan-refresh-threshold",
@@ -1823,6 +1826,7 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert payload["config"]["recurrent_eval_signal_scan_refresh_threshold"] == 0.35
     assert payload["config"]["recurrent_eval_signal_constraint_message_copy_assist"] is True
     assert payload["config"]["recurrent_eval_signal_constraint_message_guard"] is True
+    assert payload["config"]["recurrent_eval_signal_exact_target_message_copy_assist"] is True
     assert payload["config"]["recurrent_bc_calibrate_send_threshold"] is True
     assert payload["config"]["recurrent_bc_send_threshold_target_rate"] == 0.15
     assert payload["config"]["recurrent_bc_comm_send_pos_weight"] == -1
@@ -2075,6 +2079,7 @@ def test_core_training_sweep_recurrent_dry_run_command_and_eval_parser(tmp_path)
     assert "--eval-signal-target-probe-assist" in command
     assert "--eval-signal-constraint-message-copy-assist" in command
     assert "--eval-signal-constraint-message-guard" in command
+    assert "--eval-signal-exact-target-message-copy-assist" in command
     assert "--eval-signal-scan-refresh-assist" in command
     assert command[command.index("--eval-signal-scan-refresh-threshold") + 1] == "0.35"
     assert "--dagger-target-handoff-requires-exact-target" in command

@@ -338,6 +338,7 @@ class RecurrentCurriculumConfig:
     eval_signal_constraint_message_guard: bool = False
     eval_signal_exact_target_message_guard: bool = False
     eval_signal_initial_exact_message_copy_assist: bool = True
+    eval_signal_exact_target_message_copy_assist: bool = False
     eval_signal_exact_target_navigation_assist: bool = False
     eval_signal_exact_target_memory_steps: int = 0
     eval_signal_scan_refresh_assist: bool = False
@@ -1039,6 +1040,9 @@ def _stage_recurrent_config(
         eval_signal_exact_target_message_guard=cfg.eval_signal_exact_target_message_guard,
         eval_signal_initial_exact_message_copy_assist=(
             cfg.eval_signal_initial_exact_message_copy_assist
+        ),
+        eval_signal_exact_target_message_copy_assist=(
+            cfg.eval_signal_exact_target_message_copy_assist
         ),
         eval_signal_exact_target_navigation_assist=cfg.eval_signal_exact_target_navigation_assist,
         eval_signal_exact_target_memory_steps=cfg.eval_signal_exact_target_memory_steps,
@@ -1776,6 +1780,11 @@ def main() -> None:
         default=True,
     )
     parser.add_argument(
+        "--eval-signal-exact-target-message-copy-assist",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
         "--eval-signal-exact-target-navigation-assist",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -2227,6 +2236,9 @@ def main() -> None:
         eval_signal_exact_target_message_guard=args.eval_signal_exact_target_message_guard,
         eval_signal_initial_exact_message_copy_assist=(
             args.eval_signal_initial_exact_message_copy_assist
+        ),
+        eval_signal_exact_target_message_copy_assist=(
+            args.eval_signal_exact_target_message_copy_assist
         ),
         eval_signal_exact_target_navigation_assist=args.eval_signal_exact_target_navigation_assist,
         eval_signal_exact_target_memory_steps=args.eval_signal_exact_target_memory_steps,

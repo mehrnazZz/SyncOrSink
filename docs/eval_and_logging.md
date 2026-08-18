@@ -751,6 +751,15 @@ constraint to support them. It now defaults on for `--recurrent-signal-preset
 large_map`: the matched xy-only target-hypothesis eval improved mixed 16/32
 success from 70.0% to 77.5%, held 16x16 at 85%, raised 32x32 from 55% to 70%,
 and removed the 32x32 true-target rejected-observation bucket.
+Large-map Signal also defaults
+`--recurrent-eval-signal-exact-target-message-copy-assist` on, forwarding
+`--eval-signal-exact-target-message-copy-assist`. This broadcasts `[26, x, y]`
+from any single trusted exact target, not only at step 0 or after an active scan.
+On the same xy-only checkpoint it improved mixed 16/32 eval to 80.0%, holding
+16x16 at 85% and lifting 32x32 to 75% (`a3lqu8q6`). Combining it with
+`--recurrent-eval-signal-scan-refresh-assist` remained flat at 77.5%
+(`gfcsjawy`), so scan refresh stays opt-in despite the decode integration fix
+that lets exact-target navigation honor expiring solo-scan refreshes.
 A fresh comparable rolefix-profile training run with this default enabled
 (`recurrent_signal16_constraintcopy_rolefix_profile_seed0`) reached 79/100 on
 the same 100-episode seed-3000 audit, with failure mix

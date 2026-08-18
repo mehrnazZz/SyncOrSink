@@ -268,6 +268,7 @@ def make_recurrent_checkpoint_policy_factory(
     eval_signal_constraint_message_guard: bool | None = None,
     eval_signal_exact_target_message_guard: bool | None = None,
     eval_signal_initial_exact_message_copy_assist: bool | None = None,
+    eval_signal_exact_target_message_copy_assist: bool | None = None,
     eval_signal_exact_target_navigation_assist: bool | None = None,
     eval_signal_exact_target_memory_steps: int | None = None,
     eval_signal_scan_refresh_assist: bool | None = None,
@@ -317,6 +318,9 @@ def make_recurrent_checkpoint_policy_factory(
             eval_signal_exact_target_message_guard=eval_signal_exact_target_message_guard,
             eval_signal_initial_exact_message_copy_assist=(
                 eval_signal_initial_exact_message_copy_assist
+            ),
+            eval_signal_exact_target_message_copy_assist=(
+                eval_signal_exact_target_message_copy_assist
             ),
             eval_signal_exact_target_navigation_assist=eval_signal_exact_target_navigation_assist,
             eval_signal_exact_target_memory_steps=eval_signal_exact_target_memory_steps,
