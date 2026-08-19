@@ -451,6 +451,12 @@ python examples/core_training_sweep.py \
   --wandb-mode offline
 ```
 
+Large-map Pipeline recurrent distillation recipe:
+
+```bash
+bash scripts/run_recurrent_pipeline_32_distill.sh
+```
+
 Communication necessity sweep:
 
 ```bash

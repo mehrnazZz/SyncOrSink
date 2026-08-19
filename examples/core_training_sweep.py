@@ -358,6 +358,25 @@ RECURRENT_PPO_PROFILES = {
     },
 }
 
+RECURRENT_PPO_PROFILES["pipeline32_distill"] = {
+    **RECURRENT_PPO_PROFILES["guarded"],
+    "recurrent_bc_pipeline_navigation_action_loss_weight": 0.75,
+    "recurrent_bc_pipeline_frontier_exploration_action_loss_weight": 0.5,
+    "recurrent_bc_pipeline_frontier_exploration_min_map_size": 16,
+    "recurrent_bc_pipeline_sync_action_loss_weight": 1.0,
+    "recurrent_bc_pipeline_ready_interact_action_loss_weight": 1.0,
+    "recurrent_bc_pipeline_wrong_station_recovery_action_loss_weight": 1.0,
+    "recurrent_dagger_max_replay_snippets_per_episode": 12,
+    "recurrent_dagger_max_failed_parent_replay_snippets_per_episode": 8,
+    "recurrent_rl_pipeline_delivery_progress_action_loss_weight": 0.1,
+    "recurrent_rl_pipeline_navigation_action_loss_weight": 0.1,
+    "recurrent_rl_pipeline_sync_action_loss_weight": 0.1,
+    "recurrent_rl_pipeline_ready_interact_action_loss_weight": 0.1,
+    "recurrent_rl_pipeline_station_guard_action_loss_weight": 0.1,
+    "recurrent_rl_pipeline_wrong_station_recovery_action_loss_weight": 0.1,
+    "recurrent_rl_early_stop_eval_patience": 8,
+}
+
 
 def _expand_contiguous_seed_range(spec: str) -> str:
     match = re.fullmatch(r"(\d+):(\d+)", spec.strip())

@@ -130,6 +130,120 @@ def test_core_training_sweep_can_run_official_benchmark_cases(tmp_path):
     assert "--eval-signal-constraint-message-guard" not in command
 
 
+def test_core_training_sweep_pipeline32_distill_recipe_targets_verified_window(tmp_path):
+    from examples.core_training_sweep import parse_args, run_suite
+
+    args = parse_args([
+        "--algorithms",
+        "recurrent_bc_rl",
+        "--benchmark-spec",
+        "examples/pipeline_32_distill_spec.json",
+        "--benchmark-cases",
+        "pipeline_32x32_easy_3agent_distill",
+        "--learning-profile",
+        "bare",
+        "--seeds",
+        "0",
+        "--updates",
+        "1",
+        "--rollout-steps",
+        "8",
+        "--eval-every",
+        "1",
+        "--recurrent-ppo-profile",
+        "pipeline32_distill",
+        "--recurrent-demo-episodes",
+        "2",
+        "--recurrent-bc-epochs",
+        "1",
+        "--recurrent-bc-seq-len",
+        "16",
+        "--recurrent-dagger-rounds",
+        "1",
+        "--recurrent-dagger-episodes",
+        "2",
+        "--recurrent-train-map-sizes",
+        "32",
+        "--recurrent-train-map-sampling-weights",
+        "32:1",
+        "--recurrent-map-max-steps",
+        "32:480",
+        "--recurrent-eval-map-sizes",
+        "32",
+        "--recurrent-eval-seed-range",
+        "3000:4",
+        "--recurrent-obs-exploration-memory",
+        "--recurrent-obs-memory-mode",
+        "egocentric",
+        "--recurrent-obs-agent-id-features",
+        "--wandb",
+        "--wandb-mode",
+        "online",
+        "--output-dir",
+        str(tmp_path / "runs"),
+        "--run-name",
+        "pipeline32-distill",
+        "--dry-run",
+    ])
+
+    payload = run_suite(args)
+    run = payload["runs"][0]
+    command = run["command"]
+
+    assert payload["overall"] == {"complete": 0, "dry_run": 1, "failed": 0, "total": 1}
+    assert payload["config"]["benchmark_spec"] == "examples/pipeline_32_distill_spec.json"
+    assert payload["config"]["benchmark_cases"] == ["pipeline_32x32_easy_3agent_distill"]
+    assert payload["config"]["recurrent_ppo_profile"] == "pipeline32_distill"
+    assert payload["config"]["recurrent_bc_pipeline_navigation_action_loss_weight"] == 0.75
+    assert payload["config"]["recurrent_bc_pipeline_frontier_exploration_action_loss_weight"] == 0.5
+    assert payload["config"]["recurrent_bc_pipeline_frontier_exploration_min_map_size"] == 16
+    assert payload["config"]["recurrent_bc_pipeline_sync_action_loss_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_ready_interact_action_loss_weight"] == 1.0
+    assert payload["config"]["recurrent_bc_pipeline_wrong_station_recovery_action_loss_weight"] == 1.0
+    assert payload["config"]["recurrent_dagger_max_replay_snippets_per_episode"] == 12
+    assert payload["config"]["recurrent_dagger_max_failed_parent_replay_snippets_per_episode"] == 8
+    assert payload["config"]["recurrent_rl_pipeline_navigation_action_loss_weight"] == 0.1
+    assert payload["config"]["recurrent_rl_pipeline_sync_action_loss_weight"] == 0.1
+    assert payload["config"]["recurrent_rl_pipeline_ready_interact_action_loss_weight"] == 0.1
+    assert payload["config"]["recurrent_rl_pipeline_station_guard_action_loss_weight"] == 0.1
+    assert payload["config"]["recurrent_rl_early_stop_eval_patience"] == 8
+    assert payload["config"]["recurrent_eval_episodes"] == 1
+    assert payload["config"]["recurrent_rl_eval_episodes"] == 1
+    assert payload["config"]["recurrent_rl_eval_use_eval_seeds"] is True
+    assert payload["config"]["wandb"] is True
+    assert payload["config"]["wandb_mode"] == "online"
+    assert payload["cases"][0]["benchmark_case"] == "pipeline_32x32_easy_3agent_distill"
+    assert payload["cases"][0]["map_size"] == 32
+    assert payload["cases"][0]["agents"] == 3
+    assert payload["cases"][0]["fov_preset"] == "easy"
+    assert payload["cases"][0]["max_steps"] == 480
+    assert command[command.index("--scenario") + 1] == "pipeline_assembly"
+    assert command[command.index("--map-size") + 1] == "32"
+    assert command[command.index("--agents") + 1] == "3"
+    assert command[command.index("--fov-preset") + 1] == "easy"
+    assert command[command.index("--max-steps") + 1] == "480"
+    assert command[command.index("--oracle") + 1] == "planner_comm"
+    assert command[command.index("--eval-episodes") + 1] == "1"
+    assert command[command.index("--rl-eval-episodes") + 1] == "1"
+    assert command[command.index("--eval-seed-list") + 1] == "3000,3001,3002,3003"
+    assert command[command.index("--train-map-sizes") + 1] == "32"
+    assert command[command.index("--train-map-sampling-weights") + 1] == "32:1"
+    assert command[command.index("--map-max-steps") + 1] == "32:480"
+    assert command[command.index("--eval-map-sizes") + 1] == "32"
+    assert command[command.index("--pipeline-required-per-stage-min") + 1] == "1"
+    assert command[command.index("--pipeline-required-per-stage-max") + 1] == "2"
+    assert command[command.index("--pipeline-sync-probability") + 1] == "0.5"
+    assert command[command.index("--pipeline-dependency-probability") + 1] == "0.7"
+    assert command[command.index("--pipeline-wrong-delivery-penalty") + 1] == "0.25"
+    assert "--obs-exploration-memory" in command
+    assert command[command.index("--obs-memory-mode") + 1] == "egocentric"
+    assert "--obs-agent-id-features" in command
+    assert "--eval-pipeline-navigation-assist" not in command
+    assert "--pipeline-assisted-rollout-episodes" not in command
+    assert "--wandb" in command
+    assert run["wandb"]["status"] == "dry_run"
+
+
 def test_core_training_sweep_seed_alias_merges_with_seeds():
     from examples.core_training_sweep import parse_args
 

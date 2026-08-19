@@ -1,0 +1,44 @@
+{
+  "name": "pipeline_32_distill_recipe",
+  "version": "0.1.0",
+  "description": "Training recipe manifest for distilling the verified 32x32 Pipeline planner_comm expert. This is a learning target, not an official leaderboard suite.",
+  "metadata": {
+    "expert": "pipeline_planner_comm",
+    "expert_audit": "pipeline_32_planner_comm_easy_audit_24",
+    "expert_success_rate": 1.0,
+    "checkpoint_policy": "Do not commit model checkpoints; store trained checkpoints in W&B artifacts, Hugging Face, GitHub Releases, or another external artifact store."
+  },
+  "cases": [
+    {
+      "name": "pipeline_32x32_easy_3agent_distill",
+      "weight": 1.0,
+      "tags": [
+        "training_recipe",
+        "communication_required",
+        "private_information",
+        "long_horizon",
+        "large_map",
+        "planner_distillation"
+      ],
+      "spec": {
+        "scenario": "pipeline_assembly",
+        "mode": "marl",
+        "track": "dtde",
+        "split": "train",
+        "episodes": 24,
+        "map_size": 32,
+        "agents": 3,
+        "fov_preset": "easy",
+        "max_steps": 480,
+        "comm_mode": "tokens",
+        "pipeline_shaping": true,
+        "pipeline_shaping_scale": 0.1,
+        "pipeline_required_per_stage_min": 1,
+        "pipeline_required_per_stage_max": 2,
+        "pipeline_sync_probability": 0.5,
+        "pipeline_dependency_probability": 0.7,
+        "pipeline_wrong_delivery_penalty": 0.25
+      }
+    }
+  ]
+}

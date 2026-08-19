@@ -687,6 +687,13 @@ BC/DAgger/PPO trainer. Recurrent runs use `--recurrent-*` flags for oracle,
 demo count, BC epochs, DAgger rounds/focus settings, Pipeline wrong-delivery
 provenance labels, checkpoint init, train/eval map schedules, Signal Hunt
 specialist observation/eval assists, and PPO stability controls.
+For the current large-map Pipeline implementation target, use
+`scripts/run_recurrent_pipeline_32_distill.sh`. It runs the recurrent trainer
+against `examples/pipeline_32_distill_spec.json`, a training recipe for the
+verified 32x32/easy/3-agent `pipeline_planner_comm` window. The script defaults
+to online W&B logging under `syncorsink-core-training`; set
+`WANDB_MODE=offline` for local W&B files or `WANDB_MODE=disabled` for a pure
+local checkpoint run.
 For Signal Hunt specialist runs, the sweep defaults
 `--recurrent-bc-signal-target-aux-weight` to `0.25`, adding auxiliary
 supervision for fusing private clues into the exact target location. It also
