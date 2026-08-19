@@ -7502,6 +7502,73 @@ def test_recurrent_pipeline_navigation_assist_corrects_delivery_and_wrong_statio
     assert int(corrected[0].item()) == SyncOrSinkEnv.ACTION_LEFT
 
 
+def test_recurrent_pipeline_station_guard_suppresses_duplicate_same_step_delivery():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY, TILE_STATION
+    from syncorsink.train.recurrent_bc_rl import (
+        RecurrentConfig,
+        _apply_pipeline_station_interact_guard,
+    )
+
+    cfg = RecurrentConfig(
+        scenario="pipeline_assembly",
+        map_size=32,
+        agents=2,
+        eval_pipeline_station_interact_guard=True,
+    )
+    station = (17, 4)
+    station_grid = np.full((3, 3), TILE_EMPTY, dtype=np.int16)
+    station_grid[1, 1] = TILE_STATION
+    obs = {
+        aid: {
+            "self_pos": np.array(station, dtype=np.int16),
+            "inventory": np.array([1], dtype=np.int16),
+            "local_grid": station_grid,
+            "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+            "goal_hint": np.full((16,), -1, dtype=np.int16),
+            "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+            "action_mask": np.ones((8,), dtype=np.float32),
+        }
+        for aid in range(2)
+    }
+    pipeline_state = {
+        "completed_stages": {0},
+        "delivered_counts": {1: 1},
+        "delivered_resources": {1: [3]},
+        "sync_wait_stages": set(),
+        "sync_wait_stations": {},
+        "carry_targets": {
+            0: {
+                "stage": 1,
+                "station": station,
+                "resource_type": 1,
+                "required": [3, 1],
+            },
+            1: {
+                "stage": 1,
+                "station": station,
+                "resource_type": 1,
+                "required": [3, 1],
+            },
+        },
+    }
+
+    corrected = _apply_pipeline_station_interact_guard(
+        cfg,
+        obs,
+        torch.tensor(
+            [SyncOrSinkEnv.ACTION_INTERACT, SyncOrSinkEnv.ACTION_INTERACT],
+            dtype=torch.long,
+        ),
+        pipeline_state=pipeline_state,
+    )
+
+    assert corrected.tolist() == [
+        SyncOrSinkEnv.ACTION_INTERACT,
+        SyncOrSinkEnv.ACTION_STAY,
+    ]
+
+
 def test_recurrent_pipeline_navigation_assist_coordinates_sync_rendezvous():
     from syncorsink.envs import SyncOrSinkEnv
     from syncorsink.envs.maps import TILE_EMPTY, TILE_STATION
@@ -8955,7 +9022,7 @@ def test_recurrent_pipeline_navigation_assist_opens_doors_en_route():
     assert search_action == SyncOrSinkEnv.ACTION_INTERACT
 
 
-def test_recurrent_pipeline_duplicate_carriers_use_compact_navigation_memory(monkeypatch):
+def test_recurrent_pipeline_large_map_carriers_use_compact_navigation_memory(monkeypatch):
     from syncorsink.envs import SyncOrSinkEnv
     from syncorsink.envs.maps import TILE_EMPTY
     import syncorsink.train.recurrent_bc_rl as recurrent
@@ -9016,6 +9083,7 @@ def test_recurrent_pipeline_duplicate_carriers_use_compact_navigation_memory(mon
     assert calls[-1]["prefer_known_route"] is False
     assert calls[-1]["compact_avoid_positions"] is True
     assert calls[-1]["avoid_previous_backtrack_position"] is True
+    assert calls[-1]["retry_frontier_actions"] is False
 
     single_state = {
         **duplicate_state,
@@ -9031,8 +9099,9 @@ def test_recurrent_pipeline_duplicate_carriers_use_compact_navigation_memory(mon
 
     assert single_action == SyncOrSinkEnv.ACTION_UP
     assert calls[-1]["prefer_known_route"] is False
-    assert calls[-1]["compact_avoid_positions"] is False
-    assert calls[-1]["avoid_previous_backtrack_position"] is False
+    assert calls[-1]["compact_avoid_positions"] is True
+    assert calls[-1]["avoid_previous_backtrack_position"] is True
+    assert calls[-1]["retry_frontier_actions"] is True
 
 
 def test_recurrent_pipeline_partial_non_sync_delivery_prefers_known_route(monkeypatch):
@@ -9088,7 +9157,9 @@ def test_recurrent_pipeline_partial_non_sync_delivery_prefers_known_route(monkey
 
     assert action == SyncOrSinkEnv.ACTION_UP
     assert calls[-1]["prefer_known_route"] is True
-    assert calls[-1]["compact_avoid_positions"] is False
+    assert calls[-1]["compact_avoid_positions"] is True
+    assert calls[-1]["avoid_previous_backtrack_position"] is True
+    assert calls[-1]["retry_frontier_actions"] is True
 
 
 def test_recurrent_pipeline_carry_target_uses_hint_sync_for_route_trust(monkeypatch):
@@ -9368,6 +9439,59 @@ def test_recurrent_pipeline_navigation_routes_to_door_frontier_when_target_path_
     )
 
     assert door_action == SyncOrSinkEnv.ACTION_INTERACT
+
+
+def test_recurrent_pipeline_navigation_retries_frontier_after_corridor_cycle():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.envs.maps import TILE_EMPTY, TILE_WALL
+    from syncorsink.train.recurrent_bc_rl import _pipeline_navigation_action_from_obs
+
+    action_mask = np.zeros((8,), dtype=np.float32)
+    action_mask[SyncOrSinkEnv.ACTION_UP] = 1.0
+    action_mask[SyncOrSinkEnv.ACTION_DOWN] = 1.0
+    obs_agent = {
+        "self_pos": np.array([4, 14], dtype=np.int16),
+        "inventory": np.array([4], dtype=np.int16),
+        "local_grid": np.array(
+            [
+                [TILE_WALL, TILE_EMPTY, TILE_WALL],
+                [TILE_WALL, TILE_EMPTY, TILE_WALL],
+                [TILE_WALL, TILE_EMPTY, TILE_WALL],
+            ],
+            dtype=np.int16,
+        ),
+        "local_resource_types": np.zeros((3, 3), dtype=np.int16),
+        "goal_hint": np.full((16,), -1, dtype=np.int16),
+        "messages_tokens": np.full((1, 8), -1, dtype=np.int16),
+        "action_mask": action_mask,
+    }
+    pipeline_state = {
+        "terrain_memory": {
+            "passable": {(4, 13), (4, 14), (4, 15), (4, 16)},
+            "blocked": set(),
+            "doors": set(),
+            "map_size": 32,
+        }
+    }
+
+    strict = _pipeline_navigation_action_from_obs(
+        obs_agent,
+        (17, 28),
+        pipeline_state,
+        blocked_actions={SyncOrSinkEnv.ACTION_UP, SyncOrSinkEnv.ACTION_DOWN},
+        avoid_positions={(4, 15), (4, 16)},
+    )
+    retry = _pipeline_navigation_action_from_obs(
+        obs_agent,
+        (17, 28),
+        pipeline_state,
+        blocked_actions={SyncOrSinkEnv.ACTION_UP, SyncOrSinkEnv.ACTION_DOWN},
+        avoid_positions={(4, 15), (4, 16)},
+        retry_frontier_actions=True,
+    )
+
+    assert strict is None
+    assert retry == SyncOrSinkEnv.ACTION_UP
 
 
 def test_recurrent_pipeline_navigation_uses_terrain_memory_to_route_to_station():

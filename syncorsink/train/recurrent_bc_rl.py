@@ -2020,6 +2020,7 @@ def _pipeline_memory_adjusted_navigation_action(
     prefer_known_route: bool = False,
     compact_avoid_positions: bool = False,
     avoid_previous_backtrack_position: bool = False,
+    retry_frontier_actions: bool = False,
 ) -> int:
     if agent_id is None or not isinstance(pipeline_state, MutableMapping):
         return int(action_id)
@@ -2112,6 +2113,7 @@ def _pipeline_memory_adjusted_navigation_action(
             pipeline_state,
             blocked_actions=blocked_actions,
             avoid_positions=avoid_positions,
+            retry_frontier_actions=retry_frontier_actions,
         )
         if alternative is not None and _action_allowed_from_obs(obs_agent, int(alternative)):
             adjusted = int(alternative)
@@ -2271,6 +2273,7 @@ def _pipeline_memory_navigation_action_from_obs(
     *,
     blocked_actions: set[int] | None = None,
     avoid_positions: set[tuple[int, int]] | None = None,
+    retry_frontier_actions: bool = False,
 ) -> int | None:
     if not isinstance(pipeline_state, Mapping):
         return None
@@ -2408,10 +2411,17 @@ def _pipeline_memory_navigation_action_from_obs(
         )
     )
     for candidate in candidates:
+        frontier_rank = _frontier_rank(candidate)
         action_id = _bfs_first_action(
             candidate,
             passable,
-            ignore_blocked_actions=bool(allow_frontier_detour and _frontier_rank(candidate) == 0),
+            ignore_blocked_actions=bool(
+                allow_frontier_detour
+                and (
+                    frontier_rank == 0
+                    or (bool(retry_frontier_actions) and frontier_rank == 1)
+                )
+            ),
         )
         if action_id is not None:
             return int(action_id)
@@ -2425,6 +2435,7 @@ def _pipeline_navigation_action_from_obs(
     *,
     blocked_actions: set[int] | None = None,
     avoid_positions: set[tuple[int, int]] | None = None,
+    retry_frontier_actions: bool = False,
 ) -> int | None:
     action_id = _pipeline_memory_navigation_action_from_obs(
         obs_agent,
@@ -2432,6 +2443,7 @@ def _pipeline_navigation_action_from_obs(
         pipeline_state,
         blocked_actions=blocked_actions,
         avoid_positions=avoid_positions,
+        retry_frontier_actions=retry_frontier_actions,
     )
     if action_id is not None and _action_allowed_from_obs(obs_agent, int(action_id)):
         return int(action_id)
@@ -2974,6 +2986,11 @@ def _pipeline_local_assist_action(
                         and not duplicate_carrier_delivery
                         and _pipeline_stage_delivered_count(pipeline_state, stage_id) > 0
                     )
+                    large_map_delivery_recovery = bool(
+                        observed_map_size >= 32
+                        and held_type > 0
+                        and not duplicate_carrier_delivery
+                    )
                     action_id = _pipeline_memory_adjusted_navigation_action(
                         obs_agent,
                         station,
@@ -2986,8 +3003,13 @@ def _pipeline_local_assist_action(
                             else None
                         ),
                         prefer_known_route=late_partial_delivery,
-                        compact_avoid_positions=duplicate_carrier_delivery,
-                        avoid_previous_backtrack_position=duplicate_carrier_delivery,
+                        compact_avoid_positions=bool(
+                            duplicate_carrier_delivery or large_map_delivery_recovery
+                        ),
+                        avoid_previous_backtrack_position=bool(
+                            duplicate_carrier_delivery or large_map_delivery_recovery
+                        ),
+                        retry_frontier_actions=large_map_delivery_recovery,
                     )
                 return int(action_id)
             if _pipeline_adjacent_door_interact_action(obs_agent) is not None:
@@ -21730,6 +21752,113 @@ def _pipeline_station_interact_guard_action(
     return None
 
 
+def _pipeline_delivery_interact_group_for_guard(
+    cfg: RecurrentConfig,
+    obs_agent: dict,
+    *,
+    agent_id: int | None,
+    pipeline_state: Mapping[str, Any] | None,
+) -> tuple[tuple[int, tuple[int, int], int], int] | None:
+    pos = _pipeline_self_position(obs_agent)
+    if pos is None or int(_pipeline_center_tile(obs_agent)) != int(TILE_STATION):
+        return None
+    held_type = _pipeline_inventory_type(obs_agent)
+    if held_type <= 0:
+        return None
+    completed = _pipeline_completed_stages(pipeline_state)
+    observed_map_size = _observed_map_size(obs_agent, cfg)
+    plans: list[Mapping] = []
+    carry_plan = _pipeline_carry_target_plan(pipeline_state, agent_id, held_type)
+    if carry_plan is not None:
+        plans.append(carry_plan)
+    plans.extend(_pipeline_visible_station_guard_plans(cfg, obs_agent, observed_map_size))
+    seen: set[tuple[int, tuple[int, int] | None]] = set()
+    for plan in plans:
+        if not isinstance(plan, Mapping):
+            continue
+        station = _pipeline_plan_station(plan)
+        try:
+            stage_id = int(plan.get("stage", -1))
+        except (TypeError, ValueError):
+            continue
+        key = (stage_id, station)
+        if key in seen:
+            continue
+        seen.add(key)
+        if stage_id < 0 or stage_id in completed or station != tuple(pos):
+            continue
+        if not _pipeline_plan_is_available(plan, completed):
+            continue
+        remaining = _pipeline_required_list_for_plan_stage(
+            plan,
+            pipeline_state=pipeline_state,
+        )
+        remaining_count = sum(
+            1
+            for resource_type in remaining
+            if int(resource_type) == int(held_type)
+        )
+        if remaining_count <= 0:
+            continue
+        return (stage_id, tuple(pos), int(held_type)), int(remaining_count)
+    return None
+
+
+def _apply_pipeline_duplicate_delivery_guard(
+    cfg: RecurrentConfig,
+    obs: dict,
+    acts: torch.Tensor,
+    pipeline_state: Mapping[str, Any] | None,
+) -> torch.Tensor:
+    groups: dict[tuple[int, tuple[int, int], int], dict[str, Any]] = {}
+    for aid in range(int(acts.shape[0])):
+        if int(acts[aid].item()) != int(SyncOrSinkEnv.ACTION_INTERACT):
+            continue
+        obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+        if not isinstance(obs_agent, dict):
+            continue
+        group = _pipeline_delivery_interact_group_for_guard(
+            cfg,
+            obs_agent,
+            agent_id=int(aid),
+            pipeline_state=pipeline_state,
+        )
+        if group is None:
+            continue
+        key, remaining_count = group
+        row = groups.setdefault(
+            key,
+            {
+                "remaining": int(remaining_count),
+                "agents": [],
+            },
+        )
+        row["remaining"] = min(int(row["remaining"]), int(remaining_count))
+        row["agents"].append(int(aid))
+
+    corrected = acts.clone()
+    for row in groups.values():
+        agents = sorted(int(aid) for aid in row.get("agents", []))
+        remaining_count = max(0, int(row.get("remaining", 0)))
+        if len(agents) <= remaining_count:
+            continue
+        for aid in agents[remaining_count:]:
+            obs_agent = obs.get(aid, obs.get(str(aid))) if isinstance(obs, dict) else None
+            if not isinstance(obs_agent, dict):
+                continue
+            action_id = _pipeline_station_guard_recovery_action(
+                obs_agent,
+                preserve_inventory=True,
+            )
+            if (
+                action_id is not None
+                and int(action_id) != int(SyncOrSinkEnv.ACTION_INTERACT)
+                and _action_allowed_from_obs(obs_agent, int(action_id))
+            ):
+                corrected[aid] = int(action_id)
+    return corrected
+
+
 def _apply_pipeline_station_interact_guard(
     cfg: RecurrentConfig,
     obs: dict,
@@ -21759,7 +21888,7 @@ def _apply_pipeline_station_interact_guard(
         if not _action_allowed_from_obs(obs_agent, int(action_id)):
             continue
         corrected[aid] = int(action_id)
-    return corrected
+    return _apply_pipeline_duplicate_delivery_guard(cfg, obs, corrected, pipeline_state)
 
 
 def _pipeline_rollout_station_guard_action_label_mask(
