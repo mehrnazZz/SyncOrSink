@@ -107,6 +107,30 @@ def test_core_scenarios_have_expert_acceptance(scenario, policy_path, episodes, 
     assert summary.success_rate == 1.0
 
 
+def test_pipeline_planner_comm_solves_32_easy_benchmark_window():
+    from syncorsink.policies.submission import import_entrypoint
+
+    summary, _ = _run_expert(
+        import_entrypoint("syncorsink.policies.planner_comm:pipeline_planner_comm"),
+        scenario="pipeline_assembly",
+        episodes=8,
+        seed=3000,
+        map_size=32,
+        num_agents=3,
+        fov_preset="easy",
+        max_steps=480,
+        pipeline_shaping=True,
+        pipeline_shaping_scale=0.1,
+        pipeline_required_per_stage_min=1,
+        pipeline_required_per_stage_max=2,
+        pipeline_sync_probability=0.5,
+        pipeline_dependency_probability=0.7,
+        pipeline_wrong_delivery_penalty=0.25,
+    )
+
+    assert summary.success_rate == 1.0
+
+
 @pytest.mark.parametrize("scenario", ["signal_hunt", "energy_grid", "pipeline_assembly"])
 def test_generated_scenarios_pass_solvability_checks(scenario):
     from syncorsink.envs import SyncOrSinkConfig, SyncOrSinkEnv

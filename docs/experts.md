@@ -28,6 +28,8 @@ The automated expert acceptance tests cover:
 - `pipeline_assembly` 8x8, 16x16, 24x24, and 32x32 with `pipeline_planner_comm`
   - The 16x16 acceptance case runs a 32-episode seed sweep.
   - The 24x24 and 32x32 acceptance cases cover larger-map traffic deadlocks.
+  - A targeted 32x32/easy smoke covers the 3-agent benchmark window at seeds
+    3000+ with the same shaping knobs used by the Pipeline recurrent audit.
 
 Stress sweeps beyond the acceptance window are still useful, but the known
 scaled-pipeline deadlocks are now covered by tests.
