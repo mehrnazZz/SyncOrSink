@@ -9081,6 +9081,7 @@ def test_recurrent_pipeline_large_map_carriers_use_compact_navigation_memory(mon
 
     assert duplicate_action == SyncOrSinkEnv.ACTION_UP
     assert calls[-1]["prefer_known_route"] is False
+    assert calls[-1]["known_route_max_extra_steps"] == 2
     assert calls[-1]["compact_avoid_positions"] is True
     assert calls[-1]["avoid_previous_backtrack_position"] is True
     assert calls[-1]["retry_frontier_actions"] is False
@@ -9099,9 +9100,143 @@ def test_recurrent_pipeline_large_map_carriers_use_compact_navigation_memory(mon
 
     assert single_action == SyncOrSinkEnv.ACTION_UP
     assert calls[-1]["prefer_known_route"] is False
+    assert calls[-1]["known_route_max_extra_steps"] == 2
     assert calls[-1]["compact_avoid_positions"] is True
     assert calls[-1]["avoid_previous_backtrack_position"] is True
     assert calls[-1]["retry_frontier_actions"] is True
+
+    focused_state = {
+        **duplicate_state,
+        "carry_targets": {
+            0: {
+                "stage": 2,
+                "station": (7, 6),
+                "resource_type": 4,
+                "required": [4],
+            }
+        },
+    }
+    focused_action = recurrent._pipeline_local_assist_action(
+        cfg,
+        obs_agent,
+        agent_id=0,
+        current_action_id=SyncOrSinkEnv.ACTION_STAY,
+        pipeline_state=focused_state,
+    )
+
+    assert focused_action == SyncOrSinkEnv.ACTION_UP
+    assert calls[-1]["prefer_known_route"] is True
+    assert calls[-1]["known_route_max_extra_steps"] == 32
+    assert calls[-1]["compact_avoid_positions"] is True
+    assert calls[-1]["avoid_previous_backtrack_position"] is True
+    assert calls[-1]["retry_frontier_actions"] is True
+
+    sync_obs = {
+        **obs_agent,
+        "goal_hint": np.array(
+            [1, 7, 6, 1, 4, -1, 0, -1, 1, -1, -1, -1, -1, -1, -1, -1],
+            dtype=np.int16,
+        ),
+    }
+    sync_action = recurrent._pipeline_local_assist_action(
+        cfg,
+        sync_obs,
+        agent_id=0,
+        current_action_id=SyncOrSinkEnv.ACTION_STAY,
+        pipeline_state=single_state,
+    )
+
+    assert sync_action == SyncOrSinkEnv.ACTION_UP
+    assert calls[-1]["prefer_known_route"] is True
+    assert calls[-1]["known_route_max_extra_steps"] == 32
+    assert calls[-1]["compact_avoid_positions"] is True
+    assert calls[-1]["avoid_previous_backtrack_position"] is True
+    assert calls[-1]["retry_frontier_actions"] is True
+
+
+def test_recurrent_pipeline_delivery_recovery_allows_long_known_route():
+    from syncorsink.envs import SyncOrSinkEnv
+    from syncorsink.train.recurrent_bc_rl import (
+        _pipeline_known_direct_route_action_from_obs,
+        _pipeline_memory_adjusted_navigation_action,
+    )
+
+    target = (22, 18)
+    detour = [
+        (15, 18),
+        (15, 17),
+        (15, 16),
+        (15, 15),
+        (15, 14),
+        (15, 13),
+        (16, 13),
+        (17, 13),
+        (18, 13),
+        (19, 13),
+        (20, 13),
+        (21, 13),
+        (22, 13),
+        (22, 14),
+        (22, 15),
+        (22, 16),
+        (22, 17),
+        target,
+    ]
+    obs_agent = {
+        "self_pos": np.array([15, 18], dtype=np.int16),
+        "action_mask": np.ones((8,), dtype=np.float32),
+    }
+    pipeline_state = {
+        "terrain_memory": {
+            "passable": set(detour),
+            "blocked": set(),
+            "doors": set(),
+            "map_size": 32,
+        },
+        "navigation_memory": {
+            0: {
+                "target": list(target),
+                "pos": [15, 19],
+                "action": SyncOrSinkEnv.ACTION_DOWN,
+                "context": "stage:4:deliver:2",
+                "recent": [
+                    {
+                        "target": list(target),
+                        "pos": [15, 18],
+                        "action": SyncOrSinkEnv.ACTION_UP,
+                        "context": "stage:4:deliver:2",
+                    }
+                ],
+            }
+        },
+    }
+
+    assert _pipeline_known_direct_route_action_from_obs(obs_agent, target, pipeline_state) is None
+    assert (
+        _pipeline_known_direct_route_action_from_obs(
+            obs_agent,
+            target,
+            pipeline_state,
+            max_extra_steps=32,
+        )
+        == SyncOrSinkEnv.ACTION_UP
+    )
+
+    adjusted = _pipeline_memory_adjusted_navigation_action(
+        obs_agent,
+        target,
+        SyncOrSinkEnv.ACTION_UP,
+        pipeline_state,
+        0,
+        context_key="stage:4:deliver:2",
+        prefer_known_route=True,
+        known_route_max_extra_steps=32,
+        compact_avoid_positions=True,
+        avoid_previous_backtrack_position=True,
+        retry_frontier_actions=True,
+    )
+
+    assert adjusted == SyncOrSinkEnv.ACTION_UP
 
 
 def test_recurrent_pipeline_partial_non_sync_delivery_prefers_known_route(monkeypatch):
@@ -9157,6 +9292,7 @@ def test_recurrent_pipeline_partial_non_sync_delivery_prefers_known_route(monkey
 
     assert action == SyncOrSinkEnv.ACTION_UP
     assert calls[-1]["prefer_known_route"] is True
+    assert calls[-1]["known_route_max_extra_steps"] == 2
     assert calls[-1]["compact_avoid_positions"] is True
     assert calls[-1]["avoid_previous_backtrack_position"] is True
     assert calls[-1]["retry_frontier_actions"] is True
@@ -9217,7 +9353,8 @@ def test_recurrent_pipeline_carry_target_uses_hint_sync_for_route_trust(monkeypa
     )
 
     assert action == SyncOrSinkEnv.ACTION_UP
-    assert calls[-1]["prefer_known_route"] is False
+    assert calls[-1]["prefer_known_route"] is True
+    assert calls[-1]["known_route_max_extra_steps"] == 32
 
 
 def test_recurrent_pipeline_navigation_memory_breaks_repeated_cell_cycle():

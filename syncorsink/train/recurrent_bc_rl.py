@@ -2018,6 +2018,7 @@ def _pipeline_memory_adjusted_navigation_action(
     *,
     context_key: str | None = None,
     prefer_known_route: bool = False,
+    known_route_max_extra_steps: int = 2,
     compact_avoid_positions: bool = False,
     avoid_previous_backtrack_position: bool = False,
     retry_frontier_actions: bool = False,
@@ -2042,6 +2043,7 @@ def _pipeline_memory_adjusted_navigation_action(
             obs_agent,
             target,
             pipeline_state,
+            max_extra_steps=int(known_route_max_extra_steps),
         )
         known_route_matches_action = bool(
             known_route_action is not None
@@ -2991,6 +2993,10 @@ def _pipeline_local_assist_action(
                         and held_type > 0
                         and not duplicate_carrier_delivery
                     )
+                    large_map_focused_delivery_route_trust = bool(
+                        large_map_delivery_recovery
+                        and (stage_sync or len(plan_required_values) == 1)
+                    )
                     action_id = _pipeline_memory_adjusted_navigation_action(
                         obs_agent,
                         station,
@@ -3002,7 +3008,14 @@ def _pipeline_local_assist_action(
                             if stage_id >= 0
                             else None
                         ),
-                        prefer_known_route=late_partial_delivery,
+                        prefer_known_route=bool(
+                            late_partial_delivery or large_map_focused_delivery_route_trust
+                        ),
+                        known_route_max_extra_steps=(
+                            int(observed_map_size)
+                            if large_map_focused_delivery_route_trust
+                            else 2
+                        ),
                         compact_avoid_positions=bool(
                             duplicate_carrier_delivery or large_map_delivery_recovery
                         ),
