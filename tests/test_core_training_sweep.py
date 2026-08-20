@@ -202,6 +202,16 @@ def test_core_training_sweep_pipeline32_distill_recipe_targets_verified_window(t
     assert payload["config"]["recurrent_bc_pipeline_wrong_station_recovery_action_loss_weight"] == 1.0
     assert payload["config"]["recurrent_dagger_max_replay_snippets_per_episode"] == 12
     assert payload["config"]["recurrent_dagger_max_failed_parent_replay_snippets_per_episode"] == 8
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_episodes"] == 64
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_seed_base"] == 40000
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_weight"] == 2.0
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_success_only"] is True
+    assert payload["config"]["recurrent_pipeline_assisted_rollout_bc_epochs"] == 4
+    assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist"] is True
+    assert payload["config"]["recurrent_rl_rollout_pipeline_navigation_assist_trust_messages"] is True
+    assert payload["config"]["recurrent_rl_rollout_pipeline_interact_gate_promote"] is True
+    assert payload["config"]["recurrent_rl_eval_decoding_action_loss_weight"] == 0.1
+    assert payload["config"]["recurrent_rl_pipeline_assisted_action_loss_weight"] == 0.4
     assert payload["config"]["recurrent_rl_pipeline_navigation_action_loss_weight"] == 0.1
     assert payload["config"]["recurrent_rl_pipeline_sync_action_loss_weight"] == 0.1
     assert payload["config"]["recurrent_rl_pipeline_ready_interact_action_loss_weight"] == 0.1
@@ -239,7 +249,16 @@ def test_core_training_sweep_pipeline32_distill_recipe_targets_verified_window(t
     assert command[command.index("--obs-memory-mode") + 1] == "egocentric"
     assert "--obs-agent-id-features" in command
     assert "--eval-pipeline-navigation-assist" not in command
-    assert "--pipeline-assisted-rollout-episodes" not in command
+    assert command[command.index("--pipeline-assisted-rollout-episodes") + 1] == "64"
+    assert command[command.index("--pipeline-assisted-rollout-seed-base") + 1] == "40000"
+    assert command[command.index("--pipeline-assisted-rollout-weight") + 1] == "2.0"
+    assert command[command.index("--pipeline-assisted-rollout-bc-epochs") + 1] == "4"
+    assert "--pipeline-assisted-rollout-success-only" in command
+    assert "--rl-rollout-pipeline-navigation-assist" in command
+    assert "--rl-rollout-pipeline-navigation-assist-trust-messages" in command
+    assert "--rl-rollout-pipeline-interact-gate-promote" in command
+    assert command[command.index("--rl-eval-decoding-action-loss-weight") + 1] == "0.1"
+    assert command[command.index("--rl-pipeline-assisted-action-loss-weight") + 1] == "0.4"
     assert "--wandb" in command
     assert run["wandb"]["status"] == "dry_run"
 
